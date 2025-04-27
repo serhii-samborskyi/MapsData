@@ -3,6 +3,9 @@ const API_BASE = 'http://0.0.0.0:8000';
 
 async function fetchActiveCampaigns() {
   const response = await fetch(`${API_BASE}/api/campaigns/active`);
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`);
+  }
   return response.json();
 }
 
@@ -13,6 +16,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   try {
     const data = await fetchActiveCampaigns();
+    
+    if (!data.campaigns || data.campaigns.length === 0) {
+      campaignsDiv.innerHTML = '<p>No active campaigns found.</p>';
+      return;
+    }
 
     data.campaigns.forEach(campaign => {
       const div = document.createElement('div');
@@ -49,6 +57,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   } catch (error) {
     errorDiv.textContent = 'Failed to load campaigns';
-    console.error(error);
+    console.error('Campaign loading error:', error);
   }
 });
