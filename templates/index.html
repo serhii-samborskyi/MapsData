@@ -56,13 +56,13 @@
                             <td class="px-4 py-3 text-sm text-gray-700">{{ campaign.id }}</td>
                             <td class="px-4 py-3 text-sm text-gray-700 font-medium">{{ campaign.name }}</td>
                             <td class="px-4 py-3">
-                                <span class="px-3 py-1 text-xs font-medium rounded-full 
+                                <button onclick="toggleStatus({{ campaign.id }}, '{{ campaign.status }}')" class="px-3 py-1 text-xs font-medium rounded-full cursor-pointer hover:opacity-80 transition-all
                                     {% if campaign.status == 'active' %}
                                         bg-green-100 text-green-800
                                     {% else %}
                                         bg-gray-100 text-gray-800
                                     {% endif %}
-                                ">{{ campaign.status }}</span>
+                                ">{{ campaign.status }}</button>
                             </td>
                             <td class="px-4 py-3 text-sm text-gray-700">{{ campaign.total_requests or 0 }}</td>
                             <td class="px-4 py-3 text-sm text-gray-700">{{ campaign.completed_requests or 0 }}</td>
@@ -150,6 +150,22 @@
         function toggleCampaignForm() {
             const form = document.getElementById('campaignForm');
             form.classList.toggle('hidden');
+        }
+
+        async function toggleStatus(campaignId, currentStatus) {
+            const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
+            const formData = new FormData();
+            formData.append('status', newStatus);
+            
+            try {
+                await fetch(`/update_campaign_status/${campaignId}`, {
+                    method: 'POST',
+                    body: formData
+                });
+                window.location.reload();
+            } catch (error) {
+                console.error('Error updating status:', error);
+            }
         }
     </script>
 </body>

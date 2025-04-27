@@ -46,6 +46,17 @@ async def get_campaigns(request: Request):
             campaigns.append(campaign)
     return templates.TemplateResponse("index.html", {"request": request, "campaigns": campaigns})
 
+@app.post("/update_campaign_status/{campaign_id}")
+async def update_campaign_status(campaign_id: int, status: str = Form(...)):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE search_campaigns SET status = ? WHERE id = ?",
+            (status, campaign_id)
+        )
+        conn.commit()
+    return {"status": "Campaign status updated"}
+
 @app.post("/create_campaign")
 async def create_campaign(name: str = Form(...), search_phrases: str = Form(...)):
     phrases = [p.strip() for p in search_phrases.split("\n") if p.strip()]
