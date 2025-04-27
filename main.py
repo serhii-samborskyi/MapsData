@@ -118,6 +118,73 @@ async def store_contact(
         conn.commit()
     return {"status": "Contact stored"}
 
+@app.get("/api/campaigns/active")
+async def get_active_campaigns():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                sc.*,
+                COUNT(DISTINCT r.id) as total_requests,
+                COUNT(DISTINCT c.id) as total_contacts
+            FROM search_campaigns sc
+            LEFT JOIN requests r ON sc.id = r.campaign_id
+            LEFT JOIN contacts c ON sc.id = c.campaign_id
+            WHERE sc.status = 'active'
+            GROUP BY sc.id
+        """)
+        campaigns = [dict(row) for row in cursor.fetchall()]
+        return {"campaigns": campaigns}
+
+@app.get("/api/campaign/{campaign_name}/requests")
+async def get_campaign_requests(campaign_name: str):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT r.*, sc.name as campaign_name
+            FROM requests r
+            JOIN search_campaigns sc ON r.campaign_id = sc.id
+            WHERE sc.name = ?
+        """, (campaign_name,))
+        requests = [dict(row) for row in cursor.fetchall()]
+        if not requests:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        return {"requests": requests}
+
+@app.post("/api/contacts")
+async def save_contact(
+    campaign_id: int = Form(...),
+    request_id: int = Form(...),
+    business_name: str = Form(...),
+    review_count: int = Form(...),
+    phone: str = Form(None),
+    domain: str = Form(None),
+    email: str = Form(None)
+):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        # Verify campaign exists and is active
+        cursor.execute("SELECT status FROM search_campaigns WHERE id = ?", (campaign_id,))
+        campaign = cursor.fetchone()
+        if not campaign:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        if campaign['status'] != 'active':
+            raise HTTPException(status_code=400, detail="Campaign is not active")
+        
+        # Verify request belongs to campaign
+        cursor.execute("SELECT id FROM requests WHERE id = ? AND campaign_id = ?", (request_id, campaign_id))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Invalid request ID for this campaign")
+        
+        cursor.execute(
+            """INSERT INTO contacts 
+               (campaign_id, business_name, review_count, phone, domain, email, status) 
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (campaign_id, business_name, review_count, phone, domain, email, "pending")
+        )
+        conn.commit()
+        return {"status": "Contact saved successfully", "contact_id": cursor.lastrowid}
+
 @app.get("/api/campaign/{campaign_id}")
 async def get_campaign_status(campaign_id: int):
     with get_db() as conn:
