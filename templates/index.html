@@ -45,8 +45,11 @@
                     <td class="border p-2">{{ campaign.completed_requests or 0 }}</td>
                     <td class="border p-2">{{ campaign.total_contacts or 0 }}</td>
                     <td class="border p-2">
-                        <button onclick="toggleRequests({{ campaign.id }})" class="bg-blue-500 text-white px-2 py-1 rounded text-sm">
+                        <button onclick="toggleRequests({{ campaign.id }})" class="bg-blue-500 text-white px-2 py-1 rounded text-sm mr-2">
                             Show Requests
+                        </button>
+                        <button onclick="toggleContacts({{ campaign.id }})" class="bg-green-500 text-white px-2 py-1 rounded text-sm">
+                            Show Contacts
                         </button>
                     </td>
                 </tr>
@@ -73,6 +76,36 @@
                         </div>
                     </td>
                 </tr>
+                <tr id="contacts-{{ campaign.id }}" class="hidden">
+                    <td colspan="7" class="border p-2">
+                        <div class="pl-4">
+                            <table class="w-full">
+                                <thead>
+                                    <tr class="bg-gray-100">
+                                        <th class="p-2 text-left">Business Name</th>
+                                        <th class="p-2 text-left">Reviews</th>
+                                        <th class="p-2 text-left">Phone</th>
+                                        <th class="p-2 text-left">Domain</th>
+                                        <th class="p-2 text-left">Email</th>
+                                        <th class="p-2 text-left">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for contact in campaign.contacts %}
+                                    <tr>
+                                        <td class="p-2">{{ contact.business_name }}</td>
+                                        <td class="p-2">{{ contact.review_count }}</td>
+                                        <td class="p-2">{{ contact.phone or '-' }}</td>
+                                        <td class="p-2">{{ contact.domain or '-' }}</td>
+                                        <td class="p-2">{{ contact.email or '-' }}</td>
+                                        <td class="p-2">{{ contact.status }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </td>
+                </tr>
                 {% endfor %}
             </tbody>
         </table>
@@ -80,6 +113,10 @@
 <script>
         function toggleRequests(campaignId) {
             const row = document.getElementById(`requests-${campaignId}`);
+            row.classList.toggle('hidden');
+        }
+        function toggleContacts(campaignId) {
+            const row = document.getElementById(`contacts-${campaignId}`);
             row.classList.toggle('hidden');
         }
     </script>

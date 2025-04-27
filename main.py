@@ -39,6 +39,10 @@ async def get_campaigns(request: Request):
                 GROUP BY r.id
             """, (campaign['id'],))
             campaign['requests'] = [dict(r) for r in cursor.fetchall()]
+            
+            cursor.execute("SELECT * FROM contacts WHERE campaign_id = ?", (campaign['id'],))
+            campaign['contacts'] = [dict(r) for r in cursor.fetchall()]
+            
             campaigns.append(campaign)
     return templates.TemplateResponse("index.html", {"request": request, "campaigns": campaigns})
 
