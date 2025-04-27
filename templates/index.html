@@ -1,0 +1,47 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search Campaigns</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto p-4">
+        <h1 class="text-2xl font-bold mb-4">Search Campaigns</h1>
+        
+        <form action="/create_campaign" method="post" class="mb-8">
+            <div class="mb-4">
+                <label class="block text-sm font-medium">Campaign Name</label>
+                <input type="text" name="name" required class="mt-1 p-2 w-full border rounded">
+            </div>
+            <div class="mb-4">
+                <label class="block text-sm font-medium">Search Phrases (one per line)</label>
+                <textarea name="search_phrases" required class="mt-1 p-2 w-full border rounded" rows="5"></textarea>
+            </div>
+            <button type="submit" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Start Campaign</button>
+        </form>
+
+        <h2 class="text-xl font-semibold mb-2">Active Campaigns</h2>
+        <table class="w-full border-collapse border">
+            <thead>
+                <tr class="bg-gray-200">
+                    <th class="border p-2">ID</th>
+                    <th class="border p-2">Name</th>
+                    <th class="border p-2">Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for campaign in campaigns %}
+                <tr>
+                    <td class="border p-2">{{ campaign.id }}</td>
+                    <td class="border p-2">{{ campaign.name }}</td>
+                    <td class="border p-2">{{ campaign.status }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</body>
+</html>
