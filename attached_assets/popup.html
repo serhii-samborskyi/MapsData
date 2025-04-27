@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Google Maps Campaign Scraper</title>
+  <style>
+    body { font-family: Arial, sans-serif; width: 400px; padding: 10px; }
+    button { margin: 5px; padding: 8px; background-color: #4CAF50; color: white; border: none; cursor: pointer; }
+    button:hover { background-color: #45a049; }
+    .campaign { border-bottom: 1px solid #ddd; padding: 10px; }
+    #campaigns { max-height: 300px; overflow-y: auto; }
+    #status { margin-top: 10px; }
+    #error { color: red; }
+  </style>
+</head>
+<body>
+  <h2>Active Campaigns</h2>
+  <div id="error"></div>
+  <div id="campaigns"></div>
+  <div id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

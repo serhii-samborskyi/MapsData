@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Google Maps Campaign Scraper",
+  "version": "1.4",
+  "description": "Scrapes Google Maps data for active campaigns using search URLs.",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "downloads",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://fac10661-ee9f-4358-b944-f137d7d73a1a-00-30y5jt13c33qm.riker.replit.dev/*",
+    "https://www.google.com/maps/*"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.google.com/maps/*"],
+      "js": ["content.js"]
+    }
+  ]
+}
