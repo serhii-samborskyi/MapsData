@@ -52,6 +52,9 @@ async def get_campaigns(request: Request):
 
 @app.post("/update_campaign_status/{campaign_id}")
 async def update_campaign_status(campaign_id: int, status: str = Form(...)):
+    if status not in ['active', 'inactive', 'completed']:
+        raise HTTPException(status_code=400, detail="Invalid status. Must be 'active', 'inactive' or 'completed'")
+    
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -60,6 +63,21 @@ async def update_campaign_status(campaign_id: int, status: str = Form(...)):
         )
         conn.commit()
     return {"status": "Campaign status updated"}
+
+@app.post("/api/campaign/{campaign_id}/complete")
+async def complete_campaign(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM search_campaigns WHERE id = ?", (campaign_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Campaign not found")
+            
+        cursor.execute(
+            "UPDATE search_campaigns SET status = 'completed' WHERE id = ?",
+            (campaign_id,)
+        )
+        conn.commit()
+    return {"status": "Campaign marked as completed"}
 
 @app.post("/create_campaign")
 async def create_campaign(name: str = Form(...), search_phrases: str = Form(...)):
