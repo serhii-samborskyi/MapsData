@@ -4,9 +4,31 @@
 <head>
   <title>Search Campaigns</title>
   <style>
-    body { width: 300px; padding: 10px; }
-    .campaign { margin: 10px 0; padding: 10px; border: 1px solid #ddd; }
-    button { background: #4CAF50; color: white; border: none; padding: 5px 10px; cursor: pointer; }
+    body { 
+      width: 400px; 
+      padding: 10px; 
+      font-family: Arial, sans-serif;
+    }
+    .campaign { 
+      margin: 10px 0; 
+      padding: 10px; 
+      border: 1px solid #ddd; 
+      border-radius: 4px;
+    }
+    .start-btn { 
+      background: #4CAF50; 
+      color: white; 
+      border: none; 
+      padding: 8px 16px; 
+      cursor: pointer; 
+      border-radius: 4px;
+    }
+    .start-btn:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    h3 { margin: 0 0 10px 0; }
+    p { margin: 5px 0; }
   </style>
 </head>
 <body>
