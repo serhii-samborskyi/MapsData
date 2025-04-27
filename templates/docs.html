@@ -13,7 +13,7 @@
         <h1 class="text-3xl font-bold mb-8">Search Campaigns API Documentation</h1>
         
         <div class="space-y-8">
-            <!-- Get Campaigns -->
+            <!-- Get Active Campaigns -->
             <div class="bg-white p-6 rounded-lg shadow">
                 <div class="flex items-center gap-4 mb-4">
                     <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">GET</span>
@@ -37,13 +37,39 @@
                 </div>
             </div>
 
+            <!-- Get Campaign Status -->
+            <div class="bg-white p-6 rounded-lg shadow">
+                <div class="flex items-center gap-4 mb-4">
+                    <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">GET</span>
+                    <h2 class="text-xl font-semibold">/api/campaign/{campaign_id}</h2>
+                </div>
+                <p class="text-gray-600 mb-4">Returns detailed information about a specific campaign</p>
+                <div class="bg-gray-50 p-4 rounded mb-4">
+                    <h3 class="font-medium mb-2">Parameters:</h3>
+                    <p><code class="bg-gray-200 px-2 py-1 rounded">campaign_id</code> - ID of the campaign</p>
+                </div>
+                <div class="bg-gray-50 p-4 rounded">
+                    <h3 class="font-medium mb-2">Response Example:</h3>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
+{
+  "campaign": {
+    "id": 1,
+    "name": "Campaign Name",
+    "status": "active"
+  },
+  "requests": [...],
+  "contacts": [...]
+}</pre>
+                </div>
+            </div>
+
             <!-- Get Campaign Requests -->
             <div class="bg-white p-6 rounded-lg shadow">
                 <div class="flex items-center gap-4 mb-4">
                     <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">GET</span>
                     <h2 class="text-xl font-semibold">/api/campaign/{campaign_name}/requests</h2>
                 </div>
-                <p class="text-gray-600 mb-4">Returns all requests for a specific campaign by name</p>
+                <p class="text-gray-600 mb-4">Returns pending requests for a specific campaign</p>
                 <div class="bg-gray-50 p-4 rounded mb-4">
                     <h3 class="font-medium mb-2">Parameters:</h3>
                     <p><code class="bg-gray-200 px-2 py-1 rounded">campaign_name</code> - Name of the campaign</p>
@@ -67,8 +93,8 @@
             <!-- Update Request Status -->
             <div class="bg-white p-6 rounded-lg shadow">
                 <div class="flex items-center gap-4 mb-4">
-                    <span class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-medium">POST</span>
-                    <h2 class="text-xl font-semibold">/api/request/{request_id}/status</h2>
+                    <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">GET</span>
+                    <h2 class="text-xl font-semibold">/api/request/{request_id}/status/{status}</h2>
                 </div>
                 <p class="text-gray-600 mb-4">Updates the status of a specific request</p>
                 <div class="bg-gray-50 p-4 rounded mb-4">
@@ -90,15 +116,13 @@
             <!-- Complete Campaign -->
             <div class="bg-white p-6 rounded-lg shadow">
                 <div class="flex items-center gap-4 mb-4">
-                    <span class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-medium">POST</span>
+                    <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">GET</span>
                     <h2 class="text-xl font-semibold">/api/campaign/{campaign_id}/complete</h2>
                 </div>
                 <p class="text-gray-600 mb-4">Marks a campaign as completed</p>
                 <div class="bg-gray-50 p-4 rounded mb-4">
                     <h3 class="font-medium mb-2">Parameters:</h3>
-                    <ul class="list-disc list-inside space-y-1">
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">campaign_id</code> - ID of the campaign to complete</li>
-                    </ul>
+                    <p><code class="bg-gray-200 px-2 py-1 rounded">campaign_id</code> - ID of the campaign to complete</p>
                 </div>
                 <div class="bg-gray-50 p-4 rounded">
                     <h3 class="font-medium mb-2">Response Example:</h3>
