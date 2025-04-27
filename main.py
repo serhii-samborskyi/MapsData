@@ -148,12 +148,30 @@ async def get_campaign_requests(campaign_name: str):
             SELECT r.*, sc.name as campaign_name
             FROM requests r
             JOIN search_campaigns sc ON r.campaign_id = sc.id
-            WHERE sc.name = ?
+            WHERE sc.name = ? AND r.status = 'pending'
         """, (campaign_name,))
         requests = [dict(row) for row in cursor.fetchall()]
         if not requests:
-            raise HTTPException(status_code=404, detail="Campaign not found")
+            raise HTTPException(status_code=404, detail="No pending requests found")
         return {"requests": requests}
+
+@app.post("/api/request/{request_id}/status")
+async def update_request_status(request_id: int, status: str = Form(...)):
+    if status not in ['inuse', 'completed']:
+        raise HTTPException(status_code=400, detail="Invalid status. Must be 'inuse' or 'completed'")
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM requests WHERE id = ?", (request_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Request not found")
+            
+        cursor.execute(
+            "UPDATE requests SET status = ? WHERE id = ?",
+            (status, request_id)
+        )
+        conn.commit()
+        return {"status": "Request status updated successfully"}
 
 @app.post("/api/contacts")
 async def save_contact(
