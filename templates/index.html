@@ -44,10 +44,43 @@
                     <td class="border p-2">{{ campaign.total_requests or 0 }}</td>
                     <td class="border p-2">{{ campaign.completed_requests or 0 }}</td>
                     <td class="border p-2">{{ campaign.total_contacts or 0 }}</td>
+                    <td class="border p-2">
+                        <button onclick="toggleRequests({{ campaign.id }})" class="bg-blue-500 text-white px-2 py-1 rounded text-sm">
+                            Show Requests
+                        </button>
+                    </td>
+                </tr>
+                <tr id="requests-{{ campaign.id }}" class="hidden">
+                    <td colspan="7" class="border p-2">
+                        <div class="pl-4">
+                            {% for request in campaign.requests %}
+                            <div class="py-1">
+                                <span class="font-medium">{{ request.req_text }}</span>
+                                <span class="ml-2 px-2 py-1 rounded text-sm 
+                                    {% if request.status == 'completed' %}
+                                        bg-green-200 text-green-800
+                                    {% elif request.status == 'reserved' %}
+                                        bg-yellow-200 text-yellow-800
+                                    {% else %}
+                                        bg-gray-200 text-gray-800
+                                    {% endif %}
+                                ">
+                                    {{ request.status }}
+                                </span>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
+<script>
+        function toggleRequests(campaignId) {
+            const row = document.getElementById(`requests-${campaignId}`);
+            row.classList.toggle('hidden');
+        }
+    </script>
 </body>
 </html>
