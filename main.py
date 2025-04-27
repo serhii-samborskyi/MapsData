@@ -50,8 +50,8 @@ async def get_campaigns(request: Request):
             campaigns.append(campaign)
     return templates.TemplateResponse("index.html", {"request": request, "campaigns": campaigns})
 
-@app.post("/update_campaign_status/{campaign_id}")
-async def update_campaign_status(campaign_id: int, status: str = Form(...)):
+@app.get("/update_campaign_status/{campaign_id}/{status}")
+async def update_campaign_status(campaign_id: int, status: str):
     if status not in ['active', 'inactive', 'completed']:
         raise HTTPException(status_code=400, detail="Invalid status. Must be 'active', 'inactive' or 'completed'")
     
@@ -64,7 +64,7 @@ async def update_campaign_status(campaign_id: int, status: str = Form(...)):
         conn.commit()
     return {"status": "Campaign status updated"}
 
-@app.post("/api/campaign/{campaign_id}/complete")
+@app.get("/api/campaign/{campaign_id}/complete")
 async def complete_campaign(campaign_id: int):
     with get_db() as conn:
         cursor = conn.cursor()
@@ -173,8 +173,8 @@ async def get_campaign_requests(campaign_name: str):
             raise HTTPException(status_code=404, detail="No pending requests found")
         return {"requests": requests}
 
-@app.post("/api/request/{request_id}/status")
-async def update_request_status(request_id: int, status: str = Form(...)):
+@app.get("/api/request/{request_id}/status/{status}")
+async def update_request_status(request_id: int, status: str):
     if status not in ['inuse', 'completed']:
         raise HTTPException(status_code=400, detail="Invalid status. Must be 'inuse' or 'completed'")
     

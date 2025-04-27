@@ -26,11 +26,7 @@ async function processCampaign(campaignId, campaignName) {
       const request = requestData.requests[0];
 
       // Mark request as in use
-      await fetch(`${API_BASE}/api/request/${request.id}/status`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `status=inuse`
-      });
+      await fetch(`${API_BASE}/api/request/${request.id}/status/inuse`);
 
       // Open Maps search in new tab
       const tab = await chrome.tabs.create({
