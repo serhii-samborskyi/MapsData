@@ -14,9 +14,14 @@
 </head>
 <body class="bg-gradient-to-br from-gray-50 to-gray-100 min-h-screen">
     <div class="container mx-auto p-6">
-        <h1 class="text-3xl font-bold mb-8 text-gray-800">Search Campaigns</h1>
+        <div class="flex justify-between items-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-800">Search Campaigns</h1>
+            <button onclick="toggleCampaignForm()" class="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-all font-medium">
+                Add Campaign
+            </button>
+        </div>
         
-        <div class="bg-white rounded-lg shadow-lg p-6 mb-8">
+        <div id="campaignForm" class="bg-white rounded-lg shadow-lg p-6 mb-8 hidden">
             <form action="/create_campaign" method="post" class="space-y-4">
                 <div>
                     <label class="block text-sm font-semibold text-gray-700 mb-1">Campaign Name</label>
@@ -140,6 +145,11 @@
         function toggleContacts(campaignId) {
             const row = document.getElementById(`contacts-${campaignId}`);
             row.classList.toggle('hidden');
+        }
+        
+        function toggleCampaignForm() {
+            const form = document.getElementById('campaignForm');
+            form.classList.toggle('hidden');
         }
     </script>
 </body>
