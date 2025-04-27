@@ -1,0 +1,98 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Documentation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="bg-gray-50">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-3xl font-bold mb-8">Search Campaigns API Documentation</h1>
+        
+        <div class="space-y-8">
+            <!-- Get Campaigns -->
+            <div class="bg-white p-6 rounded-lg shadow">
+                <div class="flex items-center gap-4 mb-4">
+                    <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">GET</span>
+                    <h2 class="text-xl font-semibold">/api/campaigns/active</h2>
+                </div>
+                <p class="text-gray-600 mb-4">Returns all active campaigns with their request and contact counts</p>
+                <div class="bg-gray-50 p-4 rounded">
+                    <h3 class="font-medium mb-2">Response Example:</h3>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
+{
+  "campaigns": [
+    {
+      "id": 1,
+      "name": "Campaign Name",
+      "status": "active",
+      "total_requests": 10,
+      "total_contacts": 5
+    }
+  ]
+}</pre>
+                </div>
+            </div>
+
+            <!-- Get Campaign Requests -->
+            <div class="bg-white p-6 rounded-lg shadow">
+                <div class="flex items-center gap-4 mb-4">
+                    <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">GET</span>
+                    <h2 class="text-xl font-semibold">/api/campaign/{campaign_name}/requests</h2>
+                </div>
+                <p class="text-gray-600 mb-4">Returns all requests for a specific campaign by name</p>
+                <div class="bg-gray-50 p-4 rounded mb-4">
+                    <h3 class="font-medium mb-2">Parameters:</h3>
+                    <p><code class="bg-gray-200 px-2 py-1 rounded">campaign_name</code> - Name of the campaign</p>
+                </div>
+                <div class="bg-gray-50 p-4 rounded">
+                    <h3 class="font-medium mb-2">Response Example:</h3>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
+{
+  "requests": [
+    {
+      "id": 1,
+      "campaign_id": 1,
+      "req_text": "search phrase",
+      "status": "pending"
+    }
+  ]
+}</pre>
+                </div>
+            </div>
+
+            <!-- Save Contact -->
+            <div class="bg-white p-6 rounded-lg shadow">
+                <div class="flex items-center gap-4 mb-4">
+                    <span class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-medium">POST</span>
+                    <h2 class="text-xl font-semibold">/api/contacts</h2>
+                </div>
+                <p class="text-gray-600 mb-4">Saves a new contact for a campaign</p>
+                <div class="bg-gray-50 p-4 rounded mb-4">
+                    <h3 class="font-medium mb-2">Form Parameters:</h3>
+                    <ul class="list-disc list-inside space-y-1">
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">campaign_id</code> - Campaign ID</li>
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">request_id</code> - Request ID</li>
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">business_name</code> - Name of the business</li>
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">review_count</code> - Number of reviews</li>
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">phone</code> - Phone number (optional)</li>
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">domain</code> - Website domain (optional)</li>
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">email</code> - Email address (optional)</li>
+                    </ul>
+                </div>
+                <div class="bg-gray-50 p-4 rounded">
+                    <h3 class="font-medium mb-2">Response Example:</h3>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
+{
+  "status": "Contact saved successfully",
+  "contact_id": 1
+}</pre>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

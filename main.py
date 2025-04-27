@@ -13,6 +13,10 @@ templates = Jinja2Templates(directory="templates")
 # Initialize database
 init_db()
 
+@app.get("/docs/api", response_class=HTMLResponse)
+async def get_api_docs(request: Request):
+    return templates.TemplateResponse("docs.html", {"request": request})
+
 @app.get("/", response_class=HTMLResponse)
 async def get_campaigns(request: Request):
     with get_db() as conn:
