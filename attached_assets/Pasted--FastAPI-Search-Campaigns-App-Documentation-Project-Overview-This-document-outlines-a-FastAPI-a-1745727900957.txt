@@ -1,0 +1,353 @@
+# FastAPI Search Campaigns App Documentation
+
+## Project Overview
+This document outlines a FastAPI application hosted on Replit, featuring a web interface for managing search campaigns, a SQLite database with three linked tables, and an API for a browser extension to reserve search phrases and store Google Maps data. The app supports high-load scenarios with asynchronous endpoints and Replit's Autoscale Deployments.
+
+## Project Structure
+```
+├── main.py              # FastAPI app with API endpoints and routes
+├── database.py          # Database setup and operations
+├── templates/
+│   └── index.html       # Frontend interface with Tailwind CSS
+├── static/
+│   └── styles.css       # Optional custom CSS
+├── requirements.txt     # Python dependencies
+├── .replit              # Replit configuration
+└── replit.db            # SQLite database file
+```
+
+## Database Schema
+The database (SQLite) consists of three tables linked by IDs:
+1. **search_campaigns**
+   - `id`: Integer, Primary Key, Auto-increment
+   - `name`: Text, Campaign name
+   - `status`: Text, Enum('active', 'paused', 'completed')
+
+2. **requests**
+   - `id`: Integer, Primary Key, Auto-increment
+   - `campaign_id`: Integer, Foreign Key (references search_campaigns.id)
+   - `req_text`: Text, Search phrase
+   - `status`: Text, Enum('pending', 'reserved', 'completed')
+
+3. **contacts**
+   - `id`: Integer, Primary Key, Auto-increment
+   - `campaign_id`: Integer, Foreign Key (references search_campaigns.id)
+   - `business_name`: Text
+   - `review_count`: Integer
+   - `phone`: Text
+   - `domain`: Text
+   - `email`: Text, Nullable
+   - `status`: Text, Enum('pending', 'processed')
+
+## Code Implementation
+
+### 1. requirements.txt
+```
+fastapi==0.115.0
+uvicorn==0.30.6
+jinja2==3.1.4
+python-multipart==0.0.9
+aiofiles==24.1.0
+sqlite3  # Built-in with Python
+```
+
+### 2. .replit
+```
+run = "uvicorn main:app --host 0.0.0.0 --port 8000"
+```
+
+### 3. database.py
+```python
+import sqlite3
+from contextlib import contextmanager
+
+@contextmanager
+def get_db():
+    conn = sqlite3.connect('replit.db')
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+def init_db():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS search_campaigns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                status TEXT NOT NULL
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id INTEGER,
+                req_text TEXT NOT NULL,
+                status TEXT NOT NULL,
+                FOREIGN KEY (campaign_id) REFERENCES search_campaigns(id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS contacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id INTEGER,
+                business_name TEXT NOT NULL,
+                review_count INTEGER,
+                phone TEXT,
+                domain TEXT,
+                email TEXT,
+                status TEXT NOT NULL,
+                FOREIGN KEY (campaign_id) REFERENCES search_campaigns(id)
+            )
+        ''')
+        conn.commit()
+```
+
+### 4. main.py
+```python
+from fastapi import FastAPI, Form, Request, HTTPException
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from database import init_db, get_db
+from typing import List
+import sqlite3
+
+app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="static")
+templates = Jinja2Templates(directory="templates")
+
+# Initialize database
+init_db()
+
+# Frontend: Display campaigns and create new ones
+@app.get("/", response_class=HTMLResponse)
+async def get_campaigns(request: Request):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM search_campaigns")
+        campaigns = [dict(row) for row in cursor.fetchall()]
+    return templates.TemplateResponse("index.html", {"request": request, "campaigns": campaigns})
+
+@app.post("/create_campaign")
+async def create_campaign(name: str = Form(...), search_phrases: str = Form(...)):
+    phrases = [p.strip() for p in search_phrases.split("\n") if p.strip()]
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO search_campaigns (name, status) VALUES (?, ?)",
+            (name, "active")
+        )
+        campaign_id = cursor.lastrowid
+        for phrase in phrases:
+            cursor.execute(
+                "INSERT INTO requests (campaign_id, req_text, status) VALUES (?, ?, ?)",
+                (campaign_id, phrase, "pending")
+            )
+        conn.commit()
+    return {"status": "Campaign created", "campaign_id": campaign_id}
+
+# API: Reserve a search phrase
+@app.get("/api/reserve_phrase/{campaign_id}")
+async def reserve_phrase(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, req_text FROM requests WHERE campaign_id = ? AND status = 'pending' LIMIT 1",
+            (campaign_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="No pending phrases")
+        phrase_id = row["id"]
+        cursor.execute(
+            "UPDATE requests SET status = 'reserved' WHERE id = ?",
+            (phrase_id,)
+        )
+        conn.commit()
+        return {"phrase_id": phrase_id, "req_text": row["req_text"]}
+
+# API: Store Google Maps data
+@app.post("/api/store_contact")
+async def store_contact(
+    campaign_id: int = Form(...),
+    phrase_id: int = Form(...),
+    business_name: str = Form(...),
+    review_count: int = Form(...),
+    phone: str = Form(None),
+    domain: str = Form(None),
+    email: str = Form(None)
+):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO contacts (campaign_id, business_name, review_count, phone, domain, email, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (campaign_id, business_name, review_count, phone, domain, email, "pending")
+        )
+        cursor.execute(
+            "UPDATE requests SET status = 'completed' WHERE id = ?",
+            (phrase_id,)
+        )
+        conn.commit()
+    return {"status": "Contact stored"}
+
+# API: Get campaign status
+@app.get("/api/campaign/{campaign_id}")
+async def get_campaign_status(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM search_campaigns WHERE id = ?", (campaign_id,))
+        campaign = cursor.fetchone()
+        if not campaign:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        cursor.execute("SELECT * FROM requests WHERE campaign_id = ?", (campaign_id,))
+        requests = [dict(row) for row in cursor.fetchall()]
+        cursor.execute("SELECT * FROM contacts WHERE campaign_id = ?", (campaign_id,))
+        contacts = [dict(row) for row in cursor.fetchall()]
+        return {"campaign": dict(campaign), "requests": requests, "contacts": contacts}
+```
+
+### 5. templates/index.html
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search Campaigns</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto p-4">
+        <h1 class="text-2xl font-bold mb-4">Search Campaigns</h1>
+        
+        <!-- Create Campaign Form -->
+        <form action="/create_campaign" method="post" class="mb-8">
+            <div class="mb-4">
+                <label class="block text-sm font-medium">Campaign Name</label>
+                <input type="text" name="name" required class="mt-1 p-2 w-full border rounded">
+            </div>
+            <div class="mb-4">
+                <label class="block text-sm font-medium">Search Phrases (one per line)</label>
+                <textarea name="search_phrases" required class="mt-1 p-2 w-full border rounded" rows="5"></textarea>
+            </div>
+            <button type="submit" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Start Campaign</button>
+        </form>
+
+        <!-- Campaigns List -->
+        <h2 class="text-xl font-semibold mb-2">Active Campaigns</h2>
+        <table class="w-full border-collapse border">
+            <thead>
+                <tr class="bg-gray-200">
+                    <th class="border p-2">ID</th>
+                    <th class="border p-2">Name</th>
+                    <th class="border p-2">Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for campaign in campaigns %}
+                <tr>
+                    <td class="border p-2">{{ campaign.id }}</td>
+                    <td class="border p-2">{{ campaign.name }}</td>
+                    <td class="border p-2">{{ campaign.status }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</body>
+</html>
+```
+
+### 6. static/styles.css (Optional)
+```css
+/* Add custom styles if needed */
+```
+
+## API Endpoints
+1. **GET /api/reserve_phrase/{campaign_id}**
+   - Reserves a pending search phrase for the browser extension.
+   - Returns: `{phrase_id, req_text}` or 404 if no pending phrases.
+
+2. **POST /api/store_contact**
+   - Stores Google Maps data for a search phrase.
+   - Form Parameters: `campaign_id`, `phrase_id`, `business_name`, `review_count`, `phone` (optional), `domain` (optional), `email` (optional).
+   - Returns: `{status: "Contact stored"}`.
+
+3. **GET /api/campaign/{campaign_id}**
+   - Retrieves campaign details, including associated requests and contacts.
+   - Returns: JSON with campaign, requests, and contacts data.
+
+## Deployment on Replit
+1. **Create a New Repl**:
+   - Choose the "Python" template on Replit.
+   - Fork the FastAPI template or manually set up the project structure.
+
+2. **Set Up Files**:
+   - Copy the above code into respective files (`main.py`, `database.py`, `requirements.txt`, `.replit`, `templates/index.html`).
+   - Create `static/` and `templates/` directories as needed.
+
+3. **Install Dependencies**:
+   - Run `pip install -r requirements.txt` in Replit’s shell.
+
+4. **Run the App**:
+   - Click "Run" in Replit to start the Uvicorn server.
+   - Access the interface at the provided Replit URL (e.g., `https://<repl-id>.replit.dev/`).
+
+5. **Deploy for High Load**:
+   - Upgrade to Replit’s **Autoscale Deployments** for automatic scaling.
+   - Configure Uvicorn with multiple workers in `.replit`:
+     ```
+     run = "uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4"
+     ```
+   - Use a serverless database (e.g., Neon PostgreSQL) if SQLite becomes a bottleneck.
+
+## Optimization for High Load
+- **Asynchronous Database Access**: Replace SQLite with `asyncpg` and PostgreSQL for better concurrency.
+- **Rate Limiting**: Add `slowapi` to limit API abuse:
+  ```python
+  from slowapi import Limiter
+  from slowapi.util import get_remote_address
+  limiter = Limiter(key_func=get_remote_address)
+  app.state.limiter = limiter
+  @app.get("/api/reserve_phrase/{campaign_id}")
+  @limiter.limit("10/minute")
+  async def reserve_phrase(campaign_id: int, request: Request):
+      ...
+  ```
+- **Caching**: Use `fastapi-cache` with Redis for frequently accessed campaign data.
+- **Monitoring**: Integrate Sentry or Replit’s logging for performance tracking.
+- **Load Testing**: Test with `locust` to ensure the API handles high concurrency.
+
+## Usage Instructions
+1. **Web Interface**:
+   - Visit the Replit URL to access the interface.
+   - Enter a campaign name and search phrases (one per line) in the textarea.
+   - Click "Start Campaign" to create an active campaign.
+
+2. **Browser Extension**:
+   - Call `GET /api/reserve_phrase/{campaign_id}` to get a pending search phrase.
+   - Scrape Google Maps data for the phrase.
+   - Submit data via `POST /api/store_contact` with required fields.
+
+3. **Monitor Campaigns**:
+   - View campaigns in the interface table.
+   - Use `GET /api/campaign/{campaign_id}` to retrieve detailed data.
+
+## Notes
+- SQLite is used for simplicity but may not scale well for very high loads. Consider Neon PostgreSQL for production.
+- The interface is minimal; enhance with JavaScript (e.g., htmx) for dynamic updates if needed.
+- Secure API endpoints with authentication (e.g., API keys) for production use.
+- Replit’s free tier may have resource limits; upgrade to a paid plan for high traffic.
+
+## TroubleshootingTBD
+- Add authentication for API access.
+- Enhance the interface with pagination for large campaign lists.
+- Implement background tasks for processing contacts.
+- Add export functionality for campaign data.
+
+---
+**Generated by Grok 3, xAI**
