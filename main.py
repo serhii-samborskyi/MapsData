@@ -31,7 +31,13 @@ async def get_campaigns(request: Request):
         campaigns = []
         for row in cursor.fetchall():
             campaign = dict(row)
-            cursor.execute("SELECT * FROM requests WHERE campaign_id = ?", (campaign['id'],))
+            cursor.execute("""
+                SELECT r.*, COUNT(c.id) as contact_count 
+                FROM requests r 
+                LEFT JOIN contacts c ON r.campaign_id = c.campaign_id 
+                WHERE r.campaign_id = ? 
+                GROUP BY r.id
+            """, (campaign['id'],))
             campaign['requests'] = [dict(r) for r in cursor.fetchall()]
             campaigns.append(campaign)
     return templates.TemplateResponse("index.html", {"request": request, "campaigns": campaigns})
