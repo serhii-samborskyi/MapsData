@@ -17,7 +17,17 @@ init_db()
 async def get_campaigns(request: Request):
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM search_campaigns")
+        cursor.execute("""
+            SELECT 
+                sc.*,
+                COUNT(DISTINCT r.id) as total_requests,
+                COUNT(DISTINCT c.id) as total_contacts,
+                SUM(CASE WHEN r.status = 'completed' THEN 1 ELSE 0 END) as completed_requests
+            FROM search_campaigns sc
+            LEFT JOIN requests r ON sc.id = r.campaign_id
+            LEFT JOIN contacts c ON sc.id = c.campaign_id
+            GROUP BY sc.id
+        """)
         campaigns = [dict(row) for row in cursor.fetchall()]
     return templates.TemplateResponse("index.html", {"request": request, "campaigns": campaigns})
 
