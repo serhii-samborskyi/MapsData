@@ -1,5 +1,5 @@
 
-const API_BASE = 'http://0.0.0.0:8000';
+const API_BASE = 'https://fac10661-ee9f-4358-b944-f137d7d73a1a-00-30y5jt13c33qm.riker.replit.dev';
 
 async function fetchActiveCampaigns() {
   const response = await fetch(`${API_BASE}/api/campaigns/active`);
