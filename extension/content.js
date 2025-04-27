@@ -15,42 +15,45 @@ function scrapeGoogleMaps() {
 
         let endOfList = false;
         let lastHeight = 0;
-        const results = [];
+        let noChangeCount = 0;
+        const results = new Set();
 
         const scrollInterval = setInterval(() => {
-          scrollable.scrollBy(0, 5000);
+          scrollable.scrollBy(0, 1000);
           const currentHeight = scrollable.scrollHeight;
 
+          // Check if we've hit the bottom
           if (currentHeight === lastHeight) {
-            const reachedEnd = document.body.innerText.includes("You've reached the end of the list");
-            if (reachedEnd) endOfList = true;
+            noChangeCount++;
+            if (noChangeCount > 5) {
+              endOfList = true;
+            }
+          } else {
+            noChangeCount = 0;
           }
           lastHeight = currentHeight;
 
+          // Collect all place links during scrolling
+          const links = document.querySelectorAll('a[href*="/maps/place/"]');
+          links.forEach(link => {
+            const business = {
+              business_name: link.querySelector('div[role="heading"]')?.textContent || '',
+              review_count: parseInt(link.querySelector('span[aria-label*="reviews"]')?.textContent.replace(/\D/g, '') || '0'),
+              phone: link.closest('[role="listitem"]')?.querySelector('div.fontBodySmall')?.textContent.match(/\(?\d{3}[-\)]?\s?\d{3}[-\s]?\d{4}/) || '',
+              domain: link.closest('[role="listitem"]')?.querySelector('a[href*="http"]')?.href || '',
+              email: '',
+              url: link.href
+            };
+            if (business.business_name) {
+              results.add(JSON.stringify(business));
+            }
+          });
+
           if (endOfList) {
             clearInterval(scrollInterval);
-            const items = document.querySelectorAll('div[role="list"] > div[role="listitem"]');
-            items.forEach(item => {
-              const name = item.querySelector('div[role="heading"]')?.textContent || '';
-              const rating = item.querySelector('span[aria-label*="star rating"]')?.textContent || '';
-              const reviews = item.querySelector('span[aria-label*="reviews"]')?.textContent.replace(/\(|\)/g, '') || '';
-              const category = item.querySelector('div.fontBodySmall')?.textContent.split('·')[0]?.trim() || '';
-              const address = item.querySelector('div.fontBodySmall')?.textContent.split('·').find(s => s.includes(','))?.trim() || '';
-              const website = item.querySelector('a[href*="http"]')?.href || '';
-              const phone = item.querySelector('div.fontBodySmall')?.textContent.split('·').find(s => s.match(/\d{3}-\d{3}-\d{4}/))?.trim() || '';
-              const url = item.querySelector('a[href*="maps/place"]')?.href || '';
-
-              if (name) {
-                results.push({
-                  business_name: name,
-                  review_count: parseInt(reviews) || 0,
-                  phone,
-                  domain: website,
-                  email: ''
-                });
-              }
-            });
-            resolve(results);
+            const uniqueResults = Array.from(results).map(r => JSON.parse(r));
+            console.log(`Scraped ${uniqueResults.length} unique results`);
+            resolve(uniqueResults);
           }
         }, 1000);
       }
@@ -59,14 +62,17 @@ function scrapeGoogleMaps() {
   });
 }
 
+// Listen for page load
 window.addEventListener('load', () => {
   if (window.location.href.includes('/maps/search/')) {
-    console.log('Starting scrape');
+    console.log('Starting scrape for URL:', window.location.href);
     scrapeGoogleMaps()
       .then(data => {
+        console.log('Sending scrapedData:', data);
         chrome.runtime.sendMessage({ action: 'scrapedData', data });
       })
       .catch(error => {
+        console.log('Sending scrapeError:', error.message);
         chrome.runtime.sendMessage({ action: 'scrapeError', error: error.message });
       });
   }
