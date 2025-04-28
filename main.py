@@ -50,6 +50,16 @@ async def get_campaigns(request: Request):
             campaigns.append(campaign)
     return templates.TemplateResponse("index.html", {"request": request, "campaigns": campaigns})
 
+@app.delete("/api/campaign/{campaign_id}")
+async def delete_campaign(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM contacts WHERE campaign_id = ?", (campaign_id,))
+        cursor.execute("DELETE FROM requests WHERE campaign_id = ?", (campaign_id,))
+        cursor.execute("DELETE FROM search_campaigns WHERE id = ?", (campaign_id,))
+        conn.commit()
+    return {"status": "Campaign deleted successfully"}
+
 @app.get("/update_campaign_status/{campaign_id}/{status}")
 async def update_campaign_status(campaign_id: int, status: str):
     if status not in ['active', 'inactive', 'completed']:

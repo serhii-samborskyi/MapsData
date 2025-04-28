@@ -74,6 +74,9 @@
                                 <button onclick="toggleContacts({{ campaign.id }})" class="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-purple-200 transition-all">
                                     Contacts
                                 </button>
+                                <button onclick="deleteCampaign({{ campaign.id }})" class="bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-red-200 transition-all">
+                                    Delete
+                                </button>
                             </td>
                         </tr>
                         <tr id="requests-{{ campaign.id }}" class="hidden">
@@ -150,6 +153,20 @@
         function toggleCampaignForm() {
             const form = document.getElementById('campaignForm');
             form.classList.toggle('hidden');
+        }
+
+        async function deleteCampaign(campaignId) {
+            if (!confirm('Are you sure you want to delete this campaign?')) {
+                return;
+            }
+            try {
+                await fetch(`/api/campaign/${campaignId}`, {
+                    method: 'DELETE'
+                });
+                window.location.reload();
+            } catch (error) {
+                console.error('Error deleting campaign:', error);
+            }
         }
 
         async function toggleStatus(campaignId, currentStatus) {
