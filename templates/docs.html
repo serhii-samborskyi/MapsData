@@ -139,9 +139,10 @@
                     <span class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-medium">POST</span>
                     <h2 class="text-xl font-semibold">/api/contacts</h2>
                 </div>
-                <p class="text-gray-600 mb-4">Saves a new contact for a campaign</p>
+                <p class="text-gray-600 mb-4">Saves one or multiple contacts for a campaign</p>
                 <div class="bg-gray-50 p-4 rounded mb-4">
-                    <h3 class="font-medium mb-2">Form Parameters:</h3>
+                    <h3 class="font-medium mb-2">JSON Request Body:</h3>
+                    <p class="mb-2">Single contact object or array of contact objects with the following properties:</p>
                     <ul class="list-disc list-inside space-y-1">
                         <li><code class="bg-gray-200 px-2 py-1 rounded">campaign_id</code> - Campaign ID</li>
                         <li><code class="bg-gray-200 px-2 py-1 rounded">request_id</code> - Request ID</li>
@@ -152,12 +153,47 @@
                         <li><code class="bg-gray-200 px-2 py-1 rounded">email</code> - Email address (optional)</li>
                     </ul>
                 </div>
+                <div class="bg-gray-50 p-4 rounded mb-4">
+                    <h3 class="font-medium mb-2">Request Example:</h3>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
+[
+  {
+    "campaign_id": 1,
+    "request_id": 2,
+    "business_name": "Business 1",
+    "review_count": 10,
+    "phone": "123-456-7890",
+    "domain": "example1.com",
+    "email": "contact@example1.com"
+  },
+  {
+    "campaign_id": 1,
+    "request_id": 2,
+    "business_name": "Business 2",
+    "review_count": 20,
+    "phone": "098-765-4321",
+    "domain": "example2.com",
+    "email": "contact@example2.com"
+  }
+]</pre>
+                </div>
                 <div class="bg-gray-50 p-4 rounded">
                     <h3 class="font-medium mb-2">Response Example:</h3>
                     <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
 {
-  "status": "Contact saved successfully",
-  "contact_id": 1
+  "status": "Contacts saved successfully",
+  "saved_contacts": [
+    {
+      "contact_id": 1,
+      "campaign_id": 1,
+      "request_id": 2
+    },
+    {
+      "contact_id": 2,
+      "campaign_id": 1,
+      "request_id": 2
+    }
+  ]
 }</pre>
                 </div>
             </div>
