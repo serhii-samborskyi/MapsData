@@ -192,38 +192,53 @@ async def update_request_status(request_id: int, status: str):
         return {"status": "Request status updated successfully"}
 
 @app.post("/api/contacts")
-async def save_contact(
-    campaign_id: int = Form(...),
-    request_id: int = Form(...),
-    business_name: str = Form(...),
-    review_count: int = Form(...),
-    phone: str = Form(None),
-    domain: str = Form(None),
-    email: str = Form(None)
-):
+async def save_contacts(request: Request):
+    data = await request.json()
+    contacts = data if isinstance(data, list) else [data]
+    
+    saved_contacts = []
     with get_db() as conn:
         cursor = conn.cursor()
-        # Verify campaign exists and is active
-        cursor.execute("SELECT status FROM search_campaigns WHERE id = ?", (campaign_id,))
-        campaign = cursor.fetchone()
-        if not campaign:
-            raise HTTPException(status_code=404, detail="Campaign not found")
-        if campaign['status'] != 'active':
-            raise HTTPException(status_code=400, detail="Campaign is not active")
         
-        # Verify request belongs to campaign
-        cursor.execute("SELECT id FROM requests WHERE id = ? AND campaign_id = ?", (request_id, campaign_id))
-        if not cursor.fetchone():
-            raise HTTPException(status_code=400, detail="Invalid request ID for this campaign")
+        for contact in contacts:
+            campaign_id = contact.get('campaign_id')
+            request_id = contact.get('request_id')
+            
+            # Verify campaign exists and is active
+            cursor.execute("SELECT status FROM search_campaigns WHERE id = ?", (campaign_id,))
+            campaign = cursor.fetchone()
+            if not campaign:
+                raise HTTPException(status_code=404, detail=f"Campaign {campaign_id} not found")
+            if campaign['status'] != 'active':
+                raise HTTPException(status_code=400, detail=f"Campaign {campaign_id} is not active")
+            
+            # Verify request belongs to campaign
+            cursor.execute("SELECT id FROM requests WHERE id = ? AND campaign_id = ?", (request_id, campaign_id))
+            if not cursor.fetchone():
+                raise HTTPException(status_code=400, detail=f"Invalid request ID {request_id} for campaign {campaign_id}")
+            
+            cursor.execute(
+                """INSERT INTO contacts 
+                   (campaign_id, business_name, review_count, phone, domain, email, status) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    campaign_id,
+                    contact.get('business_name'),
+                    contact.get('review_count', 0),
+                    contact.get('phone'),
+                    contact.get('domain'),
+                    contact.get('email'),
+                    "pending"
+                )
+            )
+            saved_contacts.append({
+                "contact_id": cursor.lastrowid,
+                "campaign_id": campaign_id,
+                "request_id": request_id
+            })
         
-        cursor.execute(
-            """INSERT INTO contacts 
-               (campaign_id, business_name, review_count, phone, domain, email, status) 
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (campaign_id, business_name, review_count, phone, domain, email, "pending")
-        )
         conn.commit()
-        return {"status": "Contact saved successfully", "contact_id": cursor.lastrowid}
+    return {"status": "Contacts saved successfully", "saved_contacts": saved_contacts}
 
 @app.get("/api/campaign/{campaign_id}")
 async def get_campaign_status(campaign_id: int):
