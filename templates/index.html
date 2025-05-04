@@ -22,7 +22,7 @@
         </div>
         
         <div id="campaignForm" class="bg-white rounded-lg shadow-lg p-6 mb-8 hidden">
-            <form action="/create_campaign" method="post" class="space-y-4">
+            <form onsubmit="handleFormSubmit(event)" class="space-y-4">
                 <div>
                     <label class="block text-sm font-semibold text-gray-700 mb-1">Campaign Name</label>
                     <input type="text" name="name" required class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all">
@@ -198,6 +198,22 @@
                 window.location.reload();
             } catch (error) {
                 console.error('Error deleting campaign:', error);
+            }
+        }
+
+        async function handleFormSubmit(event) {
+            event.preventDefault();
+            const form = event.target;
+            const formData = new FormData(form);
+            
+            try {
+                await fetch('/create_campaign', {
+                    method: 'POST',
+                    body: formData
+                });
+                window.location.href = '/';
+            } catch (error) {
+                console.error('Error creating campaign:', error);
             }
         }
 
