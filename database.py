@@ -33,22 +33,24 @@ def init_db():
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS contacts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                campaign_id INTEGER,
+                address TEXT,
                 business_name TEXT NOT NULL,
-                review_count INTEGER,
-                phone TEXT,
+                campaign_id INTEGER,
+                category TEXT,
                 domain TEXT,
                 email TEXT,
-                address TEXT,
-                category TEXT,
-                rating FLOAT,
                 facebook TEXT,
                 instagram TEXT,
+                phone TEXT,
+                place_id TEXT,
+                rating FLOAT,
+                request_id INTEGER,
+                review_count INTEGER,
                 twitter TEXT,
                 yelp TEXT,
-                place_id TEXT,
                 status TEXT NOT NULL,
-                FOREIGN KEY (campaign_id) REFERENCES search_campaigns(id)
+                FOREIGN KEY (campaign_id) REFERENCES search_campaigns(id),
+                FOREIGN KEY (request_id) REFERENCES requests(id)
             )
         ''')
         conn.commit()
