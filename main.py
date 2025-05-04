@@ -218,8 +218,8 @@ async def save_contacts(request: Request):
         cursor = conn.cursor()
 
         for contact in contacts:
-            campaign_id = contact.get('campaign_id')
-            request_id = contact.get('request_id')
+            campaign_id = contact.get('campaignId')
+            request_id = contact.get('requestId')
 
             # Verify campaign exists and is active
             cursor.execute("SELECT status FROM search_campaigns WHERE id = ?", (campaign_id,))
