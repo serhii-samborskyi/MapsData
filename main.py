@@ -206,8 +206,11 @@ async def update_request_status(request_id: int, status: str):
 
 @app.post("/api/contacts")
 async def save_contacts(request: Request):
+    print("Received request to /api/contacts")
     data = await request.json()
+    print("Request data:", data)
     contacts = data if isinstance(data, list) else [data]
+    print("Processed contacts:", contacts)
 
     saved_contacts = []
     with get_db() as conn:
