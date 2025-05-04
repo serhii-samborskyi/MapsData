@@ -232,19 +232,19 @@ async def save_contacts(request: Request):
                    (campaign_id, business_name, review_count, phone, domain, email, address, category, rating, facebook, instagram, twitter, yelp, place_id, status) 
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    campaign_id,
+                    contact.get('campaign_id'),
                     contact.get('business_name'),
                     contact.get('review_count', 0),
                     contact.get('phone'),
                     contact.get('domain'),
                     contact.get('email'),
                     contact.get('address'),
-                    contact.get('category'),
+                    contact.get('category'), 
                     contact.get('rating'),
                     contact.get('facebook'),
-                    contact.get('instagram'),
-                    contact.get('twitter'),
-                    contact.get('yelp'),
+                    contact.get('instagram', ''),
+                    contact.get('twitter', ''),
+                    contact.get('yelp', ''),
                     contact.get('place_id'),
                     "pending"
                 )
