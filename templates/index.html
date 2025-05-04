@@ -64,7 +64,17 @@
                                     {% endif %}
                                 ">{{ campaign.status }}</button>
                             </td>
-                            <td class="px-4 py-3 text-sm text-gray-700">{{ campaign.total_requests or 0 }}</td>
+                            <td class="px-4 py-3">
+                                <div class="space-y-1">
+                                    <div class="text-sm text-gray-700">{{ campaign.total_requests or 0 }}</div>
+                                    <div class="w-full bg-gray-200 rounded-full h-2">
+                                        {% set completion = (campaign.completed_requests or 0) / (campaign.total_requests or 1) * 100 if campaign.total_requests else 0 %}
+                                        {% set completion = completion|round(2) %}
+                                        <div class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-blue-500 to-blue-600" style="width: {{ completion }}%"></div>
+                                    </div>
+                                    <div class="text-xs text-gray-500">{{ completion }}% complete</div>
+                                </div>
+                            </td>
                             <td class="px-4 py-3 text-sm text-gray-700">{{ campaign.completed_requests or 0 }}</td>
                             <td class="px-4 py-3 text-sm text-gray-700">{{ campaign.total_contacts or 0 }}</td>
                             <td class="px-4 py-3 space-x-2">
