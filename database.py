@@ -39,6 +39,14 @@ def init_db():
                 phone TEXT,
                 domain TEXT,
                 email TEXT,
+                address TEXT,
+                category TEXT,
+                rating FLOAT,
+                facebook TEXT,
+                instagram TEXT,
+                twitter TEXT,
+                yelp TEXT,
+                place_id TEXT,
                 status TEXT NOT NULL,
                 FOREIGN KEY (campaign_id) REFERENCES search_campaigns(id)
             )
