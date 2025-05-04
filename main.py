@@ -232,8 +232,8 @@ async def save_contacts(request: Request):
 
             cursor.execute(
                 """INSERT INTO contacts 
-                   (campaign_id, business_name, review_count, phone, domain, email, facebook, instagram, twitter, yelp, status) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (campaign_id, business_name, review_count, phone, domain, email, facebook, instagram, twitter, yelp, place_id, address, status) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     campaign_id,
                     contact.get('business_name'),
@@ -245,6 +245,8 @@ async def save_contacts(request: Request):
                     contact.get('instagram'),
                     contact.get('twitter'),
                     contact.get('yelp'),
+                    contact.get('place_id'),
+                    contact.get('address'),
                     "pending"
                 )
             )

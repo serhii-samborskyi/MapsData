@@ -50,6 +50,8 @@ def init_db():
                 instagram TEXT,
                 twitter TEXT,
                 yelp TEXT,
+                place_id TEXT,
+                address TEXT,
                 status TEXT NOT NULL,
                 FOREIGN KEY (campaign_id) REFERENCES search_campaigns(id)
             )
