@@ -229,24 +229,24 @@ async def save_contacts(request: Request):
             
             cursor.execute(
                 """INSERT INTO contacts 
-                   (campaign_id, business_name, review_count, phone, domain, email, address, category, rating, facebook, instagram, twitter, yelp, place_id, status) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (address, business_name, campaign_id, category, domain, email, facebook, instagram, phone, place_id, rating, request_id, review_count, twitter, yelp, status) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     contact.get('address'),
-                    contact.get('business_name'),
-                    contact.get('campaign_id'),
+                    contact.get('business_name', contact.get('title')),
+                    campaign_id,
                     contact.get('category'),
-                    contact.get('domain'),
+                    contact.get('domain', contact.get('website')),
                     contact.get('email'),
                     contact.get('facebook'),
-                    contact.get('instagram', ''),
+                    contact.get('instagram'),
                     contact.get('phone'),
-                    contact.get('place_id'),
+                    contact.get('place_id', contact.get('url', '').split('/place/')[-1].split('/')[0] if contact.get('url') else ''),
                     contact.get('rating'),
-                    contact.get('request_id'),
-                    contact.get('review_count', 0),
-                    contact.get('twitter', ''),
-                    contact.get('yelp', ''),
+                    request_id,
+                    contact.get('review_count', contact.get('reviewsCount', 0)),
+                    contact.get('twitter'),
+                    contact.get('yelp'),
                     "pending"
                 )
             )
