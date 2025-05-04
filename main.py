@@ -186,7 +186,8 @@ async def get_campaign_requests(campaign_name: str):
             raise HTTPException(status_code=404, detail="No pending requests found")
         return {"requests": requests}
 
-@app.get("/api/request/{request_id}/status/{status}")
+@app.post("/api/request/{request_id}/status/{status}")
+@app.get("/api/request/{request_id}/status/{status}") 
 async def update_request_status(request_id: int, status: str):
     if status not in ['inuse', 'completed']:
         raise HTTPException(status_code=400, detail="Invalid status. Must be 'inuse' or 'completed'")
