@@ -64,9 +64,25 @@
                                     {% endif %}
                                 ">{{ campaign.status }}</button>
                             </td>
-                            <td class="px-4 py-3 text-sm text-gray-700">{{ campaign.total_requests or 0 }}</td>
-                            <td class="px-4 py-3 text-sm text-gray-700">{{ campaign.completed_requests or 0 }}</td>
-                            <td class="px-4 py-3 text-sm text-gray-700">{{ campaign.total_contacts or 0 }}</td>
+                            <td class="px-4 py-3" colspan="3">
+                                <div class="flex flex-col gap-2">
+                                    <div class="flex items-center gap-4">
+                                        <div class="flex-1">
+                                            <div class="w-full bg-gray-200 rounded-full h-2">
+                                                {% set completion = (campaign.completed_requests or 0) / (campaign.total_requests or 1) * 100 %}
+                                                <div class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-blue-500 to-blue-600" style="width: {{ completion }}%"></div>
+                                            </div>
+                                        </div>
+                                        <div class="text-sm font-medium text-gray-700 w-16 text-right">
+                                            {{ "%.1f"|format(completion) }}%
+                                        </div>
+                                    </div>
+                                    <div class="flex justify-between text-xs text-gray-500">
+                                        <span>{{ campaign.completed_requests or 0 }}/{{ campaign.total_requests or 0 }} requests</span>
+                                        <span>{{ campaign.total_contacts or 0 }} contacts</span>
+                                    </div>
+                                </div>
+                            </td>
                             <td class="px-4 py-3 space-x-2">
                                 <button onclick="toggleRequests({{ campaign.id }})" class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-blue-200 transition-all">
                                     Requests
