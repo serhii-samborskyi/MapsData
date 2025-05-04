@@ -14,13 +14,6 @@ def get_db():
 def init_db():
     with get_db() as conn:
         cursor = conn.cursor()
-        
-        # Drop existing tables
-        cursor.execute('DROP TABLE IF EXISTS contacts')
-        cursor.execute('DROP TABLE IF EXISTS requests')
-        cursor.execute('DROP TABLE IF EXISTS search_campaigns')
-        
-        # Recreate tables
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS search_campaigns (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,12 +39,6 @@ def init_db():
                 phone TEXT,
                 domain TEXT,
                 email TEXT,
-                facebook TEXT,
-                instagram TEXT,
-                twitter TEXT,
-                yelp TEXT,
-                place_id TEXT,
-                address TEXT,
                 status TEXT NOT NULL,
                 FOREIGN KEY (campaign_id) REFERENCES search_campaigns(id)
             )
