@@ -240,16 +240,16 @@ async def save_contacts(request: Request):
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     campaign_id,
-                    contact.get('business_name'),
-                    contact.get('review_count', 0),
+                    contact.get('title'),  # changed from business_name
+                    contact.get('reviewsCount', 0),  # changed from review_count
                     contact.get('phone'),
-                    contact.get('domain'),
+                    contact.get('website'),  # changed from domain
                     contact.get('email'),
                     contact.get('facebook'),
                     contact.get('instagram'),
                     contact.get('twitter'),
                     contact.get('yelp'),
-                    contact.get('place_id'),
+                    contact.get('url', '').split('/place/')[-1].split('/')[0] if contact.get('url') else '',  # extract place_id from url
                     contact.get('address'),
                     "pending"
                 )
