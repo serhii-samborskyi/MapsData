@@ -38,7 +38,7 @@ async def get_campaigns(request: Request):
             cursor.execute("""
                 SELECT r.*, COUNT(c.id) as contact_count 
                 FROM requests r 
-                LEFT JOIN contacts c ON r.campaign_id = c.campaign_id 
+                LEFT JOIN contacts c ON r.campaign_id = c.campaign_id AND r.id = c.request_id
                 WHERE r.campaign_id = ? 
                 GROUP BY r.id
             """, (campaign['id'],))
