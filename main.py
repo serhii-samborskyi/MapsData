@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, Form, Request, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -43,10 +42,10 @@ async def get_campaigns(request: Request):
                 GROUP BY r.id
             """, (campaign['id'],))
             campaign['requests'] = [dict(r) for r in cursor.fetchall()]
-            
+
             cursor.execute("SELECT * FROM contacts WHERE campaign_id = ?", (campaign['id'],))
             campaign['contacts'] = [dict(r) for r in cursor.fetchall()]
-            
+
             campaigns.append(campaign)
     return templates.TemplateResponse("index.html", {"request": request, "campaigns": campaigns})
 
@@ -64,7 +63,7 @@ async def delete_campaign(campaign_id: int):
 async def update_campaign_status(campaign_id: int, status: str):
     if status not in ['active', 'inactive', 'completed']:
         raise HTTPException(status_code=400, detail="Invalid status. Must be 'active', 'inactive' or 'completed'")
-    
+
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -81,7 +80,7 @@ async def complete_campaign(campaign_id: int):
         cursor.execute("SELECT id FROM search_campaigns WHERE id = ?", (campaign_id,))
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="Campaign not found")
-            
+
         cursor.execute(
             "UPDATE search_campaigns SET status = 'completed' WHERE id = ?",
             (campaign_id,)
@@ -134,14 +133,18 @@ async def store_contact(
     review_count: int = Form(...),
     phone: str = Form(None),
     domain: str = Form(None),
-    email: str = Form(None)
+    email: str = Form(None),
+    facebook: str = Form(None),
+    instagram: str = Form(None),
+    twitter: str = Form(None),
+    yelp: str = Form(None)
 ):
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO contacts (campaign_id, business_name, review_count, phone, domain, email, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (campaign_id, business_name, review_count, phone, domain, email, "pending")
+            "INSERT INTO contacts (campaign_id, business_name, review_count, phone, domain, email, facebook, instagram, twitter, yelp, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (campaign_id, business_name, review_count, phone, domain, email, facebook, instagram, twitter, yelp, "pending")
         )
         cursor.execute(
             "UPDATE requests SET status = 'completed' WHERE id = ?",
@@ -187,13 +190,13 @@ async def get_campaign_requests(campaign_name: str):
 async def update_request_status(request_id: int, status: str):
     if status not in ['inuse', 'completed']:
         raise HTTPException(status_code=400, detail="Invalid status. Must be 'inuse' or 'completed'")
-    
+
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT id FROM requests WHERE id = ?", (request_id,))
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="Request not found")
-            
+
         cursor.execute(
             "UPDATE requests SET status = ? WHERE id = ?",
             (status, request_id)
@@ -205,15 +208,15 @@ async def update_request_status(request_id: int, status: str):
 async def save_contacts(request: Request):
     data = await request.json()
     contacts = data if isinstance(data, list) else [data]
-    
+
     saved_contacts = []
     with get_db() as conn:
         cursor = conn.cursor()
-        
+
         for contact in contacts:
             campaign_id = contact.get('campaign_id')
             request_id = contact.get('request_id')
-            
+
             # Verify campaign exists and is active
             cursor.execute("SELECT status FROM search_campaigns WHERE id = ?", (campaign_id,))
             campaign = cursor.fetchone()
@@ -221,16 +224,16 @@ async def save_contacts(request: Request):
                 raise HTTPException(status_code=404, detail=f"Campaign {campaign_id} not found")
             if campaign['status'] != 'active':
                 raise HTTPException(status_code=400, detail=f"Campaign {campaign_id} is not active")
-            
+
             # Verify request belongs to campaign
             cursor.execute("SELECT id FROM requests WHERE id = ? AND campaign_id = ?", (request_id, campaign_id))
             if not cursor.fetchone():
                 raise HTTPException(status_code=400, detail=f"Invalid request ID {request_id} for campaign {campaign_id}")
-            
+
             cursor.execute(
                 """INSERT INTO contacts 
-                   (campaign_id, business_name, review_count, phone, domain, email, status) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   (campaign_id, business_name, review_count, phone, domain, email, facebook, instagram, twitter, yelp, status) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     campaign_id,
                     contact.get('business_name'),
@@ -238,6 +241,10 @@ async def save_contacts(request: Request):
                     contact.get('phone'),
                     contact.get('domain'),
                     contact.get('email'),
+                    contact.get('facebook'),
+                    contact.get('instagram'),
+                    contact.get('twitter'),
+                    contact.get('yelp'),
                     "pending"
                 )
             )
@@ -246,7 +253,7 @@ async def save_contacts(request: Request):
                 "campaign_id": campaign_id,
                 "request_id": request_id
             })
-        
+
         conn.commit()
     return {"status": "Contacts saved successfully", "saved_contacts": saved_contacts}
 

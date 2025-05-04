@@ -111,6 +111,10 @@
                                                 <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Phone</th>
                                                 <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Domain</th>
                                                 <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Email</th>
+                                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Facebook</th>
+                                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Instagram</th>
+                                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Twitter</th>
+                                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Yelp</th>
                                                 <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Status</th>
                                             </tr>
                                         </thead>
@@ -122,6 +126,10 @@
                                                 <td class="px-3 py-2 text-sm text-gray-700">{{ contact.phone or '-' }}</td>
                                                 <td class="px-3 py-2 text-sm text-gray-700">{{ contact.domain or '-' }}</td>
                                                 <td class="px-3 py-2 text-sm text-gray-700">{{ contact.email or '-' }}</td>
+                                                <td class="px-3 py-2 text-sm text-gray-700">{{ contact.facebook or '-' }}</td>
+                                                <td class="px-3 py-2 text-sm text-gray-700">{{ contact.instagram or '-' }}</td>
+                                                <td class="px-3 py-2 text-sm text-gray-700">{{ contact.twitter or '-' }}</td>
+                                                <td class="px-3 py-2 text-sm text-gray-700">{{ contact.yelp or '-' }}</td>
                                                 <td class="px-3 py-2">
                                                     <span class="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-800">
                                                         {{ contact.status }}
