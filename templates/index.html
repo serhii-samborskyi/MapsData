@@ -69,7 +69,8 @@
                                     <div class="flex items-center gap-4">
                                         <div class="flex-1">
                                             <div class="w-full bg-gray-200 rounded-full h-2">
-                                                {% set completion = (campaign.completed_requests or 0) / (campaign.total_requests or 1) * 100 %}
+                                                {% set completion = (campaign.completed_requests or 0) / (campaign.total_requests or 1) * 100 if campaign.total_requests else 0 %}
+                                                {% set completion = max(0, min(100, completion)) %}
                                                 <div class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-blue-500 to-blue-600" style="width: {{ completion }}%"></div>
                                             </div>
                                         </div>
