@@ -1,3 +1,4 @@
+
 import sqlite3
 from contextlib import contextmanager
 
@@ -13,6 +14,13 @@ def get_db():
 def init_db():
     with get_db() as conn:
         cursor = conn.cursor()
+        
+        # Drop existing tables
+        cursor.execute('DROP TABLE IF EXISTS contacts')
+        cursor.execute('DROP TABLE IF EXISTS requests')
+        cursor.execute('DROP TABLE IF EXISTS search_campaigns')
+        
+        # Recreate tables
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS search_campaigns (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
