@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -11,7 +10,7 @@
 <body class="bg-gray-50">
     <div class="container mx-auto px-4 py-8">
         <h1 class="text-3xl font-bold mb-8">Search Campaigns API Documentation</h1>
-        
+
         <div class="space-y-8">
             <!-- Get Active Campaigns -->
             <div class="bg-white p-6 rounded-lg shadow">
@@ -63,77 +62,48 @@
                 </div>
             </div>
 
-            <!-- Get Campaign Requests -->
+            <!-- Delete Campaign -->
             <div class="bg-white p-6 rounded-lg shadow">
                 <div class="flex items-center gap-4 mb-4">
-                    <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">GET</span>
-                    <h2 class="text-xl font-semibold">/api/campaign/{campaign_name}/requests</h2>
+                    <span class="bg-red-100 text-red-700 px-3 py-1 rounded-full text-sm font-medium">DELETE</span>
+                    <h2 class="text-xl font-semibold">/api/campaign/{campaign_id}</h2>
                 </div>
-                <p class="text-gray-600 mb-4">Returns pending requests for a specific campaign</p>
+                <p class="text-gray-600 mb-4">Deletes a campaign and all associated requests and contacts</p>
                 <div class="bg-gray-50 p-4 rounded mb-4">
                     <h3 class="font-medium mb-2">Parameters:</h3>
-                    <p><code class="bg-gray-200 px-2 py-1 rounded">campaign_name</code> - Name of the campaign</p>
+                    <p><code class="bg-gray-200 px-2 py-1 rounded">campaign_id</code> - ID of the campaign to delete</p>
                 </div>
                 <div class="bg-gray-50 p-4 rounded">
                     <h3 class="font-medium mb-2">Response Example:</h3>
                     <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
 {
-  "requests": [
-    {
-      "id": 1,
-      "campaign_id": 1,
-      "req_text": "search phrase",
-      "status": "pending"
-    }
-  ]
+  "status": "Campaign deleted successfully"
 }</pre>
                 </div>
             </div>
 
-            <!-- Update Request Status -->
+            <!-- Reserve Phrase -->
             <div class="bg-white p-6 rounded-lg shadow">
                 <div class="flex items-center gap-4 mb-4">
                     <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">GET</span>
-                    <h2 class="text-xl font-semibold">/api/request/{request_id}/status/{status}</h2>
+                    <h2 class="text-xl font-semibold">/api/reserve_phrase/{campaign_id}</h2>
                 </div>
-                <p class="text-gray-600 mb-4">Updates the status of a specific request</p>
+                <p class="text-gray-600 mb-4">Reserves a pending request for processing</p>
                 <div class="bg-gray-50 p-4 rounded mb-4">
                     <h3 class="font-medium mb-2">Parameters:</h3>
-                    <ul class="list-disc list-inside space-y-1">
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">request_id</code> - ID of the request</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">status</code> - New status ('inuse' or 'completed')</li>
-                    </ul>
+                    <p><code class="bg-gray-200 px-2 py-1 rounded">campaign_id</code> - ID of the campaign</p>
                 </div>
                 <div class="bg-gray-50 p-4 rounded">
                     <h3 class="font-medium mb-2">Response Example:</h3>
                     <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
 {
-  "status": "Request status updated successfully"
+  "phrase_id": 1,
+  "req_text": "search phrase"
 }</pre>
                 </div>
             </div>
 
-            <!-- Complete Campaign -->
-            <div class="bg-white p-6 rounded-lg shadow">
-                <div class="flex items-center gap-4 mb-4">
-                    <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">GET</span>
-                    <h2 class="text-xl font-semibold">/api/campaign/{campaign_id}/complete</h2>
-                </div>
-                <p class="text-gray-600 mb-4">Marks a campaign as completed</p>
-                <div class="bg-gray-50 p-4 rounded mb-4">
-                    <h3 class="font-medium mb-2">Parameters:</h3>
-                    <p><code class="bg-gray-200 px-2 py-1 rounded">campaign_id</code> - ID of the campaign to complete</p>
-                </div>
-                <div class="bg-gray-50 p-4 rounded">
-                    <h3 class="font-medium mb-2">Response Example:</h3>
-                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
-{
-  "status": "Campaign marked as completed"
-}</pre>
-                </div>
-            </div>
-
-            <!-- Save Contact -->
+            <!-- Save Contacts -->
             <div class="bg-white p-6 rounded-lg shadow">
                 <div class="flex items-center gap-4 mb-4">
                     <span class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-medium">POST</span>
@@ -151,35 +121,13 @@
                         <li><code class="bg-gray-200 px-2 py-1 rounded">phone</code> - Phone number (optional)</li>
                         <li><code class="bg-gray-200 px-2 py-1 rounded">domain</code> - Website domain (optional)</li>
                         <li><code class="bg-gray-200 px-2 py-1 rounded">email</code> - Email address (optional)</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">facebook</code> - Facebook profile URL (optional)</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">instagram</code> - Instagram profile URL (optional)</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">twitter</code> - Twitter profile URL (optional)</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">yelp</code> - Yelp business page URL (optional)</li>
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">facebook</code> - Facebook profile (optional)</li>
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">instagram</code> - Instagram profile (optional)</li>
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">twitter</code> - Twitter profile (optional)</li>
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">yelp</code> - Yelp profile (optional)</li>
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">place_id</code> - Google Maps place ID (optional)</li>
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">address</code> - Business address (optional)</li>
                     </ul>
-                </div>
-                <div class="bg-gray-50 p-4 rounded mb-4">
-                    <h3 class="font-medium mb-2">Request Example:</h3>
-                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
-[
-  {
-    "campaign_id": 1,
-    "request_id": 2,
-    "business_name": "Business 1",
-    "review_count": 10,
-    "phone": "123-456-7890",
-    "domain": "example1.com",
-    "email": "contact@example1.com"
-  },
-  {
-    "campaign_id": 1,
-    "request_id": 2,
-    "business_name": "Business 2",
-    "review_count": 20,
-    "phone": "098-765-4321",
-    "domain": "example2.com",
-    "email": "contact@example2.com"
-  }
-]</pre>
                 </div>
                 <div class="bg-gray-50 p-4 rounded">
                     <h3 class="font-medium mb-2">Response Example:</h3>
@@ -189,11 +137,6 @@
   "saved_contacts": [
     {
       "contact_id": 1,
-      "campaign_id": 1,
-      "request_id": 2
-    },
-    {
-      "contact_id": 2,
       "campaign_id": 1,
       "request_id": 2
     }
