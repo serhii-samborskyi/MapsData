@@ -108,9 +108,13 @@
                                             <tr>
                                                 <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Business Name</th>
                                                 <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Reviews</th>
+                                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Rating</th>
+                                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Category</th>
                                                 <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Phone</th>
-                                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Domain</th>
+                                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Address</th>
+                                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Website</th>
                                                 <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Email</th>
+                                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Social</th>
                                                 <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Status</th>
                                             </tr>
                                         </thead>
@@ -119,9 +123,24 @@
                                             <tr class="hover:bg-white/50 transition-all">
                                                 <td class="px-3 py-2 text-sm text-gray-700">{{ contact.business_name }}</td>
                                                 <td class="px-3 py-2 text-sm text-gray-700">{{ contact.review_count }}</td>
+                                                <td class="px-3 py-2 text-sm text-gray-700">{{ contact.rating or '-' }}</td>
+                                                <td class="px-3 py-2 text-sm text-gray-700">{{ contact.category or '-' }}</td>
                                                 <td class="px-3 py-2 text-sm text-gray-700">{{ contact.phone or '-' }}</td>
+                                                <td class="px-3 py-2 text-sm text-gray-700">{{ contact.address or '-' }}</td>
                                                 <td class="px-3 py-2 text-sm text-gray-700">{{ contact.domain or '-' }}</td>
                                                 <td class="px-3 py-2 text-sm text-gray-700">{{ contact.email or '-' }}</td>
+                                                <td class="px-3 py-2 text-sm text-gray-700">
+                                                    {% if contact.facebook or contact.instagram or contact.twitter or contact.yelp %}
+                                                    <div class="flex space-x-2">
+                                                        {% if contact.facebook %}<a href="{{ contact.facebook }}" target="_blank" class="text-blue-600 hover:underline">FB</a>{% endif %}
+                                                        {% if contact.instagram %}<a href="{{ contact.instagram }}" target="_blank" class="text-pink-600 hover:underline">IG</a>{% endif %}
+                                                        {% if contact.twitter %}<a href="{{ contact.twitter }}" target="_blank" class="text-blue-400 hover:underline">TW</a>{% endif %}
+                                                        {% if contact.yelp %}<a href="{{ contact.yelp }}" target="_blank" class="text-red-600 hover:underline">YP</a>{% endif %}
+                                                    </div>
+                                                    {% else %}
+                                                    -
+                                                    {% endif %}
+                                                </td>
                                                 <td class="px-3 py-2">
                                                     <span class="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-800">
                                                         {{ contact.status }}
