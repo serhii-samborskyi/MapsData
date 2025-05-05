@@ -78,8 +78,11 @@
                             <td colspan="7" class="px-4 py-3">
                                 <div class="relative w-full">
                                     <div class="w-full bg-gray-200 rounded-full h-2">
-                                        {% set completion = (campaign.completed_requests or 0) / (campaign.total_requests or 1) * 100 if campaign.total_requests else 0 %}
-                                        {% set completion = completion|round(2) %}
+                                        {% if campaign.total_requests > 0 %}
+                                            {% set completion = (campaign.completed_requests / campaign.total_requests * 100)|round(2) %}
+                                        {% else %}
+                                            {% set completion = 0 %}
+                                        {% endif %}
                                         <div class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-blue-500 to-blue-600" style="width: {{ completion }}%"></div>
                                     </div>
                                     <div class="absolute w-full text-center text-xs text-gray-500 mt-1">{{ completion }}% complete</div>
