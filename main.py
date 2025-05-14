@@ -260,6 +260,28 @@ async def save_contacts(request: Request):
         conn.commit()
     return {"status": "Contacts saved successfully", "saved_contacts": saved_contacts}
 
+@app.post("/api/campaign/{campaign_id}/email_update")
+async def update_contact_email(campaign_id: int, data: dict):
+    contact_id = data.get('id')
+    email = data.get('email')
+    
+    if not contact_id or not email:
+        raise HTTPException(status_code=400, detail="Missing id or email in request body")
+        
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE contacts 
+            SET email = ? 
+            WHERE id = ? AND campaign_id = ?
+        """, (email, contact_id, campaign_id))
+        conn.commit()
+        
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Contact not found")
+            
+        return {"status": "Email updated successfully"}
+
 @app.get("/api/campaign/{campaign_id}/nomail")
 async def get_random_contact_without_email(campaign_id: int):
     with get_db() as conn:
