@@ -260,6 +260,21 @@ async def save_contacts(request: Request):
         conn.commit()
     return {"status": "Contacts saved successfully", "saved_contacts": saved_contacts}
 
+@app.get("/api/campaign/{campaign_id}/nomail")
+async def get_random_contact_without_email(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, domain FROM contacts 
+            WHERE campaign_id = ? AND email IS NULL 
+            AND domain IS NOT NULL AND domain != ''
+            ORDER BY RANDOM() LIMIT 1
+        """, (campaign_id,))
+        contact = cursor.fetchone()
+        if not contact:
+            raise HTTPException(status_code=404, detail="No contacts found matching criteria")
+        return {"id": str(contact["id"]), "domain": contact["domain"]}
+
 @app.get("/api/campaign/{campaign_id}")
 async def get_campaign_status(campaign_id: int):
     with get_db() as conn:
