@@ -7,6 +7,7 @@
             <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600">Status</th>
             <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600">Total Requests</th>
             <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600">Contacts</th>
+            <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600">Emails</th>
             <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600">Actions</th>
         </tr>
     </thead>
@@ -29,6 +30,7 @@
             </td>
             <td class="px-4 py-3 text-sm text-gray-700">{{ campaign.total_requests or 0 }}</td>
             <td class="px-4 py-3 text-sm text-gray-700">{{ campaign.total_contacts or 0 }}</td>
+            <td class="px-4 py-3 text-sm text-gray-700">{{ campaign.email_count or 0 }}</td>
             <td class="px-4 py-3 space-x-2"></td>
         </tr>
         <tr>
