@@ -210,6 +210,19 @@
             form.classList.toggle('hidden');
         }
 
+        async function refreshCampaigns() {
+            try {
+                const response = await fetch('/?partial=true');
+                const html = await response.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+                const newTable = doc.querySelector('table');
+                document.querySelector('table').innerHTML = newTable.innerHTML;
+            } catch (error) {
+                console.error('Error refreshing campaigns:', error);
+            }
+        }
+
         async function deleteCampaign(campaignId) {
             if (!confirm('Are you sure you want to delete this campaign?')) {
                 return;
@@ -218,7 +231,7 @@
                 await fetch(`/api/campaign/${campaignId}`, {
                     method: 'DELETE'
                 });
-                window.location.reload();
+                await refreshCampaigns();
             } catch (error) {
                 console.error('Error deleting campaign:', error);
             }
@@ -234,7 +247,9 @@
                     method: 'POST',
                     body: formData
                 });
-                window.location.href = '/';
+                form.reset();
+                toggleCampaignForm();
+                await refreshCampaigns();
             } catch (error) {
                 console.error('Error creating campaign:', error);
             }
@@ -242,15 +257,10 @@
 
         async function toggleStatus(campaignId, currentStatus) {
             const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
-            const formData = new FormData();
-            formData.append('status', newStatus);
             
             try {
-                await fetch(`/update_campaign_status/${campaignId}`, {
-                    method: 'POST',
-                    body: formData
-                });
-                window.location.reload();
+                await fetch(`/update_campaign_status/${campaignId}/${newStatus}`);
+                await refreshCampaigns();
             } catch (error) {
                 console.error('Error updating status:', error);
             }

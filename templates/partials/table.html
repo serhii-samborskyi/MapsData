@@ -1,0 +1,18 @@
+
+<table class="w-full">
+    <thead>
+        <tr class="bg-gray-50">
+            <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600">ID</th>
+            <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600">Name</th>
+            <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600">Status</th>
+            <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600">Total Requests</th>
+            <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600">Contacts</th>
+            <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600">Actions</th>
+        </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-100">
+        {% for campaign in campaigns %}
+        {% include "partials/campaign_row.html" %}
+        {% endfor %}
+    </tbody>
+</table>

@@ -17,7 +17,7 @@ async def get_api_docs(request: Request):
     return templates.TemplateResponse("docs.html", {"request": request})
 
 @app.get("/", response_class=HTMLResponse)
-async def get_campaigns(request: Request):
+async def get_campaigns(request: Request, partial: bool = False):
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -47,7 +47,8 @@ async def get_campaigns(request: Request):
             campaign['contacts'] = [dict(r) for r in cursor.fetchall()]
 
             campaigns.append(campaign)
-    return templates.TemplateResponse("index.html", {"request": request, "campaigns": campaigns})
+    template = "index.html" if not partial else "partials/table.html"
+    return templates.TemplateResponse(template, {"request": request, "campaigns": campaigns})
 
 @app.delete("/api/campaign/{campaign_id}")
 async def delete_campaign(campaign_id: int):
