@@ -121,7 +121,7 @@
                                         <div class="text-sm text-gray-700">{{ contact.email or '-' }}</div>
                                         <div class="text-sm text-gray-700">
                                             {% if contact.domain %}
-                                            <a href="http://{{ contact.domain }}" target="_blank" class="text-blue-600 hover:underline">{{ contact.domain }}</a>
+                                            <a href="http://{{ contact.domain }}" target="_blank" class="text-blue-600 hover:underline">{{ contact.domain[:10] + '...' if contact.domain|length > 10 else contact.domain }}</a>
                                             {% else %}
                                             -
                                             {% endif %}
