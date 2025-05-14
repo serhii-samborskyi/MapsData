@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -20,7 +19,7 @@
                 Add Campaign
             </button>
         </div>
-        
+
         <div id="campaignForm" class="bg-white rounded-lg shadow-lg p-6 mb-8 hidden">
             <form onsubmit="handleFormSubmit(event)" class="space-y-4">
                 <div>
@@ -93,19 +92,7 @@
                                 </div>
                             </td>
                         </tr>
-                        <tr>
-                            <td colspan="7" class="px-4 py-3">
-                                <button onclick="toggleRequests({{ campaign.id }})" class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-blue-200 transition-all">
-                                    Requests
-                                </button>
-                                <button onclick="toggleContacts({{ campaign.id }})" class="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-purple-200 transition-all">
-                                    Contacts
-                                </button>
-                                <button onclick="deleteCampaign({{ campaign.id }})" class="bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-red-200 transition-all">
-                                    Delete
-                                </button>
-                            </td>
-                        </tr>
+                        
                         <tr id="requests-{{ campaign.id }}" class="hidden">
                             <td colspan="7" class="px-4 py-3">
                                 <div class="bg-gray-50 rounded-lg p-4 space-y-2">
@@ -209,7 +196,7 @@
             const row = document.getElementById(`contacts-${campaignId}`);
             row.classList.toggle('hidden');
         }
-        
+
         function toggleCampaignForm() {
             const form = document.getElementById('campaignForm');
             form.classList.toggle('hidden');
@@ -246,7 +233,7 @@
             event.preventDefault();
             const form = event.target;
             const formData = new FormData(form);
-            
+
             try {
                 await fetch('/create_campaign', {
                     method: 'POST',
@@ -262,7 +249,7 @@
 
         async function toggleStatus(campaignId, currentStatus) {
             const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
-            
+
             try {
                 await fetch(`/update_campaign_status/${campaignId}/${newStatus}`);
                 await refreshCampaigns();
