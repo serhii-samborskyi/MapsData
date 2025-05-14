@@ -266,8 +266,11 @@ async def get_random_contact_without_email(campaign_id: int):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT id, domain FROM contacts 
-            WHERE campaign_id = ? AND email IS NULL 
-            AND domain IS NOT NULL AND domain != ''
+            WHERE campaign_id = ? 
+            AND (email IS NULL OR email = '')
+            AND domain IS NOT NULL 
+            AND domain != ''
+            AND domain NOT LIKE '%?%'
             ORDER BY RANDOM() LIMIT 1
         """, (campaign_id,))
         contact = cursor.fetchone()
