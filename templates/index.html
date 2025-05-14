@@ -164,7 +164,8 @@
                                                         <div class="text-sm text-gray-700">{{ contact.email or '-' }}</div>
                                                         <div class="text-sm text-gray-700">
                                                             {% if contact.domain %}
-                                                            <a href="http://{{ contact.domain }}" target="_blank" class="text-blue-600 hover:underline">{{ contact.domain }}</a>
+                                                            {% set display_url = contact.domain.replace('https://', '').replace('http://', '').split('?')[0] %}
+                                                            <a href="{{ contact.domain if 'http' in contact.domain else 'http://' + contact.domain }}" target="_blank" class="text-blue-600 hover:underline">{{ display_url[:20] + '...' if display_url|length > 20 else display_url }}</a>
                                                             {% else %}
                                                             -
                                                             {% endif %}
