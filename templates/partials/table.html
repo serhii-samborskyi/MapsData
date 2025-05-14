@@ -12,7 +12,142 @@
     </thead>
     <tbody class="divide-y divide-gray-100">
         {% for campaign in campaigns %}
-        {% include "partials/campaign_row.html" %}
+        {% if not loop.first %}
+        <tr><td colspan="7" class="h-6"></td></tr>
+        {% endif %}
+        <tr class="hover:bg-gray-50 transition-all">
+            <td class="px-4 py-3 text-sm text-gray-700">{{ campaign.id }}</td>
+            <td class="px-4 py-3 text-sm text-gray-700 font-medium">{{ campaign.name }}</td>
+            <td class="px-4 py-3">
+                <button onclick="toggleStatus({{ campaign.id }}, '{{ campaign.status }}')" class="px-3 py-1 text-xs font-medium rounded-full cursor-pointer hover:opacity-80 transition-all
+                    {% if campaign.status == 'active' %}
+                        bg-green-100 text-green-800
+                    {% else %}
+                        bg-gray-100 text-gray-800
+                    {% endif %}
+                ">{{ campaign.status }}</button>
+            </td>
+            <td class="px-4 py-3 text-sm text-gray-700">{{ campaign.total_requests or 0 }}</td>
+            <td class="px-4 py-3 text-sm text-gray-700">{{ campaign.total_contacts or 0 }}</td>
+            <td class="px-4 py-3 space-x-2"></td>
+        </tr>
+        <tr>
+            <td colspan="7" class="px-4 py-3">
+                <div class="relative w-full">
+                    <div class="w-full bg-gray-200 rounded-full h-2">
+                        {% set completion = 0 %}
+                        {% if campaign.total_requests and campaign.total_requests > 0 and campaign.completed_requests %}
+                            {% set completion = ((campaign.completed_requests or 0) / campaign.total_requests * 100)|round(2) %}
+                            {% if completion > 100 %}
+                                {% set completion = 100 %}
+                            {% endif %}
+                        {% endif %}
+                        <div class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-blue-500 to-blue-600" style="width: {{ completion }}%"></div>
+                    </div>
+                    <div class="absolute w-full text-center text-xs text-gray-500 mt-1">{{ completion }}% complete</div>
+                </div>
+            </td>
+        </tr>
+        <tr>
+            <td colspan="7" class="px-4 py-3">
+                <button onclick="toggleRequests({{ campaign.id }})" class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-blue-200 transition-all">
+                    Requests
+                </button>
+                <button onclick="toggleContacts({{ campaign.id }})" class="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-purple-200 transition-all">
+                    Contacts
+                </button>
+                <button onclick="deleteCampaign({{ campaign.id }})" class="bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-red-200 transition-all">
+                    Delete
+                </button>
+            </td>
+        </tr>
+        <tr id="requests-{{ campaign.id }}" class="hidden">
+            <td colspan="7" class="px-4 py-3">
+                <div class="bg-gray-50 rounded-lg p-4 space-y-2">
+                    {% for request in campaign.requests %}
+                    <div class="flex items-center space-x-3">
+                        <span class="font-medium text-gray-700">{{ request.req_text }}</span>
+                        <span class="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs font-medium">Contacts: {{ request.contact_count }}</span>
+                        <span class="px-2 py-1 text-xs font-medium rounded-full
+                            {% if request.status == 'completed' %}
+                                bg-green-100 text-green-800
+                            {% elif request.status == 'reserved' %}
+                                bg-yellow-100 text-yellow-800
+                            {% else %}
+                                bg-gray-100 text-gray-800
+                            {% endif %}
+                        ">{{ request.status }}</span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </td>
+        </tr>
+        <tr id="contacts-{{ campaign.id }}" class="hidden">
+            <td colspan="7" class="px-4 py-3">
+                <div class="bg-gray-50 rounded-lg p-4">
+                    <table class="w-full">
+                        <thead>
+                            <tr>
+                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">IDs</th>
+                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Business Info</th>
+                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Contact</th>
+                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Location</th>
+                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Social Links</th>
+                                <th class="px-3 py-2 text-left text-xs font-semibold text-gray-600">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-200">
+                            {% for contact in campaign.contacts %}
+                            <tr class="hover:bg-white/50 transition-all">
+                                <td class="px-3 py-2">
+                                    <div class="space-y-1">
+                                        <div class="text-xs text-gray-500">Campaign: {{ contact.campaign_id }}</div>
+                                        <div class="text-xs text-gray-500">Request: {{ contact.request_id }}</div>
+                                        <div class="text-xs text-gray-500">Place: {{ contact.place_id or '-' }}</div>
+                                    </div>
+                                </td>
+                                <td class="px-3 py-2">
+                                    <div class="space-y-1">
+                                        <div class="text-sm font-medium text-gray-700">{{ contact.business_name }}</div>
+                                        <div class="text-xs text-gray-500">Category: {{ contact.category or '-' }}</div>
+                                        <div class="text-xs text-gray-500">Rating: {{ contact.rating or '-' }} ({{ contact.review_count or 0 }} reviews)</div>
+                                    </div>
+                                </td>
+                                <td class="px-3 py-2">
+                                    <div class="space-y-1">
+                                        <div class="text-sm text-gray-700">{{ contact.phone or '-' }}</div>
+                                        <div class="text-sm text-gray-700">{{ contact.email or '-' }}</div>
+                                        <div class="text-sm text-gray-700">
+                                            {% if contact.domain %}
+                                            <a href="http://{{ contact.domain }}" target="_blank" class="text-blue-600 hover:underline">{{ contact.domain }}</a>
+                                            {% else %}
+                                            -
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                </td>
+                                <td class="px-3 py-2 text-sm text-gray-700">{{ contact.address or '-' }}</td>
+                                <td class="px-3 py-2">
+                                    <div class="flex flex-col space-y-1">
+                                        {% if contact.facebook %}<a href="{{ contact.facebook }}" target="_blank" class="text-blue-600 hover:underline text-sm">Facebook</a>{% endif %}
+                                        {% if contact.instagram %}<a href="{{ contact.instagram }}" target="_blank" class="text-pink-600 hover:underline text-sm">Instagram</a>{% endif %}
+                                        {% if contact.twitter %}<a href="{{ contact.twitter }}" target="_blank" class="text-blue-400 hover:underline text-sm">Twitter</a>{% endif %}
+                                        {% if contact.yelp %}<a href="{{ contact.yelp }}" target="_blank" class="text-red-600 hover:underline text-sm">Yelp</a>{% endif %}
+                                        {% if not (contact.facebook or contact.instagram or contact.twitter or contact.yelp) %}-{% endif %}
+                                    </div>
+                                </td>
+                                <td class="px-3 py-2">
+                                    <span class="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-800">
+                                        {{ contact.status }}
+                                    </span>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </td>
+        </tr>
         {% endfor %}
     </tbody>
 </table>
