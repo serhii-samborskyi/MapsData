@@ -1,4 +1,3 @@
-
 <table class="w-full">
     <thead>
         <tr class="bg-gray-50">
@@ -121,7 +120,7 @@
                                         <div class="text-sm text-gray-700">{{ contact.email or '-' }}</div>
                                         <div class="text-sm text-gray-700">
                                             {% if contact.domain %}
-                                            <a href="http://{{ contact.domain }}" target="_blank" class="text-blue-600 hover:underline">{{ contact.domain[:10] + '...' if contact.domain|length > 10 else contact.domain }}</a>
+                                            <a href="http://{{ contact.domain }}" target="_blank" class="text-blue-600 hover:underline">{{ contact.domain[:20] + '...' if contact.domain|length > 20 else contact.domain }}</a>
                                             {% else %}
                                             -
                                             {% endif %}
