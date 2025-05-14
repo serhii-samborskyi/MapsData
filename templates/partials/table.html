@@ -120,7 +120,8 @@
                                         <div class="text-sm text-gray-700">{{ contact.email or '-' }}</div>
                                         <div class="text-sm text-gray-700">
                                             {% if contact.domain %}
-                                            <a href="http://{{ contact.domain }}" target="_blank" class="text-blue-600 hover:underline">{{ contact.domain[:20] + '...' if contact.domain|length > 20 else contact.domain }}</a>
+                                            {% set domain = contact.domain.split('?')[0] %}
+                                            <a href="http://{{ contact.domain }}" target="_blank" class="text-blue-600 hover:underline">{{ domain[:20] + '...' if domain|length > 20 else domain }}</a>
                                             {% else %}
                                             -
                                             {% endif %}
