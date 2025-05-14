@@ -26,7 +26,7 @@ async def get_campaigns(request: Request, partial: bool = False):
                 COUNT(DISTINCT r.id) as total_requests,
                 COUNT(DISTINCT c.id) as total_contacts,
                 (SELECT COUNT(*) FROM requests WHERE campaign_id = sc.id AND status = 'completed') as completed_requests,
-                (SELECT COUNT(*) FROM contacts WHERE campaign_id = sc.id AND email IS NOT NULL) as email_count
+                (SELECT COUNT(*) FROM contacts WHERE campaign_id = sc.id AND email IS NOT NULL AND email != '') as email_count
             FROM search_campaigns sc
             LEFT JOIN requests r ON sc.id = r.campaign_id
             LEFT JOIN contacts c ON sc.id = c.campaign_id
