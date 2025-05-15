@@ -292,13 +292,18 @@ async def get_random_contact_without_email(campaign_id: int):
             AND (email IS NULL OR email = '')
             AND domain IS NOT NULL 
             AND domain != ''
-            AND domain NOT LIKE '%?%'
             ORDER BY RANDOM() LIMIT 1
         """, (campaign_id,))
         contact = cursor.fetchone()
         if not contact:
             raise HTTPException(status_code=404, detail="No contacts found matching criteria")
-        return {"id": str(contact["id"]), "domain": contact["domain"]}
+            
+        # Clean domain: remove protocol, www, and URL parameters
+        domain = contact["domain"]
+        domain = domain.replace("http://", "").replace("https://", "").replace("www.", "")
+        domain = domain.split("?")[0].split("/")[0]
+        
+        return {"id": str(contact["id"]), "domain": domain}
 
 @app.get("/api/campaign/{campaign_id}")
 async def get_campaign_status(campaign_id: int):
