@@ -310,15 +310,7 @@ async def remove_duplicate_contacts(campaign_id: int):
     with get_db() as conn:
         cursor = conn.cursor()
         
-        # First remove records with null emails
-        cursor.execute("""
-            DELETE FROM contacts 
-            WHERE campaign_id = ? 
-            AND (email IS NULL OR email = '' OR LOWER(email) = 'none')
-        """, (campaign_id,))
-        null_email_count = cursor.rowcount
-        
-        # Then remove duplicates by domain
+        # Remove duplicates by domain only
         cursor.execute("""
             DELETE FROM contacts 
             WHERE id NOT IN (
@@ -336,9 +328,7 @@ async def remove_duplicate_contacts(campaign_id: int):
         conn.commit()
         return {
             "status": "success", 
-            "removed_duplicates": duplicate_count,
-            "removed_null_emails": null_email_count,
-            "total_removed": duplicate_count + null_email_count
+            "removed_duplicates": duplicate_count
         }
 
 @app.post("/api/campaign/{campaign_id}/remove_empty_domains")
