@@ -73,6 +73,7 @@
                                 <button onclick="toggleRequests({{ campaign.id }})" class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-blue-200 transition-all">Requests</button>
                                 <button onclick="toggleContacts({{ campaign.id }})" class="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-purple-200 transition-all">Contacts</button>
                                 <button onclick="removeDuplicates({{ campaign.id }})" class="bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-orange-200 transition-all">Remove Duplicates</button>
+                                <button onclick="removeEmptyDomains({{ campaign.id }})" class="bg-yellow-100 text-yellow-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-yellow-200 transition-all">Remove Empty Domains</button>
                                 <button onclick="deleteCampaign({{ campaign.id }})" class="bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-red-200 transition-all">Delete</button>
                             </td>
                         </tr>
@@ -273,6 +274,23 @@
             } catch (error) {
                 console.error('Error removing duplicates:', error);
                 alert('Error removing duplicates');
+            }
+        }
+
+        async function removeEmptyDomains(campaignId) {
+            if (!confirm('Are you sure you want to remove all contacts with empty domains?')) {
+                return;
+            }
+            try {
+                const response = await fetch(`/api/campaign/${campaignId}/remove_empty_domains`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                alert(`Removed ${data.removed_contacts} contacts with empty domains`);
+                await refreshCampaigns();
+            } catch (error) {
+                console.error('Error removing empty domains:', error);
+                alert('Error removing contacts with empty domains');
             }
         }
     </script>

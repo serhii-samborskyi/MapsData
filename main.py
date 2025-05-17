@@ -326,6 +326,19 @@ async def remove_duplicate_contacts(campaign_id: int):
         conn.commit()
         return {"status": "success", "removed_duplicates": deleted_count}
 
+@app.post("/api/campaign/{campaign_id}/remove_empty_domains")
+async def remove_empty_domains(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            DELETE FROM contacts 
+            WHERE campaign_id = ?
+            AND (domain IS NULL OR domain = '')
+        """, (campaign_id,))
+        deleted_count = cursor.rowcount
+        conn.commit()
+        return {"status": "success", "removed_contacts": deleted_count}
+
 @app.get("/api/campaign/{campaign_id}")
 async def get_campaign_status(campaign_id: int):
     with get_db() as conn:
