@@ -306,10 +306,12 @@
 
         function filterContacts(campaignId) {
             const searchInput = document.getElementById(`search-contacts-${campaignId}`);
+            const searchCounter = document.getElementById(`search-counter-${campaignId}`);
             const keywords = searchInput.value.toLowerCase().split(',').map(k => k.trim()).filter(k => k);
             const contactsTable = document.querySelector(`#contacts-${campaignId} tbody`);
             const rows = contactsTable.querySelectorAll('tr');
-
+            
+            let matchCount = 0;
             rows.forEach(row => {
                 const name = row.querySelector('td:nth-child(2) .font-medium')?.textContent.toLowerCase() || '';
                 const domain = row.querySelector('td:nth-child(3) a')?.textContent.toLowerCase() || '';
@@ -319,9 +321,14 @@
                     name.includes(keyword) || domain.includes(keyword) || email.includes(keyword)
                 );
                 
+                if (matches && keywords.length > 0) matchCount++;
                 row.style.display = keywords.length === 0 || matches ? '' : 'none';
                 row.classList.toggle('filtered-contact', matches && keywords.length > 0);
             });
+
+            searchCounter.textContent = keywords.length > 0 ? 
+                `Found ${matchCount} contact${matchCount !== 1 ? 's' : ''} matching the search criteria` : 
+                '';
         }
 
         async function removeFilteredContacts(campaignId) {
