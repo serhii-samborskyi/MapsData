@@ -314,7 +314,7 @@ async def remove_duplicate_contacts(campaign_id: int):
         cursor.execute("""
             DELETE FROM contacts 
             WHERE campaign_id = ? 
-            AND (email IS NULL OR email = '')
+            AND (email IS NULL OR email = '' OR LOWER(email) = 'none')
         """, (campaign_id,))
         null_email_count = cursor.rowcount
         
