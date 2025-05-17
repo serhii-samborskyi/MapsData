@@ -305,6 +305,27 @@ async def get_random_contact_without_email(campaign_id: int):
         
         return {"id": str(contact["id"]), "domain": domain}
 
+@app.post("/api/campaign/{campaign_id}/remove_duplicates")
+async def remove_duplicate_contacts(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        # Keep first occurrence of each domain, delete others
+        cursor.execute("""
+            DELETE FROM contacts 
+            WHERE id NOT IN (
+                SELECT MIN(id)
+                FROM contacts
+                WHERE campaign_id = ? 
+                AND domain IS NOT NULL
+                GROUP BY domain
+            )
+            AND campaign_id = ?
+            AND domain IS NOT NULL
+        """, (campaign_id, campaign_id))
+        deleted_count = cursor.rowcount
+        conn.commit()
+        return {"status": "success", "removed_duplicates": deleted_count}
+
 @app.get("/api/campaign/{campaign_id}")
 async def get_campaign_status(campaign_id: int):
     with get_db() as conn:

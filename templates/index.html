@@ -72,6 +72,7 @@
                             <td class="px-4 py-3 space-x-2">
                                 <button onclick="toggleRequests({{ campaign.id }})" class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-blue-200 transition-all">Requests</button>
                                 <button onclick="toggleContacts({{ campaign.id }})" class="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-purple-200 transition-all">Contacts</button>
+                                <button onclick="removeDuplicates({{ campaign.id }})" class="bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-orange-200 transition-all">Remove Duplicates</button>
                                 <button onclick="deleteCampaign({{ campaign.id }})" class="bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-red-200 transition-all">Delete</button>
                             </td>
                         </tr>
@@ -255,6 +256,23 @@
                 await refreshCampaigns();
             } catch (error) {
                 console.error('Error updating status:', error);
+            }
+        }
+
+        async function removeDuplicates(campaignId) {
+            if (!confirm('Are you sure you want to remove duplicate contacts based on domain?')) {
+                return;
+            }
+            try {
+                const response = await fetch(`/api/campaign/${campaignId}/remove_duplicates`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                alert(`Removed ${data.removed_duplicates} duplicate contacts`);
+                await refreshCampaigns();
+            } catch (error) {
+                console.error('Error removing duplicates:', error);
+                alert('Error removing duplicates');
             }
         }
     </script>
