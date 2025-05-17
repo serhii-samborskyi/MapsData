@@ -293,6 +293,71 @@
                 alert('Error removing contacts with empty domains');
             }
         }
+
+        function filterContacts(campaignId) {
+            const searchInput = document.getElementById(`search-contacts-${campaignId}`);
+            const keywords = searchInput.value.toLowerCase().split(',').map(k => k.trim()).filter(k => k);
+            const contactsTable = document.querySelector(`#contacts-${campaignId} tbody`);
+            const rows = contactsTable.querySelectorAll('tr');
+
+            rows.forEach(row => {
+                const name = row.querySelector('td:nth-child(2) .font-medium')?.textContent.toLowerCase() || '';
+                const domain = row.querySelector('td:nth-child(3) a')?.textContent.toLowerCase() || '';
+                const email = row.querySelector('td:nth-child(3) div:nth-child(2)')?.textContent.toLowerCase() || '';
+                
+                const matches = keywords.some(keyword => 
+                    name.includes(keyword) || domain.includes(keyword) || email.includes(keyword)
+                );
+                
+                row.style.display = keywords.length === 0 || matches ? '' : 'none';
+                row.classList.toggle('filtered-contact', matches && keywords.length > 0);
+            });
+        }
+
+        async function removeFilteredContacts(campaignId) {
+            const searchInput = document.getElementById(`search-contacts-${campaignId}`);
+            const keywords = searchInput.value.trim();
+            
+            if (!keywords) {
+                alert('Please enter search keywords first');
+                return;
+            }
+
+            if (!confirm('Are you sure you want to remove all filtered contacts?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/campaign/${campaignId}/remove_filtered`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        keywords: keywords.split(',').map(k => k.trim()).filter(k => k)
+                    })
+                });
+                const data = await response.json();
+                alert(`Removed ${data.removed_contacts} contacts`);
+                await refreshCampaigns();
+            } catch (error) {
+                console.error('Error removing filtered contacts:', error);
+                alert('Error removing filtered contacts');
+            }
+        }
+
+        // Add event listeners for all search inputs
+        document.addEventListener('DOMContentLoaded', () => {
+            const handleSearchInput = (event) => {
+                const campaignId = event.target.id.split('-').pop();
+                filterContacts(campaignId);
+            };
+
+            document.querySelectorAll('[id^="search-contacts-"]').forEach(input => {
+                input.addEventListener('input', handleSearchInput);
+                input.addEventListener('keyup', handleSearchInput);
+            });
+        });
     </script>
 </body>
 </html>

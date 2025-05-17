@@ -339,6 +339,39 @@ async def remove_empty_domains(campaign_id: int):
         conn.commit()
         return {"status": "success", "removed_contacts": deleted_count}
 
+@app.post("/api/campaign/{campaign_id}/remove_filtered")
+async def remove_filtered_contacts(campaign_id: int, data: dict):
+    keywords = data.get('keywords', [])
+    if not keywords:
+        return {"status": "error", "message": "No keywords provided"}
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        placeholders = ','.join(['?' for _ in keywords])
+        like_conditions = []
+        params = []
+        
+        for keyword in keywords:
+            like_conditions.extend([
+                "business_name LIKE ?",
+                "domain LIKE ?",
+                "email LIKE ?",
+            ])
+            params.extend([f"%{keyword}%", f"%{keyword}%", f"%{keyword}%"])
+        
+        params.append(campaign_id)
+        
+        query = f"""
+            DELETE FROM contacts 
+            WHERE ({' OR '.join(like_conditions)})
+            AND campaign_id = ?
+        """
+        
+        cursor.execute(query, params)
+        deleted_count = cursor.rowcount
+        conn.commit()
+        return {"status": "success", "removed_contacts": deleted_count}
+
 @app.get("/api/campaign/{campaign_id}")
 async def get_campaign_status(campaign_id: int):
     with get_db() as conn:
