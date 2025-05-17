@@ -309,7 +309,16 @@ async def get_random_contact_without_email(campaign_id: int):
 async def remove_duplicate_contacts(campaign_id: int):
     with get_db() as conn:
         cursor = conn.cursor()
-        # Keep first occurrence of each domain, delete others
+        
+        # First remove records with null emails
+        cursor.execute("""
+            DELETE FROM contacts 
+            WHERE campaign_id = ? 
+            AND (email IS NULL OR email = '')
+        """, (campaign_id,))
+        null_email_count = cursor.rowcount
+        
+        # Then remove duplicates by domain
         cursor.execute("""
             DELETE FROM contacts 
             WHERE id NOT IN (
@@ -322,9 +331,15 @@ async def remove_duplicate_contacts(campaign_id: int):
             AND campaign_id = ?
             AND domain IS NOT NULL
         """, (campaign_id, campaign_id))
-        deleted_count = cursor.rowcount
+        duplicate_count = cursor.rowcount
+        
         conn.commit()
-        return {"status": "success", "removed_duplicates": deleted_count}
+        return {
+            "status": "success", 
+            "removed_duplicates": duplicate_count,
+            "removed_null_emails": null_email_count,
+            "total_removed": duplicate_count + null_email_count
+        }
 
 @app.post("/api/campaign/{campaign_id}/remove_empty_domains")
 async def remove_empty_domains(campaign_id: int):
