@@ -262,28 +262,74 @@ async def save_contacts(request: Request):
 
 @app.post("/api/campaign/{campaign_id}/email_update")
 async def update_contact_email(campaign_id: int, data: dict):
-    contact_id = data.get('id')
-    email = data.get('email')
-    
-    if not contact_id or not email:
-        raise HTTPException(status_code=400, detail="Missing id or email in request body")
-        
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE contacts 
-            SET email = ? 
-            WHERE id = ? AND campaign_id = ?
-        """, (email, contact_id, campaign_id))
-        conn.commit()
-        
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Contact not found")
+    # Check if it's a batch update or single update
+    if 'contacts' in data:
+        # Batch update
+        contacts = data.get('contacts', [])
+        if not contacts:
+            raise HTTPException(status_code=400, detail="No contacts provided in batch")
+        if len(contacts) > 100:
+            raise HTTPException(status_code=400, detail="Batch size cannot exceed 100 contacts")
             
-        return {"status": "Email updated successfully"}
+        updated_count = 0
+        failed_updates = []
+        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            for contact in contacts:
+                contact_id = contact.get('id')
+                email = contact.get('email')
+                
+                if not contact_id or not email:
+                    failed_updates.append({"id": contact_id, "error": "Missing id or email"})
+                    continue
+                    
+                cursor.execute("""
+                    UPDATE contacts 
+                    SET email = ? 
+                    WHERE id = ? AND campaign_id = ?
+                """, (email, contact_id, campaign_id))
+                
+                if cursor.rowcount > 0:
+                    updated_count += 1
+                else:
+                    failed_updates.append({"id": contact_id, "error": "Contact not found"})
+            
+            conn.commit()
+            
+        return {
+            "status": "Batch update completed",
+            "updated_count": updated_count,
+            "failed_count": len(failed_updates),
+            "failed_updates": failed_updates
+        }
+    else:
+        # Single update (backward compatibility)
+        contact_id = data.get('id')
+        email = data.get('email')
+        
+        if not contact_id or not email:
+            raise HTTPException(status_code=400, detail="Missing id or email in request body")
+            
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE contacts 
+                SET email = ? 
+                WHERE id = ? AND campaign_id = ?
+            """, (email, contact_id, campaign_id))
+            conn.commit()
+            
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Contact not found")
+                
+            return {"status": "Email updated successfully"}
 
 @app.get("/api/campaign/{campaign_id}/nomail")
-async def get_random_contact_without_email(campaign_id: int):
+async def get_random_contact_without_email(campaign_id: int, batch: int = 1):
+    if batch < 1 or batch > 100:
+        raise HTTPException(status_code=400, detail="Batch size must be between 1 and 100")
+        
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -292,18 +338,21 @@ async def get_random_contact_without_email(campaign_id: int):
             AND (email IS NULL OR email = '')
             AND domain IS NOT NULL 
             AND domain != ''
-            ORDER BY RANDOM() LIMIT 1
-        """, (campaign_id,))
-        contact = cursor.fetchone()
-        if not contact:
+            ORDER BY RANDOM() LIMIT ?
+        """, (campaign_id, batch))
+        contacts = cursor.fetchall()
+        if not contacts:
             raise HTTPException(status_code=404, detail="No contacts found matching criteria")
             
-        # Clean domain: remove protocol, www, and URL parameters
-        domain = contact["domain"]
-        domain = domain.replace("http://", "").replace("https://", "").replace("www.", "")
-        domain = domain.split("?")[0].split("/")[0]
+        results = []
+        for contact in contacts:
+            # Clean domain: remove protocol, www, and URL parameters
+            domain = contact["domain"]
+            domain = domain.replace("http://", "").replace("https://", "").replace("www.", "")
+            domain = domain.split("?")[0].split("/")[0]
+            results.append({"id": str(contact["id"]), "domain": domain})
         
-        return {"id": str(contact["id"]), "domain": domain}
+        return {"contacts": results, "count": len(results)}
 
 @app.post("/api/campaign/{campaign_id}/remove_duplicates")
 async def remove_duplicate_contacts(campaign_id: int):
