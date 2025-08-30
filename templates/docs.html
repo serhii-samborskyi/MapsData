@@ -43,17 +43,48 @@
                     <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">GET</span>
                     <h2 class="text-xl font-semibold">/api/campaign/{campaign_id}/nomail</h2>
                 </div>
-                <p class="text-gray-600 mb-4">Returns a random contact that has a domain but no email from the specified campaign</p>
+                <p class="text-gray-600 mb-4">Returns random contacts that have domains but no emails from the specified campaign (supports batch requests)</p>
                 <div class="bg-gray-50 p-4 rounded mb-4">
                     <h3 class="font-medium mb-2">Parameters:</h3>
-                    <p><code class="bg-gray-200 px-2 py-1 rounded">campaign_id</code> - ID of the campaign</p>
+                    <ul class="list-disc list-inside space-y-1">
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">campaign_id</code> - ID of the campaign</li>
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">batch</code> - Number of contacts to return (1-100, default: 1)</li>
+                    </ul>
+                </div>
+                <div class="bg-gray-50 p-4 rounded mb-4">
+                    <h3 class="font-medium mb-2">Example URLs:</h3>
+                    <ul class="list-disc list-inside space-y-1">
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">/api/campaign/1/nomail</code> - Single contact</li>
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">/api/campaign/1/nomail?batch=10</code> - Batch of 10 contacts</li>
+                    </ul>
                 </div>
                 <div class="bg-gray-50 p-4 rounded">
-                    <h3 class="font-medium mb-2">Response Example:</h3>
+                    <h3 class="font-medium mb-2">Response Examples:</h3>
+                    <p class="font-medium mb-2">Single contact (batch=1):</p>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto mb-4">
+{
+  "contacts": [
+    {
+      "id": "66",
+      "domain": "example.com"
+    }
+  ],
+  "count": 1
+}</pre>
+                    <p class="font-medium mb-2">Multiple contacts (batch>1):</p>
                     <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
 {
-  "id": "66",
-  "domain": "example.com"
+  "contacts": [
+    {
+      "id": "66",
+      "domain": "example.com"
+    },
+    {
+      "id": "67",
+      "domain": "sample.org"
+    }
+  ],
+  "count": 2
 }</pre>
                 </div>
             </div>
@@ -64,24 +95,48 @@
                     <span class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-medium">POST</span>
                     <h2 class="text-xl font-semibold">/api/campaign/{campaign_id}/email_update</h2>
                 </div>
-                <p class="text-gray-600 mb-4">Updates the email for a specific contact in a campaign</p>
+                <p class="text-gray-600 mb-4">Updates emails for one or multiple contacts in a campaign (supports batch updates)</p>
                 <div class="bg-gray-50 p-4 rounded mb-4">
                     <h3 class="font-medium mb-2">Parameters:</h3>
                     <p><code class="bg-gray-200 px-2 py-1 rounded">campaign_id</code> - ID of the campaign</p>
                 </div>
                 <div class="bg-gray-50 p-4 rounded mb-4">
-                    <h3 class="font-medium mb-2">Request Body:</h3>
-                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
+                    <h3 class="font-medium mb-2">Request Body Examples:</h3>
+                    <p class="font-medium mb-2">Single update:</p>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto mb-4">
 {
   "id": "66",
   "email": "example@example.com"
 }</pre>
-                </div>
-                <div class="bg-gray-50 p-4 rounded">
-                    <h3 class="font-medium mb-2">Response Example:</h3>
+                    <p class="font-medium mb-2">Batch update (up to 100 contacts):</p>
                     <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
 {
+  "contacts": [
+    {
+      "id": "66",
+      "email": "example@example.com"
+    },
+    {
+      "id": "67",
+      "email": "test@sample.org"
+    }
+  ]
+}</pre>
+                </div>
+                <div class="bg-gray-50 p-4 rounded">
+                    <h3 class="font-medium mb-2">Response Examples:</h3>
+                    <p class="font-medium mb-2">Single update response:</p>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto mb-4">
+{
   "status": "Email updated successfully"
+}</pre>
+                    <p class="font-medium mb-2">Batch update response:</p>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
+{
+  "status": "Batch update completed",
+  "updated_count": 2,
+  "failed_count": 0,
+  "failed_updates": []
 }</pre>
                 </div>
             </div>
