@@ -327,8 +327,8 @@ async def update_contact_email(campaign_id: int, data: dict):
 
 @app.get("/api/campaign/{campaign_id}/nomail")
 async def get_random_contact_without_email(campaign_id: int, batch: int = 1):
-    if batch < 1 or batch > 100:
-        raise HTTPException(status_code=400, detail="Batch size must be between 1 and 100")
+    if batch < 0 or batch > 1000:
+        raise HTTPException(status_code=400, detail="Batch size must be between 0 and 1000")
         
     with get_db() as conn:
         cursor = conn.cursor()
