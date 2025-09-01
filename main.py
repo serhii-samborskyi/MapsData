@@ -426,6 +426,54 @@ async def remove_filtered_contacts(campaign_id: int, data: dict):
         conn.commit()
         return {"status": "success", "removed_contacts": deleted_count}
 
+@app.post("/api/campaign/{campaign_id}/duplicate")
+async def duplicate_campaign(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # Get original campaign
+        cursor.execute("SELECT * FROM search_campaigns WHERE id = ?", (campaign_id,))
+        original_campaign = cursor.fetchone()
+        if not original_campaign:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        # Find next available number for campaign name
+        base_name = original_campaign["name"]
+        counter = 1
+        new_name = f"{base_name} {counter}"
+        
+        while True:
+            cursor.execute("SELECT id FROM search_campaigns WHERE name = ?", (new_name,))
+            if not cursor.fetchone():
+                break
+            counter += 1
+            new_name = f"{base_name} {counter}"
+        
+        # Create new campaign
+        cursor.execute(
+            "INSERT INTO search_campaigns (name, status) VALUES (?, ?)",
+            (new_name, "active")
+        )
+        new_campaign_id = cursor.lastrowid
+        
+        # Copy all requests from original campaign
+        cursor.execute("SELECT req_text FROM requests WHERE campaign_id = ?", (campaign_id,))
+        requests = cursor.fetchall()
+        
+        for request in requests:
+            cursor.execute(
+                "INSERT INTO requests (campaign_id, req_text, status) VALUES (?, ?, ?)",
+                (new_campaign_id, request["req_text"], "pending")
+            )
+        
+        conn.commit()
+        return {
+            "status": "success", 
+            "new_campaign_id": new_campaign_id,
+            "new_campaign_name": new_name,
+            "copied_requests": len(requests)
+        }
+
 @app.get("/api/campaign/{campaign_id}")
 async def get_campaign_status(campaign_id: int):
     with get_db() as conn:
