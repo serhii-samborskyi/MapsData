@@ -427,7 +427,13 @@ async def remove_filtered_contacts(campaign_id: int, data: dict):
         return {"status": "success", "removed_contacts": deleted_count}
 
 @app.post("/api/campaign/{campaign_id}/duplicate")
-async def duplicate_campaign(campaign_id: int):
+async def duplicate_campaign(campaign_id: int, request: Request):
+    try:
+        data = await request.json()
+        custom_name = data.get('name', '').strip()
+    except:
+        custom_name = ''
+    
     with get_db() as conn:
         cursor = conn.cursor()
         
@@ -437,17 +443,25 @@ async def duplicate_campaign(campaign_id: int):
         if not original_campaign:
             raise HTTPException(status_code=404, detail="Campaign not found")
         
-        # Find next available number for campaign name
-        base_name = original_campaign["name"]
-        counter = 1
-        new_name = f"{base_name} {counter}"
-        
-        while True:
-            cursor.execute("SELECT id FROM search_campaigns WHERE name = ?", (new_name,))
-            if not cursor.fetchone():
-                break
-            counter += 1
+        # Determine new campaign name
+        if custom_name:
+            # Check if custom name already exists
+            cursor.execute("SELECT id FROM search_campaigns WHERE name = ?", (custom_name,))
+            if cursor.fetchone():
+                raise HTTPException(status_code=400, detail="Campaign name already exists")
+            new_name = custom_name
+        else:
+            # Find next available number for campaign name
+            base_name = original_campaign["name"]
+            counter = 1
             new_name = f"{base_name} {counter}"
+            
+            while True:
+                cursor.execute("SELECT id FROM search_campaigns WHERE name = ?", (new_name,))
+                if not cursor.fetchone():
+                    break
+                counter += 1
+                new_name = f"{base_name} {counter}"
         
         # Create new campaign
         cursor.execute(
