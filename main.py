@@ -840,14 +840,18 @@ async def export_campaign(campaign_id: int, request: Request):
             if recent_exports >= integration.rate_limit:
                 raise HTTPException(status_code=429, detail=f"Rate limit exceeded. Max {integration.rate_limit} exports per minute.")
         
-        # Get contacts to export
+        # Get batch offset from request data
+        offset = data.get('offset', 0)
+        
+        # Get contacts to export with offset for batch processing
         cursor.execute("""
             SELECT * FROM contacts 
             WHERE campaign_id = ? 
             AND email IS NOT NULL 
             AND email != ''
-            LIMIT ?
-        """, (campaign_id, batch_size))
+            ORDER BY id
+            LIMIT ? OFFSET ?
+        """, (campaign_id, batch_size, offset))
         contacts = [dict(row) for row in cursor.fetchall()]
         
         if not contacts:

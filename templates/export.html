@@ -72,6 +72,9 @@
                 <button id="executeExportBtn" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">
                     Execute Export
                 </button>
+                <button id="exportAllBtn" class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700">
+                    Export All (Batch 50)
+                </button>
             </div>
         </div>
 
@@ -133,6 +136,39 @@
                         </button>
                     </div>
                 </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Batch Export Progress Modal -->
+    <div id="batchExportModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+        <div class="flex items-center justify-center min-h-screen">
+            <div class="bg-white rounded-lg p-6 w-full max-w-md mx-4">
+                <h3 class="text-lg font-semibold mb-4">Batch Export Progress</h3>
+                <div class="mb-4">
+                    <div class="text-sm text-gray-600 mb-2">
+                        Batch <span id="currentBatch">1</span> of <span id="totalBatches">1</span>
+                    </div>
+                    <div class="w-full bg-gray-200 rounded-full h-2.5">
+                        <div id="progressBar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div class="mb-4">
+                    <div class="text-sm">
+                        <div>Total Contacts: <span id="totalContacts">0</span></div>
+                        <div>Exported: <span id="exportedContacts">0</span></div>
+                        <div>Failed: <span id="failedContacts">0</span></div>
+                    </div>
+                </div>
+                <div id="batchStatus" class="text-sm text-gray-600 mb-4">
+                    Preparing export...
+                </div>
+                <div id="batchExportLogs" class="bg-gray-50 rounded p-3 h-24 overflow-y-auto text-xs mb-4">
+                    <!-- Logs will appear here -->
+                </div>
+                <button id="cancelBatchExport" class="w-full px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50" disabled>
+                    Cancel Export
+                </button>
             </div>
         </div>
     </div>
@@ -473,10 +509,150 @@
             }
         }
 
+        let batchExportCancelled = false;
+
+        async function exportAll() {
+            if (!selectedCampaign || !selectedTemplate) {
+                alert('Please select both a campaign and template');
+                return;
+            }
+
+            // Get total contacts count first
+            try {
+                const campaignResponse = await fetch(`/api/campaign/${selectedCampaign}`);
+                const campaignData = await campaignResponse.json();
+                const contactsWithEmail = campaignData.contacts.filter(c => c.email && c.email.trim() !== '');
+                
+                if (contactsWithEmail.length === 0) {
+                    alert('No contacts with email found in this campaign');
+                    return;
+                }
+
+                // Show modal and start batch export
+                showBatchExportModal(contactsWithEmail.length);
+                await executeBatchExport(contactsWithEmail.length);
+                
+            } catch (error) {
+                alert('Error starting batch export: ' + error.message);
+            }
+        }
+
+        function showBatchExportModal(totalContacts) {
+            const batchSize = 50;
+            const totalBatches = Math.ceil(totalContacts / batchSize);
+            
+            document.getElementById('totalContacts').textContent = totalContacts;
+            document.getElementById('totalBatches').textContent = totalBatches;
+            document.getElementById('currentBatch').textContent = '0';
+            document.getElementById('exportedContacts').textContent = '0';
+            document.getElementById('failedContacts').textContent = '0';
+            document.getElementById('progressBar').style.width = '0%';
+            document.getElementById('batchStatus').textContent = 'Starting batch export...';
+            document.getElementById('batchExportLogs').innerHTML = '';
+            
+            batchExportCancelled = false;
+            document.getElementById('cancelBatchExport').disabled = false;
+            document.getElementById('batchExportModal').classList.remove('hidden');
+        }
+
+        function addBatchLog(message) {
+            const logsDiv = document.getElementById('batchExportLogs');
+            const logEntry = document.createElement('div');
+            logEntry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
+            logsDiv.appendChild(logEntry);
+            logsDiv.scrollTop = logsDiv.scrollHeight;
+        }
+
+        async function executeBatchExport(totalContacts) {
+            const batchSize = 50;
+            const totalBatches = Math.ceil(totalContacts / batchSize);
+            let exportedCount = 0;
+            let failedCount = 0;
+            
+            addBatchLog(`Starting export of ${totalContacts} contacts in ${totalBatches} batches`);
+
+            for (let batchNumber = 1; batchNumber <= totalBatches; batchNumber++) {
+                if (batchExportCancelled) {
+                    addBatchLog('Export cancelled by user');
+                    break;
+                }
+
+                // Update UI
+                document.getElementById('currentBatch').textContent = batchNumber;
+                document.getElementById('batchStatus').textContent = `Processing batch ${batchNumber} of ${totalBatches}...`;
+                
+                const progress = ((batchNumber - 1) / totalBatches) * 100;
+                document.getElementById('progressBar').style.width = `${progress}%`;
+
+                addBatchLog(`Starting batch ${batchNumber}...`);
+
+                // Calculate offset for this batch
+                const offset = (batchNumber - 1) * batchSize;
+
+                try {
+                    const response = await fetch(`/api/campaign/${selectedCampaign}/export`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            template_id: selectedTemplate.id,
+                            batch_size: batchSize,
+                            offset: offset,
+                            field_mappings: currentFieldMappings
+                        })
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok) {
+                        exportedCount += data.contacts_exported;
+                        addBatchLog(`Batch ${batchNumber} completed: ${data.contacts_exported} contacts exported`);
+                        
+                        // Update counters
+                        document.getElementById('exportedContacts').textContent = exportedCount;
+                    } else {
+                        failedCount += batchSize;
+                        addBatchLog(`Batch ${batchNumber} failed: ${data.detail}`);
+                        document.getElementById('failedContacts').textContent = failedCount;
+                    }
+
+                    // Wait 2 seconds between batches to respect rate limits
+                    if (batchNumber < totalBatches && !batchExportCancelled) {
+                        addBatchLog('Waiting 2 seconds before next batch...');
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                    }
+
+                } catch (error) {
+                    failedCount += batchSize;
+                    addBatchLog(`Batch ${batchNumber} error: ${error.message}`);
+                    document.getElementById('failedContacts').textContent = failedCount;
+                }
+            }
+
+            // Final update
+            document.getElementById('progressBar').style.width = '100%';
+            document.getElementById('batchStatus').textContent = batchExportCancelled ? 'Export cancelled' : 'Export completed!';
+            document.getElementById('cancelBatchExport').textContent = 'Close';
+            document.getElementById('cancelBatchExport').disabled = false;
+            
+            if (!batchExportCancelled) {
+                addBatchLog(`Export completed! Total: ${exportedCount} exported, ${failedCount} failed`);
+                await loadExportHistory();
+            }
+        }
+
+        function closeBatchExportModal() {
+            batchExportCancelled = true;
+            document.getElementById('batchExportModal').classList.add('hidden');
+        }
+
         // Event listeners
         document.getElementById('createTemplateBtn').addEventListener('click', openCreateTemplateModal);
         document.getElementById('previewExportBtn').addEventListener('click', previewExport);
         document.getElementById('executeExportBtn').addEventListener('click', executeExport);
+        document.getElementById('exportAllBtn').addEventListener('click', exportAll);
+        document.getElementById('cancelBatchExport').addEventListener('click', closeBatchExportModal);
 
         document.getElementById('createTemplateForm').addEventListener('submit', async (e) => {
             e.preventDefault();
