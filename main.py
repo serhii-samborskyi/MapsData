@@ -431,8 +431,10 @@ async def duplicate_campaign(campaign_id: int, request: Request):
     try:
         data = await request.json()
         custom_name = data.get('name', '').strip()
+        contact_filters = data.get('contactFilters', {})
     except:
         custom_name = ''
+        contact_filters = {}
     
     with get_db() as conn:
         cursor = conn.cursor()
@@ -480,12 +482,75 @@ async def duplicate_campaign(campaign_id: int, request: Request):
                 (new_campaign_id, request["req_text"], "pending")
             )
         
+        # Copy contacts based on filters
+        copied_contacts = 0
+        if contact_filters:
+            conditions = []
+            
+            # Build the WHERE clause based on filters
+            domain_conditions = []
+            email_conditions = []
+            
+            if contact_filters.get('keepContactsWithDomain', False):
+                domain_conditions.append("(domain IS NOT NULL AND domain != '')")
+            if contact_filters.get('keepContactsWithoutDomain', False):
+                domain_conditions.append("(domain IS NULL OR domain = '')")
+                
+            if contact_filters.get('keepContactsWithEmail', False):
+                email_conditions.append("(email IS NOT NULL AND email != '')")
+            if contact_filters.get('keepContactsWithoutEmail', False):
+                email_conditions.append("(email IS NULL OR email = '')")
+            
+            # Combine conditions
+            if domain_conditions:
+                conditions.append(f"({' OR '.join(domain_conditions)})")
+            if email_conditions:
+                conditions.append(f"({' OR '.join(email_conditions)})")
+            
+            if conditions:
+                where_clause = f"campaign_id = ? AND ({' AND '.join(conditions)})"
+                cursor.execute(f"""
+                    SELECT address, business_name, category, domain, email, facebook, 
+                           instagram, phone, place_id, rating, review_count, twitter, yelp, status
+                    FROM contacts 
+                    WHERE {where_clause}
+                """, (campaign_id,))
+                
+                contacts_to_copy = cursor.fetchall()
+                
+                for contact in contacts_to_copy:
+                    cursor.execute("""
+                        INSERT INTO contacts 
+                        (address, business_name, campaign_id, category, domain, email, facebook, 
+                         instagram, phone, place_id, rating, request_id, review_count, twitter, yelp, status) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        contact["address"],
+                        contact["business_name"],
+                        new_campaign_id,
+                        contact["category"],
+                        contact["domain"],
+                        contact["email"],
+                        contact["facebook"],
+                        contact["instagram"],
+                        contact["phone"],
+                        contact["place_id"],
+                        contact["rating"],
+                        None,  # request_id will be None for duplicated contacts
+                        contact["review_count"],
+                        contact["twitter"],
+                        contact["yelp"],
+                        contact["status"]
+                    ))
+                    copied_contacts += 1
+        
         conn.commit()
         return {
             "status": "success", 
             "new_campaign_id": new_campaign_id,
             "new_campaign_name": new_name,
-            "copied_requests": len(requests)
+            "copied_requests": len(requests),
+            "copied_contacts": copied_contacts
         }
 
 @app.get("/api/campaign/{campaign_id}")

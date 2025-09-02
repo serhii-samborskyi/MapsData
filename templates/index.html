@@ -205,12 +205,33 @@
     <!-- Modal for campaign duplication -->
     <div id="duplicateModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
         <div class="flex items-center justify-center min-h-screen p-4">
-            <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
+            <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg">
                 <h3 class="text-lg font-semibold text-gray-800 mb-4">Duplicate Campaign</h3>
                 <div class="space-y-4">
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-1">New Campaign Name</label>
                         <input type="text" id="newCampaignName" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-3">What to keep in new campaign:</label>
+                        <div class="space-y-2">
+                            <label class="flex items-center">
+                                <input type="checkbox" id="keepContactsWithDomain" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500" checked>
+                                <span class="ml-2 text-sm text-gray-700">Contacts with domain</span>
+                            </label>
+                            <label class="flex items-center">
+                                <input type="checkbox" id="keepContactsWithoutDomain" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                                <span class="ml-2 text-sm text-gray-700">Contacts without domain</span>
+                            </label>
+                            <label class="flex items-center">
+                                <input type="checkbox" id="keepContactsWithEmail" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500" checked>
+                                <span class="ml-2 text-sm text-gray-700">Contacts with email</span>
+                            </label>
+                            <label class="flex items-center">
+                                <input type="checkbox" id="keepContactsWithoutEmail" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                                <span class="ml-2 text-sm text-gray-700">Contacts without email</span>
+                            </label>
+                        </div>
                     </div>
                     <div class="flex gap-3 justify-end">
                         <button onclick="closeDuplicateModal()" class="px-4 py-2 text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-all">
@@ -400,6 +421,11 @@
         function closeDuplicateModal() {
             document.getElementById('duplicateModal').classList.add('hidden');
             document.getElementById('newCampaignName').value = '';
+            // Reset checkboxes to default state
+            document.getElementById('keepContactsWithDomain').checked = true;
+            document.getElementById('keepContactsWithoutDomain').checked = false;
+            document.getElementById('keepContactsWithEmail').checked = true;
+            document.getElementById('keepContactsWithoutEmail').checked = false;
             pendingDuplicateCampaignId = null;
         }
 
@@ -410,16 +436,27 @@
                 return;
             }
 
+            // Get filter options
+            const filterOptions = {
+                keepContactsWithDomain: document.getElementById('keepContactsWithDomain').checked,
+                keepContactsWithoutDomain: document.getElementById('keepContactsWithoutDomain').checked,
+                keepContactsWithEmail: document.getElementById('keepContactsWithEmail').checked,
+                keepContactsWithoutEmail: document.getElementById('keepContactsWithoutEmail').checked
+            };
+
             try {
                 const response = await fetch(`/api/campaign/${pendingDuplicateCampaignId}/duplicate`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ name: newName })
+                    body: JSON.stringify({ 
+                        name: newName,
+                        contactFilters: filterOptions
+                    })
                 });
                 const data = await response.json();
-                alert(`Campaign duplicated as "${data.new_campaign_name}" with ${data.copied_requests} requests`);
+                alert(`Campaign duplicated as "${data.new_campaign_name}" with ${data.copied_requests} requests and ${data.copied_contacts} contacts`);
                 closeDuplicateModal();
                 await refreshCampaigns();
             } catch (error) {
