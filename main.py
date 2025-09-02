@@ -785,9 +785,10 @@ async def preview_export(campaign_id: int, template_id: int):
     
     if template['service'] == 'manyreach':
         integration = ManyReachIntegration("")
+        manyreach_campaign_id = template['api_config'].get('manyreach_campaign_id', '')
         preview_data = []
         for contact in contacts:
-            transformed = integration.transform_contact(contact, template['field_mappings'])
+            transformed = integration.transform_contact(contact, template['field_mappings'], manyreach_campaign_id)
             preview_data.append(transformed)
         
         return {
@@ -850,11 +851,12 @@ async def export_campaign(campaign_id: int, request: Request):
         # Transform contacts
         if template['service'] == 'manyreach':
             integration = ManyReachIntegration(template['api_config'].get('api_key', ''))
+            manyreach_campaign_id = template['api_config'].get('manyreach_campaign_id', '')
             transformed_contacts = []
             
             for contact in contacts:
                 if integration.validate_contact(contact):
-                    transformed = integration.transform_contact(contact, template['field_mappings'])
+                    transformed = integration.transform_contact(contact, template['field_mappings'], manyreach_campaign_id)
                     transformed_contacts.append(transformed)
             
             # Log the export
@@ -905,6 +907,7 @@ async def create_default_templates():
                 default_mapping,
                 {
                     "api_key": "",
+                    "manyreach_campaign_id": "",
                     "endpoint": "/api/campaigns/prospects/add",
                     "method": "POST"
                 }

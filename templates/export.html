@@ -120,6 +120,11 @@
                         <label class="block text-sm font-medium mb-2">API Key</label>
                         <input type="password" id="templateApiKey" class="w-full p-2 border border-gray-300 rounded-lg" required>
                     </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium mb-2">ManyReach Campaign ID</label>
+                        <input type="text" id="templateCampaignId" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="Enter your ManyReach campaign ID" required>
+                        <div class="text-xs text-gray-500 mt-1">This is the unique identifier of the campaign in ManyReach where prospects will be added</div>
+                    </div>
                     <div class="flex gap-3">
                         <button type="button" onclick="closeCreateTemplateModal()" class="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
                             Cancel
@@ -387,6 +392,7 @@
             const name = document.getElementById('templateName').value;
             const service = document.getElementById('templateService').value;
             const apiKey = document.getElementById('templateApiKey').value;
+            const campaignId = document.getElementById('templateCampaignId').value;
             
             // Get default ManyReach mapping
             const integration = {
@@ -429,6 +435,7 @@
                         field_mappings: integration,
                         api_config: {
                             api_key: apiKey,
+                            manyreach_campaign_id: campaignId,
                             endpoint: "/api/campaigns/prospects/add",
                             method: "POST"
                         }

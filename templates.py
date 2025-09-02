@@ -88,7 +88,7 @@ class ManyReachIntegration:
             "custom_20": ""
         }
     
-    def transform_contact(self, contact: Dict, field_mapping: Dict) -> Dict:
+    def transform_contact(self, contact: Dict, field_mapping: Dict, manyreach_campaign_id: str = None) -> Dict:
         """Transform contact data according to field mapping"""
         transformed = {}
         
@@ -97,6 +97,10 @@ class ManyReachIntegration:
                 value = contact[contact_field]
                 if value is not None and str(value).strip():
                     transformed[api_field] = str(value).strip()
+        
+        # Add campaignid if provided
+        if manyreach_campaign_id:
+            transformed['campaignid'] = manyreach_campaign_id
         
         return transformed
     
