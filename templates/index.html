@@ -14,10 +14,14 @@
 <body class="bg-gradient-to-br from-gray-50 to-gray-100 min-h-screen">
     <div class="container mx-auto p-6">
         <div class="flex justify-between items-center mb-8">
-            <h1 class="text-3xl font-bold text-gray-800">Maps Data</h1>
-            <button onclick="toggleCampaignForm()" class="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-all font-medium">
-                Add Campaign
-            </button>
+            <h1 class="text-3xl font-bold text-gray-800">Search Campaigns</h1>
+            <div class="flex gap-3">
+                <a href="/docs/api" class="text-blue-600 hover:text-blue-800 text-sm font-medium">API Docs</a>
+                <a href="/export" class="text-green-600 hover:text-green-800 text-sm font-medium">Export Manager</a>
+                <button onclick="openCreateModal()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 font-medium">
+                    Create Campaign
+                </button>
+            </div>
         </div>
 
         <div id="campaignForm" class="bg-white rounded-lg shadow-lg p-6 mb-8 hidden">
@@ -398,7 +402,7 @@
 
         async function confirmRemoveDuplicates() {
             const field = document.getElementById('duplicateFieldSelect').value;
-            
+
             if (!confirm(`Are you sure you want to remove duplicate contacts based on ${field}?`)) {
                 return;
             }
@@ -434,11 +438,11 @@
 
         function populateExcludeCampaignsList(currentCampaignId) {
             const listContainer = document.getElementById('excludeCampaignsList');
-            
+
             // Get all campaigns from the current page
             const campaignRows = document.querySelectorAll('tbody tr.hover\\:bg-gray-50');
             const campaigns = [];
-            
+
             campaignRows.forEach((row) => {
                 const cells = row.querySelectorAll('td');
                 if (cells.length >= 2) {
@@ -451,7 +455,7 @@
             });
 
             listContainer.innerHTML = '';
-            
+
             // Add "Exclude all campaigns" option
             const allCampaignsDiv = document.createElement('div');
             allCampaignsDiv.innerHTML = `
@@ -487,14 +491,14 @@
         async function confirmExcludeCampaigns() {
             const excludeAllChecked = document.getElementById('excludeAllCampaigns').checked;
             const selectedCampaigns = [];
-            
+
             if (!excludeAllChecked) {
                 const checkboxes = document.querySelectorAll('.exclude-campaign-checkbox:checked');
                 checkboxes.forEach(checkbox => {
                     const campaignId = parseInt(checkbox.id.split('-')[1]);
                     selectedCampaigns.push(campaignId);
                 });
-                
+
                 if (selectedCampaigns.length === 0) {
                     alert('Please select at least one campaign to exclude from');
                     return;
@@ -502,7 +506,7 @@
             }
 
             const excludeType = excludeAllChecked ? 'all other campaigns' : `${selectedCampaigns.length} selected campaign${selectedCampaigns.length !== 1 ? 's' : ''}`;
-            
+
             if (!confirm(`Are you sure you want to remove contacts that exist in ${excludeType}?`)) {
                 return;
             }
@@ -551,17 +555,17 @@
             const keywords = searchInput.value.toLowerCase().split(',').map(k => k.trim()).filter(k => k);
             const contactsTable = document.querySelector(`#contacts-${campaignId} tbody`);
             const rows = contactsTable.querySelectorAll('tr');
-            
+
             let matchCount = 0;
             rows.forEach(row => {
                 const name = row.querySelector('td:nth-child(2) .font-medium')?.textContent.toLowerCase() || '';
                 const domain = row.querySelector('td:nth-child(3) a')?.textContent.toLowerCase() || '';
                 const email = row.querySelector('td:nth-child(3) div:nth-child(2)')?.textContent.toLowerCase() || '';
-                
+
                 const matches = keywords.some(keyword => 
                     name.includes(keyword) || domain.includes(keyword) || email.includes(keyword)
                 );
-                
+
                 if (matches && keywords.length > 0) matchCount++;
                 row.style.display = keywords.length === 0 || matches ? '' : 'none';
                 row.classList.toggle('filtered-contact', matches && keywords.length > 0);
@@ -575,7 +579,7 @@
         async function removeFilteredContacts(campaignId) {
             const searchInput = document.getElementById(`search-contacts-${campaignId}`);
             const keywords = searchInput.value.trim();
-            
+
             if (!keywords) {
                 alert('Please enter search keywords first');
                 return;

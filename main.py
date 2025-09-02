@@ -3,7 +3,11 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from database import init_db, get_db
+from templates import TemplateManager, ManyReachIntegration
 from typing import List, Union
+import json
+import time
+from datetime import datetime, timedelta
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -15,6 +19,10 @@ init_db()
 @app.get("/docs/api", response_class=HTMLResponse)
 async def get_api_docs(request: Request):
     return templates.TemplateResponse("docs.html", {"request": request})
+
+@app.get("/export", response_class=HTMLResponse)
+async def get_export_page(request: Request):
+    return templates.TemplateResponse("export.html", {"request": request})
 
 @app.get("/", response_class=HTMLResponse)
 async def get_campaigns(request: Request, partial: bool = False):
@@ -699,3 +707,205 @@ async def get_campaign_status(campaign_id: int):
         cursor.execute("SELECT * FROM contacts WHERE campaign_id = ?", (campaign_id,))
         contacts = [dict(row) for row in cursor.fetchall()]
         return {"campaign": dict(campaign), "requests": requests, "contacts": contacts}
+
+# Export Template Management
+@app.get("/api/templates")
+async def get_templates():
+    templates = TemplateManager.get_all_templates()
+    return {"templates": templates}
+
+@app.get("/api/templates/{template_id}")
+async def get_template(template_id: int):
+    template = TemplateManager.get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return template
+
+@app.post("/api/templates")
+async def create_template(request: Request):
+    data = await request.json()
+    
+    required_fields = ['name', 'service', 'field_mappings', 'api_config']
+    for field in required_fields:
+        if field not in data:
+            raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
+    
+    template_id = TemplateManager.create_template(
+        data['name'],
+        data['service'],
+        data['field_mappings'],
+        data['api_config']
+    )
+    
+    return {"status": "Template created", "template_id": template_id}
+
+@app.put("/api/templates/{template_id}")
+async def update_template(template_id: int, request: Request):
+    data = await request.json()
+    
+    # Check if template exists
+    if not TemplateManager.get_template(template_id):
+        raise HTTPException(status_code=404, detail="Template not found")
+    
+    TemplateManager.update_template(
+        template_id,
+        data['name'],
+        data['field_mappings'],
+        data['api_config']
+    )
+    
+    return {"status": "Template updated"}
+
+@app.delete("/api/templates/{template_id}")
+async def delete_template(template_id: int):
+    if not TemplateManager.get_template(template_id):
+        raise HTTPException(status_code=404, detail="Template not found")
+    
+    TemplateManager.delete_template(template_id)
+    return {"status": "Template deleted"}
+
+# Export functionality
+@app.get("/api/campaign/{campaign_id}/export/preview")
+async def preview_export(campaign_id: int, template_id: int):
+    """Preview what the export will look like"""
+    template = TemplateManager.get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM contacts 
+            WHERE campaign_id = ? 
+            AND email IS NOT NULL 
+            AND email != ''
+            LIMIT 5
+        """, (campaign_id,))
+        contacts = [dict(row) for row in cursor.fetchall()]
+    
+    if template['service'] == 'manyreach':
+        integration = ManyReachIntegration("")
+        preview_data = []
+        for contact in contacts:
+            transformed = integration.transform_contact(contact, template['field_mappings'])
+            preview_data.append(transformed)
+        
+        return {
+            "template_name": template['name'],
+            "service": template['service'],
+            "total_contacts": len(contacts),
+            "preview_data": preview_data,
+            "field_mappings": template['field_mappings']
+        }
+    
+    return {"error": "Service not supported"}
+
+@app.post("/api/campaign/{campaign_id}/export")
+async def export_campaign(campaign_id: int, request: Request):
+    data = await request.json()
+    template_id = data.get('template_id')
+    batch_size = data.get('batch_size', 10)
+    
+    if not template_id:
+        raise HTTPException(status_code=400, detail="Template ID required")
+    
+    template = TemplateManager.get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    
+    # Rate limiting check
+    now = datetime.now()
+    rate_limit_window = now - timedelta(minutes=1)
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # Check recent exports for rate limiting
+        cursor.execute("""
+            SELECT COUNT(*) as recent_exports
+            FROM export_logs 
+            WHERE created_at > ? AND template_id = ?
+        """, (rate_limit_window.isoformat(), template_id))
+        
+        recent_exports = cursor.fetchone()['recent_exports']
+        
+        if template['service'] == 'manyreach':
+            integration = ManyReachIntegration(template['api_config'].get('api_key', ''))
+            if recent_exports >= integration.rate_limit:
+                raise HTTPException(status_code=429, detail=f"Rate limit exceeded. Max {integration.rate_limit} exports per minute.")
+        
+        # Get contacts to export
+        cursor.execute("""
+            SELECT * FROM contacts 
+            WHERE campaign_id = ? 
+            AND email IS NOT NULL 
+            AND email != ''
+            LIMIT ?
+        """, (campaign_id, batch_size))
+        contacts = [dict(row) for row in cursor.fetchall()]
+        
+        if not contacts:
+            raise HTTPException(status_code=404, detail="No contacts with email found")
+        
+        # Transform contacts
+        if template['service'] == 'manyreach':
+            integration = ManyReachIntegration(template['api_config'].get('api_key', ''))
+            transformed_contacts = []
+            
+            for contact in contacts:
+                if integration.validate_contact(contact):
+                    transformed = integration.transform_contact(contact, template['field_mappings'])
+                    transformed_contacts.append(transformed)
+            
+            # Log the export
+            cursor.execute("""
+                INSERT INTO export_logs (campaign_id, template_id, contacts_exported, status)
+                VALUES (?, ?, ?, ?)
+            """, (campaign_id, template_id, len(transformed_contacts), "simulated"))
+            conn.commit()
+            
+            return {
+                "status": "Export prepared (simulated)",
+                "service": "manyreach",
+                "contacts_exported": len(transformed_contacts),
+                "export_data": transformed_contacts,
+                "note": "This is a simulation. In production, this would send data to ManyReach API."
+            }
+    
+    return {"error": "Service not supported"}
+
+@app.get("/api/campaign/{campaign_id}/export/history")
+async def get_export_history(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT el.*, et.name as template_name, et.service
+            FROM export_logs el
+            JOIN export_templates et ON el.template_id = et.id
+            WHERE el.campaign_id = ?
+            ORDER BY el.created_at DESC
+        """, (campaign_id,))
+        return {"history": [dict(row) for row in cursor.fetchall()]}
+
+# Initialize default ManyReach template
+@app.on_event("startup")
+async def create_default_templates():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # Check if ManyReach template already exists
+        cursor.execute("SELECT id FROM export_templates WHERE service = 'manyreach'")
+        if not cursor.fetchone():
+            integration = ManyReachIntegration("")
+            default_mapping = integration.get_default_field_mapping()
+            
+            TemplateManager.create_template(
+                "ManyReach Default",
+                "manyreach",
+                default_mapping,
+                {
+                    "api_key": "",
+                    "endpoint": "/api/campaigns/prospects/add",
+                    "method": "POST"
+                }
+            )

@@ -1,0 +1,459 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Export Management</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="bg-gray-50 font-sans">
+    <div class="container mx-auto px-4 py-8">
+        <div class="flex justify-between items-center mb-6">
+            <h1 class="text-3xl font-bold text-gray-800">Export Management</h1>
+            <a href="/" class="text-blue-600 hover:text-blue-800">← Back to Campaigns</a>
+        </div>
+
+        <!-- Campaign Selection -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <h2 class="text-xl font-semibold mb-4">Select Campaign to Export</h2>
+            <select id="campaignSelect" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                <option value="">Select a campaign...</option>
+            </select>
+        </div>
+
+        <!-- Template Selection -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-semibold">Export Templates</h2>
+                <button id="createTemplateBtn" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">
+                    Create Template
+                </button>
+            </div>
+            <div id="templatesList" class="space-y-3">
+                <!-- Templates will be loaded here -->
+            </div>
+        </div>
+
+        <!-- Field Mapping Interface -->
+        <div id="fieldMappingSection" class="bg-white rounded-lg shadow-md p-6 mb-6 hidden">
+            <h2 class="text-xl font-semibold mb-4">Field Mapping</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <h3 class="font-medium mb-3 text-gray-700">API Fields (ManyReach)</h3>
+                    <div id="apiFields" class="space-y-2">
+                        <!-- API fields will be loaded here -->
+                    </div>
+                </div>
+                <div>
+                    <h3 class="font-medium mb-3 text-gray-700">Your Contact Fields</h3>
+                    <div class="text-sm text-gray-600 mb-2">Available fields from your contacts:</div>
+                    <div class="text-xs text-gray-500 space-y-1">
+                        <div>• business_name</div>
+                        <div>• email</div>
+                        <div>• phone</div>
+                        <div>• domain</div>
+                        <div>• address</div>
+                        <div>• category</div>
+                        <div>• rating</div>
+                        <div>• review_count</div>
+                        <div>• facebook</div>
+                        <div>• instagram</div>
+                        <div>• twitter</div>
+                        <div>• yelp</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="mt-6 flex gap-3">
+                <button id="previewExportBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
+                    Preview Export
+                </button>
+                <button id="executeExportBtn" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">
+                    Execute Export
+                </button>
+            </div>
+        </div>
+
+        <!-- Export Preview -->
+        <div id="exportPreview" class="bg-white rounded-lg shadow-md p-6 mb-6 hidden">
+            <h2 class="text-xl font-semibold mb-4">Export Preview</h2>
+            <div id="previewContent"></div>
+        </div>
+
+        <!-- Rate Limit Status -->
+        <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
+            <h3 class="font-medium text-yellow-800 mb-2">Rate Limiting</h3>
+            <div class="text-sm text-yellow-700">
+                <div>ManyReach API: <span id="rateLimitStatus">60 requests per minute</span></div>
+                <div>Last export: <span id="lastExportTime">Never</span></div>
+            </div>
+        </div>
+
+        <!-- Export History -->
+        <div class="bg-white rounded-lg shadow-md p-6">
+            <h2 class="text-xl font-semibold mb-4">Export History</h2>
+            <div id="exportHistory" class="space-y-3">
+                <!-- Export history will be loaded here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Template Modal -->
+    <div id="createTemplateModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+        <div class="flex items-center justify-center min-h-screen">
+            <div class="bg-white rounded-lg p-6 w-full max-w-md mx-4">
+                <h3 class="text-lg font-semibold mb-4">Create New Template</h3>
+                <form id="createTemplateForm">
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium mb-2">Template Name</label>
+                        <input type="text" id="templateName" class="w-full p-2 border border-gray-300 rounded-lg" required>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium mb-2">Service</label>
+                        <select id="templateService" class="w-full p-2 border border-gray-300 rounded-lg" required>
+                            <option value="manyreach">ManyReach</option>
+                        </select>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium mb-2">API Key</label>
+                        <input type="password" id="templateApiKey" class="w-full p-2 border border-gray-300 rounded-lg" required>
+                    </div>
+                    <div class="flex gap-3">
+                        <button type="button" onclick="closeCreateTemplateModal()" class="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
+                            Cancel
+                        </button>
+                        <button type="submit" class="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">
+                            Create
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let selectedCampaign = null;
+        let selectedTemplate = null;
+        let currentFieldMappings = {};
+
+        // Load campaigns and templates on page load
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadCampaigns();
+            await loadTemplates();
+        });
+
+        async function loadCampaigns() {
+            try {
+                const response = await fetch('/api/campaigns/active');
+                const data = await response.json();
+                const select = document.getElementById('campaignSelect');
+                
+                select.innerHTML = '<option value="">Select a campaign...</option>';
+                data.campaigns.forEach(campaign => {
+                    const option = document.createElement('option');
+                    option.value = campaign.id;
+                    option.textContent = `${campaign.name} (${campaign.total_contacts} contacts)`;
+                    select.appendChild(option);
+                });
+                
+                select.addEventListener('change', (e) => {
+                    selectedCampaign = e.target.value;
+                    if (selectedCampaign && selectedTemplate) {
+                        showFieldMapping();
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading campaigns:', error);
+            }
+        }
+
+        async function loadTemplates() {
+            try {
+                const response = await fetch('/api/templates');
+                const data = await response.json();
+                const container = document.getElementById('templatesList');
+                
+                container.innerHTML = '';
+                data.templates.forEach(template => {
+                    const templateDiv = document.createElement('div');
+                    templateDiv.className = 'border border-gray-200 rounded-lg p-4 cursor-pointer hover:bg-blue-50 transition-colors';
+                    templateDiv.onclick = () => selectTemplate(template);
+                    
+                    templateDiv.innerHTML = `
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <h3 class="font-medium">${template.name}</h3>
+                                <p class="text-sm text-gray-600">${template.service.toUpperCase()}</p>
+                            </div>
+                            <div class="text-sm text-gray-500">
+                                ${new Date(template.created_at).toLocaleDateString()}
+                            </div>
+                        </div>
+                    `;
+                    
+                    container.appendChild(templateDiv);
+                });
+            } catch (error) {
+                console.error('Error loading templates:', error);
+            }
+        }
+
+        function selectTemplate(template) {
+            selectedTemplate = template;
+            currentFieldMappings = JSON.parse(template.field_mappings);
+            
+            // Update UI to show selected template
+            document.querySelectorAll('#templatesList > div').forEach(div => {
+                div.classList.remove('bg-blue-100', 'border-blue-500');
+                div.classList.add('border-gray-200');
+            });
+            
+            event.currentTarget.classList.remove('border-gray-200');
+            event.currentTarget.classList.add('bg-blue-100', 'border-blue-500');
+            
+            if (selectedCampaign && selectedTemplate) {
+                showFieldMapping();
+            }
+        }
+
+        function showFieldMapping() {
+            const section = document.getElementById('fieldMappingSection');
+            section.classList.remove('hidden');
+            
+            const apiFields = document.getElementById('apiFields');
+            apiFields.innerHTML = '';
+            
+            // Create field mapping inputs
+            Object.entries(currentFieldMappings).forEach(([apiField, contactField]) => {
+                const fieldDiv = document.createElement('div');
+                fieldDiv.className = 'flex items-center space-x-2';
+                
+                fieldDiv.innerHTML = `
+                    <label class="w-24 text-sm font-medium">${apiField}:</label>
+                    <select class="flex-1 p-2 border border-gray-300 rounded text-sm" onchange="updateFieldMapping('${apiField}', this.value)">
+                        <option value="">-- Select Field --</option>
+                        <option value="business_name" ${contactField === 'business_name' ? 'selected' : ''}>Business Name</option>
+                        <option value="email" ${contactField === 'email' ? 'selected' : ''}>Email</option>
+                        <option value="phone" ${contactField === 'phone' ? 'selected' : ''}>Phone</option>
+                        <option value="domain" ${contactField === 'domain' ? 'selected' : ''}>Domain</option>
+                        <option value="address" ${contactField === 'address' ? 'selected' : ''}>Address</option>
+                        <option value="category" ${contactField === 'category' ? 'selected' : ''}>Category</option>
+                        <option value="rating" ${contactField === 'rating' ? 'selected' : ''}>Rating</option>
+                        <option value="review_count" ${contactField === 'review_count' ? 'selected' : ''}>Review Count</option>
+                        <option value="facebook" ${contactField === 'facebook' ? 'selected' : ''}>Facebook</option>
+                        <option value="instagram" ${contactField === 'instagram' ? 'selected' : ''}>Instagram</option>
+                        <option value="twitter" ${contactField === 'twitter' ? 'selected' : ''}>Twitter</option>
+                        <option value="yelp" ${contactField === 'yelp' ? 'selected' : ''}>Yelp</option>
+                    </select>
+                `;
+                
+                apiFields.appendChild(fieldDiv);
+            });
+        }
+
+        function updateFieldMapping(apiField, contactField) {
+            currentFieldMappings[apiField] = contactField;
+        }
+
+        async function previewExport() {
+            if (!selectedCampaign || !selectedTemplate) {
+                alert('Please select both a campaign and template');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/campaign/${selectedCampaign}/export/preview?template_id=${selectedTemplate.id}`);
+                const data = await response.json();
+                
+                const previewSection = document.getElementById('exportPreview');
+                const previewContent = document.getElementById('previewContent');
+                
+                previewContent.innerHTML = `
+                    <div class="mb-4">
+                        <h3 class="font-medium">Template: ${data.template_name}</h3>
+                        <p class="text-sm text-gray-600">Service: ${data.service.toUpperCase()}</p>
+                        <p class="text-sm text-gray-600">Contacts to export: ${data.total_contacts}</p>
+                    </div>
+                    <div class="bg-gray-50 rounded-lg p-4">
+                        <h4 class="font-medium mb-2">Sample Export Data:</h4>
+                        <pre class="text-xs overflow-auto">${JSON.stringify(data.preview_data, null, 2)}</pre>
+                    </div>
+                `;
+                
+                previewSection.classList.remove('hidden');
+            } catch (error) {
+                alert('Error previewing export: ' + error.message);
+            }
+        }
+
+        async function executeExport() {
+            if (!selectedCampaign || !selectedTemplate) {
+                alert('Please select both a campaign and template');
+                return;
+            }
+            
+            const batchSize = prompt('Enter batch size (1-100):', '10');
+            if (!batchSize || isNaN(batchSize) || batchSize < 1 || batchSize > 100) {
+                alert('Invalid batch size');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/campaign/${selectedCampaign}/export`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        template_id: selectedTemplate.id,
+                        batch_size: parseInt(batchSize),
+                        field_mappings: currentFieldMappings
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    alert(`Export completed! ${data.contacts_exported} contacts exported to ${data.service}`);
+                    await loadExportHistory();
+                } else {
+                    alert('Export failed: ' + data.detail);
+                }
+            } catch (error) {
+                alert('Error executing export: ' + error.message);
+            }
+        }
+
+        async function loadExportHistory() {
+            if (!selectedCampaign) return;
+            
+            try {
+                const response = await fetch(`/api/campaign/${selectedCampaign}/export/history`);
+                const data = await response.json();
+                
+                const historyDiv = document.getElementById('exportHistory');
+                historyDiv.innerHTML = '';
+                
+                if (data.history.length === 0) {
+                    historyDiv.innerHTML = '<p class="text-gray-500">No export history</p>';
+                    return;
+                }
+                
+                data.history.forEach(log => {
+                    const logDiv = document.createElement('div');
+                    logDiv.className = 'border border-gray-200 rounded-lg p-3';
+                    
+                    logDiv.innerHTML = `
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <span class="font-medium">${log.template_name}</span>
+                                <span class="text-sm text-gray-600">(${log.service})</span>
+                            </div>
+                            <div class="text-sm text-gray-500">
+                                ${new Date(log.created_at).toLocaleString()}
+                            </div>
+                        </div>
+                        <div class="text-sm text-gray-600 mt-1">
+                            ${log.contacts_exported} contacts exported - Status: ${log.status}
+                        </div>
+                    `;
+                    
+                    historyDiv.appendChild(logDiv);
+                });
+            } catch (error) {
+                console.error('Error loading export history:', error);
+            }
+        }
+
+        function openCreateTemplateModal() {
+            document.getElementById('createTemplateModal').classList.remove('hidden');
+        }
+
+        function closeCreateTemplateModal() {
+            document.getElementById('createTemplateModal').classList.add('hidden');
+            document.getElementById('createTemplateForm').reset();
+        }
+
+        // Event listeners
+        document.getElementById('createTemplateBtn').addEventListener('click', openCreateTemplateModal);
+        document.getElementById('previewExportBtn').addEventListener('click', previewExport);
+        document.getElementById('executeExportBtn').addEventListener('click', executeExport);
+        
+        document.getElementById('createTemplateForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const name = document.getElementById('templateName').value;
+            const service = document.getElementById('templateService').value;
+            const apiKey = document.getElementById('templateApiKey').value;
+            
+            // Get default ManyReach mapping
+            const integration = {
+                "email": "email",
+                "company": "business_name", 
+                "www": "domain",
+                "phone": "phone",
+                "industry": "category",
+                "firstname": "",
+                "lastname": "",
+                "custom_3": "",
+                "custom_4": "",
+                "custom_5": "",
+                "custom_6": "",
+                "custom_7": "",
+                "custom_8": "",
+                "custom_9": "",
+                "custom_10": "",
+                "custom_11": "",
+                "custom_12": "",
+                "custom_13": "",
+                "custom_14": "",
+                "custom_15": "",
+                "custom_16": "",
+                "custom_17": "",
+                "custom_18": "",
+                "custom_19": "",
+                "custom_20": ""
+            };
+            
+            try {
+                const response = await fetch('/api/templates', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        name: name,
+                        service: service,
+                        field_mappings: integration,
+                        api_config: {
+                            api_key: apiKey,
+                            endpoint: "/api/campaigns/prospects/add",
+                            method: "POST"
+                        }
+                    })
+                });
+                
+                if (response.ok) {
+                    closeCreateTemplateModal();
+                    await loadTemplates();
+                    alert('Template created successfully!');
+                } else {
+                    const error = await response.json();
+                    alert('Error creating template: ' + error.detail);
+                }
+            } catch (error) {
+                alert('Error creating template: ' + error.message);
+            }
+        });
+
+        // Load export history when campaign changes
+        document.getElementById('campaignSelect').addEventListener('change', async () => {
+            if (selectedCampaign) {
+                await loadExportHistory();
+            }
+        });
+    </script>
+</body>
+</html>

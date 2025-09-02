@@ -53,4 +53,27 @@ def init_db():
                 FOREIGN KEY (request_id) REFERENCES requests(id)
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS export_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                service TEXT NOT NULL,
+                field_mappings TEXT NOT NULL,
+                api_config TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS export_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id INTEGER,
+                template_id INTEGER,
+                contacts_exported INTEGER,
+                status TEXT,
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (campaign_id) REFERENCES search_campaigns(id),
+                FOREIGN KEY (template_id) REFERENCES export_templates(id)
+            )
+        ''')
         conn.commit()
