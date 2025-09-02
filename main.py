@@ -628,77 +628,62 @@ async def exclude_contacts_from_campaigns(campaign_id: int, request: Request):
     with get_db() as conn:
         cursor = conn.cursor()
         
-        # Get source campaign contacts (domains and emails for comparison)
-        cursor.execute("""
-            SELECT DISTINCT domain, email, business_name, phone 
-            FROM contacts 
-            WHERE campaign_id = ? 
-            AND (domain IS NOT NULL OR email IS NOT NULL OR business_name IS NOT NULL OR phone IS NOT NULL)
-        """, (campaign_id,))
-        source_contacts = cursor.fetchall()
-        
-        if not source_contacts:
-            return {"status": "success", "excluded_contacts": 0, "message": "No contacts to exclude"}
-        
         excluded_count = 0
         
         if exclude_all:
-            # Exclude from all other campaigns
-            for contact in source_contacts:
-                conditions = []
-                params = []
-                
-                if contact['domain']:
-                    conditions.append("domain = ?")
-                    params.append(contact['domain'])
-                if contact['email']:
-                    conditions.append("email = ?")
-                    params.append(contact['email'])
-                if contact['business_name']:
-                    conditions.append("business_name = ?")
-                    params.append(contact['business_name'])
-                if contact['phone']:
-                    conditions.append("phone = ?")
-                    params.append(contact['phone'])
-                
-                if conditions:
-                    params.append(campaign_id)  # Exclude current campaign from deletion
-                    where_clause = f"({' OR '.join(conditions)}) AND campaign_id != ?"
-                    
-                    cursor.execute(f"DELETE FROM contacts WHERE {where_clause}", params)
-                    excluded_count += cursor.rowcount
+            # Remove contacts from current campaign that exist in ANY other campaign
+            cursor.execute("""
+                DELETE FROM contacts 
+                WHERE campaign_id = ? 
+                AND id IN (
+                    SELECT c1.id 
+                    FROM contacts c1 
+                    WHERE c1.campaign_id = ? 
+                    AND EXISTS (
+                        SELECT 1 FROM contacts c2 
+                        WHERE c2.campaign_id != ? 
+                        AND (
+                            (c1.domain IS NOT NULL AND c1.domain != '' AND c1.domain = c2.domain) OR
+                            (c1.email IS NOT NULL AND c1.email != '' AND c1.email = c2.email) OR
+                            (c1.business_name IS NOT NULL AND c1.business_name != '' AND c1.business_name = c2.business_name) OR
+                            (c1.phone IS NOT NULL AND c1.phone != '' AND c1.phone = c2.phone)
+                        )
+                    )
+                )
+            """, (campaign_id, campaign_id, campaign_id))
+            excluded_count = cursor.rowcount
         else:
-            # Exclude from specific campaigns
-            for exclude_campaign_id in exclude_campaigns:
-                for contact in source_contacts:
-                    conditions = []
-                    params = []
-                    
-                    if contact['domain']:
-                        conditions.append("domain = ?")
-                        params.append(contact['domain'])
-                    if contact['email']:
-                        conditions.append("email = ?")
-                        params.append(contact['email'])
-                    if contact['business_name']:
-                        conditions.append("business_name = ?")
-                        params.append(contact['business_name'])
-                    if contact['phone']:
-                        conditions.append("phone = ?")
-                        params.append(contact['phone'])
-                    
-                    if conditions:
-                        params.append(exclude_campaign_id)
-                        where_clause = f"({' OR '.join(conditions)}) AND campaign_id = ?"
-                        
-                        cursor.execute(f"DELETE FROM contacts WHERE {where_clause}", params)
-                        excluded_count += cursor.rowcount
+            # Remove contacts from current campaign that exist in specific campaigns
+            campaign_placeholders = ','.join(['?' for _ in exclude_campaigns])
+            params = [campaign_id, campaign_id] + exclude_campaigns + [campaign_id]
+            
+            cursor.execute(f"""
+                DELETE FROM contacts 
+                WHERE campaign_id = ? 
+                AND id IN (
+                    SELECT c1.id 
+                    FROM contacts c1 
+                    WHERE c1.campaign_id = ? 
+                    AND EXISTS (
+                        SELECT 1 FROM contacts c2 
+                        WHERE c2.campaign_id IN ({campaign_placeholders}) 
+                        AND c2.campaign_id != ?
+                        AND (
+                            (c1.domain IS NOT NULL AND c1.domain != '' AND c1.domain = c2.domain) OR
+                            (c1.email IS NOT NULL AND c1.email != '' AND c1.email = c2.email) OR
+                            (c1.business_name IS NOT NULL AND c1.business_name != '' AND c1.business_name = c2.business_name) OR
+                            (c1.phone IS NOT NULL AND c1.phone != '' AND c1.phone = c2.phone)
+                        )
+                    )
+                )
+            """, params)
+            excluded_count = cursor.rowcount
         
         conn.commit()
         return {
             "status": "success", 
             "excluded_contacts": excluded_count,
-            "exclude_type": "all campaigns" if exclude_all else f"{len(exclude_campaigns)} selected campaigns"
+            "exclude_type": "all other campaigns" if exclude_all else f"{len(exclude_campaigns)} selected campaigns"
         }
 
 @app.get("/api/campaign/{campaign_id}")
