@@ -436,19 +436,16 @@
             const listContainer = document.getElementById('excludeCampaignsList');
             
             // Get all campaigns from the current page
-            const campaignRows = document.querySelectorAll('tbody tr:not([id^="requests-"]):not([id^="contacts-"]):not(:empty)');
+            const campaignRows = document.querySelectorAll('tbody tr.hover\\:bg-gray-50');
             const campaigns = [];
             
-            campaignRows.forEach((row, index) => {
-                // Skip progress bar rows (every other row)
-                if (index % 3 === 0) {
-                    const cells = row.querySelectorAll('td');
-                    if (cells.length >= 2) {
-                        const id = parseInt(cells[0].textContent.trim());
-                        const name = cells[1].textContent.trim();
-                        if (id !== currentCampaignId) {
-                            campaigns.push({ id, name });
-                        }
+            campaignRows.forEach((row) => {
+                const cells = row.querySelectorAll('td');
+                if (cells.length >= 2) {
+                    const id = parseInt(cells[0].textContent.trim());
+                    const name = cells[1].textContent.trim();
+                    if (id !== currentCampaignId && id && name) {
+                        campaigns.push({ id, name });
                     }
                 }
             });
