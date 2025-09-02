@@ -73,6 +73,7 @@
                                 <button onclick="toggleRequests({{ campaign.id }})" class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-blue-200 transition-all">Requests</button>
                                 <button onclick="toggleContacts({{ campaign.id }})" class="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-purple-200 transition-all">Contacts</button>
                                 <button onclick="duplicateCampaign({{ campaign.id }})" class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-green-200 transition-all">Duplicate</button>
+                                <button onclick="showExcludeModal({{ campaign.id }})" class="bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-indigo-200 transition-all">Exclude</button>
                                 <button onclick="showRemoveDuplicatesModal({{ campaign.id }})" class="bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-orange-200 transition-all">Remove Duplicates</button>
                                 <button onclick="removeEmptyDomains({{ campaign.id }})" class="bg-yellow-100 text-yellow-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-yellow-200 transition-all">Remove Empty Domains</button>
                                 <button onclick="deleteCampaign({{ campaign.id }})" class="bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-red-200 transition-all">Delete</button>
@@ -230,6 +231,31 @@
         </div>
     </div>
 
+    <!-- Modal for excluding campaigns -->
+    <div id="excludeModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+        <div class="flex items-center justify-center min-h-screen p-4">
+            <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg">
+                <h3 class="text-lg font-semibold text-gray-800 mb-4">Exclude from Other Campaigns</h3>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-3">Select campaigns to exclude contacts from:</label>
+                        <div id="excludeCampaignsList" class="space-y-2 max-h-60 overflow-y-auto border border-gray-200 rounded-lg p-3">
+                            <!-- Campaign list will be populated by JavaScript -->
+                        </div>
+                    </div>
+                    <div class="flex gap-3 justify-end">
+                        <button onclick="closeExcludeModal()" class="px-4 py-2 text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-all">
+                            Cancel
+                        </button>
+                        <button onclick="confirmExcludeCampaigns()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-all">
+                            Exclude
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Modal for campaign duplication -->
     <div id="duplicateModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
         <div class="flex items-center justify-center min-h-screen p-4">
@@ -285,6 +311,8 @@
     <script>
         let pendingDuplicateCampaignId = null;
         let pendingRemoveDuplicatesCampaignId = null;
+        let pendingExcludeCampaignId = null;
+        let allCampaigns = [];
 
         function toggleRequests(campaignId) {
             const row = document.getElementById(`requests-${campaignId}`);
@@ -390,6 +418,116 @@
             } catch (error) {
                 console.error('Error removing duplicates:', error);
                 alert('Error removing duplicates');
+            }
+        }
+
+        function showExcludeModal(campaignId) {
+            pendingExcludeCampaignId = campaignId;
+            populateExcludeCampaignsList(campaignId);
+            document.getElementById('excludeModal').classList.remove('hidden');
+        }
+
+        function closeExcludeModal() {
+            document.getElementById('excludeModal').classList.add('hidden');
+            pendingExcludeCampaignId = null;
+        }
+
+        function populateExcludeCampaignsList(currentCampaignId) {
+            const listContainer = document.getElementById('excludeCampaignsList');
+            
+            // Get all campaigns from the current page
+            const campaignRows = document.querySelectorAll('tbody tr:not([id^="requests-"]):not([id^="contacts-"]):not(:empty)');
+            const campaigns = [];
+            
+            campaignRows.forEach((row, index) => {
+                // Skip progress bar rows (every other row)
+                if (index % 3 === 0) {
+                    const cells = row.querySelectorAll('td');
+                    if (cells.length >= 2) {
+                        const id = parseInt(cells[0].textContent.trim());
+                        const name = cells[1].textContent.trim();
+                        if (id !== currentCampaignId) {
+                            campaigns.push({ id, name });
+                        }
+                    }
+                }
+            });
+
+            listContainer.innerHTML = '';
+            
+            // Add "Exclude all campaigns" option
+            const allCampaignsDiv = document.createElement('div');
+            allCampaignsDiv.innerHTML = `
+                <label class="flex items-center">
+                    <input type="checkbox" id="excludeAllCampaigns" class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                    <span class="ml-2 text-sm font-medium text-gray-700">Exclude all campaigns</span>
+                </label>
+            `;
+            listContainer.appendChild(allCampaignsDiv);
+
+            // Add individual campaigns
+            campaigns.forEach(campaign => {
+                const campaignDiv = document.createElement('div');
+                campaignDiv.innerHTML = `
+                    <label class="flex items-center">
+                        <input type="checkbox" id="excludeCampaign-${campaign.id}" class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 exclude-campaign-checkbox">
+                        <span class="ml-2 text-sm text-gray-700">${campaign.name} (ID: ${campaign.id})</span>
+                    </label>
+                `;
+                listContainer.appendChild(campaignDiv);
+            });
+
+            // Add event listener for "exclude all" checkbox
+            document.getElementById('excludeAllCampaigns').addEventListener('change', function() {
+                const checkboxes = document.querySelectorAll('.exclude-campaign-checkbox');
+                checkboxes.forEach(checkbox => {
+                    checkbox.checked = this.checked;
+                    checkbox.disabled = this.checked;
+                });
+            });
+        }
+
+        async function confirmExcludeCampaigns() {
+            const excludeAllChecked = document.getElementById('excludeAllCampaigns').checked;
+            const selectedCampaigns = [];
+            
+            if (!excludeAllChecked) {
+                const checkboxes = document.querySelectorAll('.exclude-campaign-checkbox:checked');
+                checkboxes.forEach(checkbox => {
+                    const campaignId = parseInt(checkbox.id.split('-')[1]);
+                    selectedCampaigns.push(campaignId);
+                });
+                
+                if (selectedCampaigns.length === 0) {
+                    alert('Please select at least one campaign to exclude from');
+                    return;
+                }
+            }
+
+            const excludeType = excludeAllChecked ? 'all campaigns' : `${selectedCampaigns.length} selected campaign${selectedCampaigns.length !== 1 ? 's' : ''}`;
+            
+            if (!confirm(`Are you sure you want to exclude contacts from ${excludeType}?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/campaign/${pendingExcludeCampaignId}/exclude`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ 
+                        excludeAll: excludeAllChecked,
+                        excludeCampaigns: selectedCampaigns
+                    })
+                });
+                const data = await response.json();
+                alert(`Excluded ${data.excluded_contacts} contacts from ${excludeType}`);
+                closeExcludeModal();
+                await refreshCampaigns();
+            } catch (error) {
+                console.error('Error excluding contacts:', error);
+                alert('Error excluding contacts');
             }
         }
 
@@ -536,6 +674,10 @@
                 confirmRemoveDuplicates();
             } else if (event.key === 'Escape' && !document.getElementById('removeDuplicatesModal').classList.contains('hidden')) {
                 closeRemoveDuplicatesModal();
+            } else if (event.key === 'Enter' && !document.getElementById('excludeModal').classList.contains('hidden')) {
+                confirmExcludeCampaigns();
+            } else if (event.key === 'Escape' && !document.getElementById('excludeModal').classList.contains('hidden')) {
+                closeExcludeModal();
             }
         });
 

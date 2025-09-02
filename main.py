@@ -613,6 +613,94 @@ async def duplicate_campaign(campaign_id: int, request: Request):
             "copied_contacts": copied_contacts
         }
 
+@app.post("/api/campaign/{campaign_id}/exclude")
+async def exclude_contacts_from_campaigns(campaign_id: int, request: Request):
+    try:
+        data = await request.json()
+        exclude_all = data.get('excludeAll', False)
+        exclude_campaigns = data.get('excludeCampaigns', [])
+    except:
+        raise HTTPException(status_code=400, detail="Invalid request body")
+    
+    if not exclude_all and not exclude_campaigns:
+        raise HTTPException(status_code=400, detail="No campaigns specified for exclusion")
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # Get source campaign contacts (domains and emails for comparison)
+        cursor.execute("""
+            SELECT DISTINCT domain, email, business_name, phone 
+            FROM contacts 
+            WHERE campaign_id = ? 
+            AND (domain IS NOT NULL OR email IS NOT NULL OR business_name IS NOT NULL OR phone IS NOT NULL)
+        """, (campaign_id,))
+        source_contacts = cursor.fetchall()
+        
+        if not source_contacts:
+            return {"status": "success", "excluded_contacts": 0, "message": "No contacts to exclude"}
+        
+        excluded_count = 0
+        
+        if exclude_all:
+            # Exclude from all other campaigns
+            for contact in source_contacts:
+                conditions = []
+                params = []
+                
+                if contact['domain']:
+                    conditions.append("domain = ?")
+                    params.append(contact['domain'])
+                if contact['email']:
+                    conditions.append("email = ?")
+                    params.append(contact['email'])
+                if contact['business_name']:
+                    conditions.append("business_name = ?")
+                    params.append(contact['business_name'])
+                if contact['phone']:
+                    conditions.append("phone = ?")
+                    params.append(contact['phone'])
+                
+                if conditions:
+                    params.append(campaign_id)  # Exclude current campaign from deletion
+                    where_clause = f"({' OR '.join(conditions)}) AND campaign_id != ?"
+                    
+                    cursor.execute(f"DELETE FROM contacts WHERE {where_clause}", params)
+                    excluded_count += cursor.rowcount
+        else:
+            # Exclude from specific campaigns
+            for exclude_campaign_id in exclude_campaigns:
+                for contact in source_contacts:
+                    conditions = []
+                    params = []
+                    
+                    if contact['domain']:
+                        conditions.append("domain = ?")
+                        params.append(contact['domain'])
+                    if contact['email']:
+                        conditions.append("email = ?")
+                        params.append(contact['email'])
+                    if contact['business_name']:
+                        conditions.append("business_name = ?")
+                        params.append(contact['business_name'])
+                    if contact['phone']:
+                        conditions.append("phone = ?")
+                        params.append(contact['phone'])
+                    
+                    if conditions:
+                        params.append(exclude_campaign_id)
+                        where_clause = f"({' OR '.join(conditions)}) AND campaign_id = ?"
+                        
+                        cursor.execute(f"DELETE FROM contacts WHERE {where_clause}", params)
+                        excluded_count += cursor.rowcount
+        
+        conn.commit()
+        return {
+            "status": "success", 
+            "excluded_contacts": excluded_count,
+            "exclude_type": "all campaigns" if exclude_all else f"{len(exclude_campaigns)} selected campaigns"
+        }
+
 @app.get("/api/campaign/{campaign_id}")
 async def get_campaign_status(campaign_id: int):
     with get_db() as conn:
