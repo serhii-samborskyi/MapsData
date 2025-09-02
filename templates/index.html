@@ -73,7 +73,7 @@
                                 <button onclick="toggleRequests({{ campaign.id }})" class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-blue-200 transition-all">Requests</button>
                                 <button onclick="toggleContacts({{ campaign.id }})" class="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-purple-200 transition-all">Contacts</button>
                                 <button onclick="duplicateCampaign({{ campaign.id }})" class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-green-200 transition-all">Duplicate</button>
-                                <button onclick="removeDuplicates({{ campaign.id }})" class="bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-orange-200 transition-all">Remove Duplicates</button>
+                                <button onclick="showRemoveDuplicatesModal({{ campaign.id }})" class="bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-orange-200 transition-all">Remove Duplicates</button>
                                 <button onclick="removeEmptyDomains({{ campaign.id }})" class="bg-yellow-100 text-yellow-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-yellow-200 transition-all">Remove Empty Domains</button>
                                 <button onclick="deleteCampaign({{ campaign.id }})" class="bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-red-200 transition-all">Delete</button>
                             </td>
@@ -202,6 +202,34 @@
         </div>
     </div>
 
+    <!-- Modal for removing duplicates -->
+    <div id="removeDuplicatesModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+        <div class="flex items-center justify-center min-h-screen p-4">
+            <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg">
+                <h3 class="text-lg font-semibold text-gray-800 mb-4">Remove Duplicates</h3>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-3">Remove duplicates by:</label>
+                        <select id="duplicateFieldSelect" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all">
+                            <option value="domain">Domain</option>
+                            <option value="business_name">Company Name</option>
+                            <option value="email">Email</option>
+                            <option value="phone">Phone Number</option>
+                        </select>
+                    </div>
+                    <div class="flex gap-3 justify-end">
+                        <button onclick="closeRemoveDuplicatesModal()" class="px-4 py-2 text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-all">
+                            Cancel
+                        </button>
+                        <button onclick="confirmRemoveDuplicates()" class="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-all">
+                            Remove Duplicates
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Modal for campaign duplication -->
     <div id="duplicateModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
         <div class="flex items-center justify-center min-h-screen p-4">
@@ -256,6 +284,7 @@
 
     <script>
         let pendingDuplicateCampaignId = null;
+        let pendingRemoveDuplicatesCampaignId = null;
 
         function toggleRequests(campaignId) {
             const row = document.getElementById(`requests-${campaignId}`);
@@ -327,16 +356,36 @@
             }
         }
 
-        async function removeDuplicates(campaignId) {
-            if (!confirm('Are you sure you want to remove duplicate contacts based on domain?')) {
+        function showRemoveDuplicatesModal(campaignId) {
+            pendingRemoveDuplicatesCampaignId = campaignId;
+            document.getElementById('removeDuplicatesModal').classList.remove('hidden');
+            document.getElementById('duplicateFieldSelect').focus();
+        }
+
+        function closeRemoveDuplicatesModal() {
+            document.getElementById('removeDuplicatesModal').classList.add('hidden');
+            document.getElementById('duplicateFieldSelect').value = 'domain';
+            pendingRemoveDuplicatesCampaignId = null;
+        }
+
+        async function confirmRemoveDuplicates() {
+            const field = document.getElementById('duplicateFieldSelect').value;
+            
+            if (!confirm(`Are you sure you want to remove duplicate contacts based on ${field}?`)) {
                 return;
             }
+
             try {
-                const response = await fetch(`/api/campaign/${campaignId}/remove_duplicates`, {
-                    method: 'POST'
+                const response = await fetch(`/api/campaign/${pendingRemoveDuplicatesCampaignId}/remove_duplicates`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ field: field })
                 });
                 const data = await response.json();
-                alert(`Removed ${data.removed_duplicates} duplicate contacts`);
+                alert(`Removed ${data.removed_duplicates} duplicate contacts based on ${field}`);
+                closeRemoveDuplicatesModal();
                 await refreshCampaigns();
             } catch (error) {
                 console.error('Error removing duplicates:', error);
@@ -477,12 +526,16 @@
             }
         }
 
-        // Add Enter key support for the modal
+        // Add Enter key support for the modals
         document.addEventListener('keydown', (event) => {
             if (event.key === 'Enter' && !document.getElementById('duplicateModal').classList.contains('hidden')) {
                 confirmDuplicateCampaign();
             } else if (event.key === 'Escape' && !document.getElementById('duplicateModal').classList.contains('hidden')) {
                 closeDuplicateModal();
+            } else if (event.key === 'Enter' && !document.getElementById('removeDuplicatesModal').classList.contains('hidden')) {
+                confirmRemoveDuplicates();
+            } else if (event.key === 'Escape' && !document.getElementById('removeDuplicatesModal').classList.contains('hidden')) {
+                closeRemoveDuplicatesModal();
             }
         });
 

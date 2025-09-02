@@ -355,29 +355,46 @@ async def get_random_contact_without_email(campaign_id: int, batch: int = 1):
         return {"contacts": results, "count": len(results)}
 
 @app.post("/api/campaign/{campaign_id}/remove_duplicates")
-async def remove_duplicate_contacts(campaign_id: int):
+async def remove_duplicate_contacts(campaign_id: int, request: Request = None):
+    field = "domain"  # default field
+    
+    if request:
+        try:
+            data = await request.json()
+            field = data.get('field', 'domain')
+        except:
+            pass
+    
+    # Validate field
+    valid_fields = ["domain", "business_name", "email", "phone"]
+    if field not in valid_fields:
+        raise HTTPException(status_code=400, detail=f"Invalid field. Must be one of: {valid_fields}")
+    
     with get_db() as conn:
         cursor = conn.cursor()
         
-        # Remove duplicates by domain only
-        cursor.execute("""
+        # Remove duplicates by specified field
+        cursor.execute(f"""
             DELETE FROM contacts 
             WHERE id NOT IN (
                 SELECT MIN(id)
                 FROM contacts
                 WHERE campaign_id = ? 
-                AND domain IS NOT NULL
-                GROUP BY domain
+                AND {field} IS NOT NULL
+                AND {field} != ''
+                GROUP BY {field}
             )
             AND campaign_id = ?
-            AND domain IS NOT NULL
+            AND {field} IS NOT NULL
+            AND {field} != ''
         """, (campaign_id, campaign_id))
         duplicate_count = cursor.rowcount
         
         conn.commit()
         return {
             "status": "success", 
-            "removed_duplicates": duplicate_count
+            "removed_duplicates": duplicate_count,
+            "field_used": field
         }
 
 @app.post("/api/campaign/{campaign_id}/remove_empty_domains")
