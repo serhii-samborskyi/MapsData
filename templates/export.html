@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -65,7 +64,7 @@
                     </div>
                 </div>
             </div>
-            
+
             <div class="mt-6 flex gap-3">
                 <button id="previewExportBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
                     Preview Export
@@ -192,7 +191,7 @@
                 const response = await fetch('/api/campaigns/active');
                 const data = await response.json();
                 const select = document.getElementById('campaignSelect');
-                
+
                 select.innerHTML = '<option value="">Select a campaign...</option>';
                 data.campaigns.forEach(campaign => {
                     const option = document.createElement('option');
@@ -200,7 +199,7 @@
                     option.textContent = `${campaign.name} (${campaign.total_contacts} contacts)`;
                     select.appendChild(option);
                 });
-                
+
                 select.addEventListener('change', (e) => {
                     selectedCampaign = e.target.value;
                     if (selectedCampaign && selectedTemplate) {
@@ -217,13 +216,13 @@
                 const response = await fetch('/api/templates');
                 const data = await response.json();
                 const container = document.getElementById('templatesList');
-                
+
                 container.innerHTML = '';
                 data.templates.forEach(template => {
                     const templateDiv = document.createElement('div');
                     templateDiv.className = 'border border-gray-200 rounded-lg p-4 cursor-pointer hover:bg-blue-50 transition-colors';
                     templateDiv.onclick = () => selectTemplate(template);
-                    
+
                     templateDiv.innerHTML = `
                         <div class="flex justify-between items-center">
                             <div>
@@ -243,7 +242,7 @@
                             </div>
                         </div>
                     `;
-                    
+
                     container.appendChild(templateDiv);
                 });
             } catch (error) {
@@ -254,16 +253,16 @@
         function selectTemplate(template) {
             selectedTemplate = template;
             currentFieldMappings = JSON.parse(template.field_mappings);
-            
+
             // Update UI to show selected template
             document.querySelectorAll('#templatesList > div').forEach(div => {
                 div.classList.remove('bg-blue-100', 'border-blue-500');
                 div.classList.add('border-gray-200');
             });
-            
+
             event.currentTarget.classList.remove('border-gray-200');
             event.currentTarget.classList.add('bg-blue-100', 'border-blue-500');
-            
+
             if (selectedCampaign && selectedTemplate) {
                 showFieldMapping();
             }
@@ -272,15 +271,15 @@
         function showFieldMapping() {
             const section = document.getElementById('fieldMappingSection');
             section.classList.remove('hidden');
-            
+
             const apiFields = document.getElementById('apiFields');
             apiFields.innerHTML = '';
-            
+
             // Create field mapping inputs
             Object.entries(currentFieldMappings).forEach(([apiField, contactField]) => {
                 const fieldDiv = document.createElement('div');
                 fieldDiv.className = 'flex items-center space-x-2';
-                
+
                 fieldDiv.innerHTML = `
                     <label class="w-24 text-sm font-medium">${apiField}:</label>
                     <select class="flex-1 p-2 border border-gray-300 rounded text-sm" onchange="updateFieldMapping('${apiField}', this.value)">
@@ -299,7 +298,7 @@
                         <option value="yelp" ${contactField === 'yelp' ? 'selected' : ''}>Yelp</option>
                     </select>
                 `;
-                
+
                 apiFields.appendChild(fieldDiv);
             });
         }
@@ -313,14 +312,14 @@
                 alert('Please select both a campaign and template');
                 return;
             }
-            
+
             try {
                 const response = await fetch(`/api/campaign/${selectedCampaign}/export/preview?template_id=${selectedTemplate.id}`);
                 const data = await response.json();
-                
+
                 const previewSection = document.getElementById('exportPreview');
                 const previewContent = document.getElementById('previewContent');
-                
+
                 previewContent.innerHTML = `
                     <div class="mb-4">
                         <h3 class="font-medium">Template: ${data.template_name}</h3>
@@ -332,7 +331,7 @@
                         <pre class="text-xs overflow-auto">${JSON.stringify(data.preview_data, null, 2)}</pre>
                     </div>
                 `;
-                
+
                 previewSection.classList.remove('hidden');
             } catch (error) {
                 alert('Error previewing export: ' + error.message);
@@ -344,13 +343,13 @@
                 alert('Please select both a campaign and template');
                 return;
             }
-            
+
             const batchSize = prompt('Enter batch size (1-100):', '10');
             if (!batchSize || isNaN(batchSize) || batchSize < 1 || batchSize > 100) {
                 alert('Invalid batch size');
                 return;
             }
-            
+
             try {
                 const response = await fetch(`/api/campaign/${selectedCampaign}/export`, {
                     method: 'POST',
@@ -363,9 +362,9 @@
                         field_mappings: currentFieldMappings
                     })
                 });
-                
+
                 const data = await response.json();
-                
+
                 if (response.ok) {
                     alert(`Export completed! ${data.contacts_exported} contacts exported to ${data.service}`);
                     await loadExportHistory();
@@ -379,23 +378,23 @@
 
         async function loadExportHistory() {
             if (!selectedCampaign) return;
-            
+
             try {
                 const response = await fetch(`/api/campaign/${selectedCampaign}/export/history`);
                 const data = await response.json();
-                
+
                 const historyDiv = document.getElementById('exportHistory');
                 historyDiv.innerHTML = '';
-                
+
                 if (data.history.length === 0) {
                     historyDiv.innerHTML = '<p class="text-gray-500">No export history</p>';
                     return;
                 }
-                
+
                 data.history.forEach(log => {
                     const logDiv = document.createElement('div');
                     logDiv.className = 'border border-gray-200 rounded-lg p-3';
-                    
+
                     logDiv.innerHTML = `
                         <div class="flex justify-between items-center">
                             <div>
@@ -410,7 +409,7 @@
                             ${log.contacts_exported} contacts exported - Status: ${log.status}
                         </div>
                     `;
-                    
+
                     historyDiv.appendChild(logDiv);
                 });
             } catch (error) {
@@ -433,13 +432,13 @@
             try {
                 const response = await fetch(`/api/templates/${templateId}`);
                 const template = await response.json();
-                
+
                 editingTemplateId = templateId;
                 document.getElementById('editTemplateName').value = template.name;
                 document.getElementById('editTemplateService').value = template.service;
                 document.getElementById('editTemplateApiKey').value = template.api_config.api_key || '';
                 document.getElementById('editTemplateCampaignId').value = template.api_config.manyreach_campaign_id || '';
-                
+
                 document.getElementById('editTemplateModal').classList.remove('hidden');
             } catch (error) {
                 alert('Error loading template: ' + error.message);
@@ -456,12 +455,12 @@
             if (!confirm('Are you sure you want to delete this template?')) {
                 return;
             }
-            
+
             try {
                 const response = await fetch(`/api/templates/${templateId}`, {
                     method: 'DELETE'
                 });
-                
+
                 if (response.ok) {
                     await loadTemplates();
                     alert('Template deleted successfully!');
@@ -478,15 +477,15 @@
         document.getElementById('createTemplateBtn').addEventListener('click', openCreateTemplateModal);
         document.getElementById('previewExportBtn').addEventListener('click', previewExport);
         document.getElementById('executeExportBtn').addEventListener('click', executeExport);
-        
+
         document.getElementById('createTemplateForm').addEventListener('submit', async (e) => {
             e.preventDefault();
-            
+
             const name = document.getElementById('templateName').value;
             const service = document.getElementById('templateService').value;
             const apiKey = document.getElementById('templateApiKey').value;
             const campaignId = document.getElementById('templateCampaignId').value;
-            
+
             // Get default ManyReach mapping
             const integration = {
                 "email": "email",
@@ -515,7 +514,7 @@
                 "custom_19": "",
                 "custom_20": ""
             };
-            
+
             try {
                 const response = await fetch('/api/templates', {
                     method: 'POST',
@@ -529,12 +528,12 @@
                         api_config: {
                             api_key: apiKey,
                             manyreach_campaign_id: campaignId,
-                            endpoint: "/api/campaigns/prospects/add",
+                            endpoint: "/api/campaigns/prospects/add/bulk",
                             method: "POST"
                         }
                     })
                 });
-                
+
                 if (response.ok) {
                     closeCreateTemplateModal();
                     await loadTemplates();
@@ -558,17 +557,17 @@
         // Edit template form submission
         document.getElementById('editTemplateForm').addEventListener('submit', async (e) => {
             e.preventDefault();
-            
+
             if (!editingTemplateId) {
                 alert('No template selected for editing');
                 return;
             }
-            
+
             const name = document.getElementById('editTemplateName').value;
             const service = document.getElementById('editTemplateService').value;
             const apiKey = document.getElementById('editTemplateApiKey').value;
             const campaignId = document.getElementById('editTemplateCampaignId').value;
-            
+
             // Get default ManyReach mapping
             const integration = {
                 "email": "email",
@@ -597,7 +596,7 @@
                 "custom_19": "",
                 "custom_20": ""
             };
-            
+
             try {
                 const response = await fetch(`/api/templates/${editingTemplateId}`, {
                     method: 'PUT',
@@ -610,12 +609,12 @@
                         api_config: {
                             api_key: apiKey,
                             manyreach_campaign_id: campaignId,
-                            endpoint: "/api/campaigns/prospects/add",
+                            endpoint: "/api/campaigns/prospects/add/bulk",
                             method: "POST"
                         }
                     })
                 });
-                
+
                 if (response.ok) {
                     closeEditTemplateModal();
                     await loadTemplates();

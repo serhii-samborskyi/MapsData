@@ -864,6 +864,13 @@ async def export_campaign(campaign_id: int, request: Request):
                     transformed = integration.transform_contact(contact, template['field_mappings'], manyreach_campaign_id)
                     transformed_contacts.append(transformed)
             
+            # Format for bulk API - wrap contacts in array for bulk endpoint
+            bulk_data = {
+                "apikey": template['api_config'].get('api_key', ''),
+                "campaignid": manyreach_campaign_id,
+                "prospects": transformed_contacts
+            }
+            
             # Log the export
             cursor.execute("""
                 INSERT INTO export_logs (campaign_id, template_id, contacts_exported, status)
@@ -875,8 +882,9 @@ async def export_campaign(campaign_id: int, request: Request):
                 "status": "Export prepared (simulated)",
                 "service": "manyreach",
                 "contacts_exported": len(transformed_contacts),
-                "export_data": transformed_contacts,
-                "note": "This is a simulation. In production, this would send data to ManyReach API."
+                "export_data": bulk_data,
+                "endpoint": "https://app.manyreach.com/api/campaigns/prospects/add/bulk",
+                "note": "This is a simulation. In production, this would send data to ManyReach bulk API."
             }
     
     return {"error": "Service not supported"}
@@ -913,7 +921,7 @@ async def create_default_templates():
                 {
                     "api_key": "",
                     "manyreach_campaign_id": "",
-                    "endpoint": "/api/campaigns/prospects/add",
+                    "endpoint": "/api/campaigns/prospects/add/bulk",
                     "method": "POST"
                 }
             )

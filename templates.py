@@ -63,7 +63,7 @@ class TemplateManager:
 class ManyReachIntegration:
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self.base_url = "https://api.manyreach.com"
+        self.base_url = "https://app.manyreach.com"
         self.rate_limit = 60  # requests per minute
         
     def get_default_field_mapping(self):
