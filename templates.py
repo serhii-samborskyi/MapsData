@@ -104,13 +104,36 @@ class ManyReachIntegration:
             if contact_field and contact_field in contact:
                 value = contact[contact_field]
                 if value is not None and str(value).strip():
-                    transformed[api_field] = str(value).strip()
+                    cleaned_value = str(value).strip()
+                    
+                    # Clean domain fields (both 'domain' and 'www' API fields)
+                    if api_field in ['domain', 'www']:
+                        cleaned_value = self._clean_domain(cleaned_value)
+                    
+                    transformed[api_field] = cleaned_value
         
         # Add campaignid if provided
         if manyreach_campaign_id:
             transformed['campaignid'] = manyreach_campaign_id
         
         return transformed
+    
+    def _clean_domain(self, domain: str) -> str:
+        """Clean domain by removing protocol and www prefix"""
+        if not domain:
+            return domain
+            
+        # Remove protocols
+        domain = domain.replace("https://", "").replace("http://", "")
+        
+        # Remove www prefix
+        if domain.startswith("www."):
+            domain = domain[4:]
+        
+        # Remove trailing slash and path
+        domain = domain.split("/")[0]
+        
+        return domain
     
     def validate_contact(self, contact: Dict) -> bool:
         """Validate that contact has required fields"""
