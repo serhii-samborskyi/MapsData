@@ -235,10 +235,10 @@
     <div id="excludeModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
         <div class="flex items-center justify-center min-h-screen p-4">
             <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-lg">
-                <h3 class="text-lg font-semibold text-gray-800 mb-4">Exclude from Other Campaigns</h3>
+                <h3 class="text-lg font-semibold text-gray-800 mb-4">Exclude Contacts from Other Campaigns</h3>
                 <div class="space-y-4">
                     <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-3">Select which campaigns to exclude contacts from:</label>
+                        <label class="block text-sm font-medium text-gray-700 mb-3">Remove contacts from this campaign that also exist in:</label>
                         <div id="excludeCampaignsList" class="space-y-2 max-h-60 overflow-y-auto border border-gray-200 rounded-lg p-3">
                             <!-- Campaign list will be populated by JavaScript -->
                         </div>
@@ -460,7 +460,7 @@
             allCampaignsDiv.innerHTML = `
                 <label class="flex items-center">
                     <input type="checkbox" id="excludeAllCampaigns" class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
-                    <span class="ml-2 text-sm font-medium text-gray-700">Exclude all campaigns</span>
+                    <span class="ml-2 text-sm font-medium text-gray-700">All other campaigns</span>
                 </label>
             `;
             listContainer.appendChild(allCampaignsDiv);
@@ -504,9 +504,9 @@
                 }
             }
 
-            const excludeType = excludeAllChecked ? 'all campaigns' : `${selectedCampaigns.length} selected campaign${selectedCampaigns.length !== 1 ? 's' : ''}`;
+            const excludeType = excludeAllChecked ? 'all other campaigns' : `${selectedCampaigns.length} selected campaign${selectedCampaigns.length !== 1 ? 's' : ''}`;
             
-            if (!confirm(`Are you sure you want to exclude contacts from ${excludeType}?`)) {
+            if (!confirm(`Are you sure you want to remove contacts that exist in ${excludeType}?`)) {
                 return;
             }
 
@@ -522,7 +522,7 @@
                     })
                 });
                 const data = await response.json();
-                alert(`Excluded ${data.excluded_contacts} contacts from ${excludeType}`);
+                alert(`Removed ${data.excluded_contacts} contacts that existed in ${excludeType}`);
                 closeExcludeModal();
                 await refreshCampaigns();
             } catch (error) {
