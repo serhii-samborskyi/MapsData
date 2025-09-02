@@ -485,35 +485,13 @@ async def duplicate_campaign(campaign_id: int, request: Request):
         # Copy contacts based on filters
         copied_contacts = 0
         if contact_filters:
-            conditions = []
-            
-            # Build the WHERE clause based on filters
-            domain_conditions = []
-            email_conditions = []
-            
-            if contact_filters.get('keepContactsWithDomain', False):
-                domain_conditions.append("(domain IS NOT NULL AND domain != '')")
-            if contact_filters.get('keepContactsWithoutDomain', False):
-                domain_conditions.append("(domain IS NULL OR domain = '')")
-                
-            if contact_filters.get('keepContactsWithEmail', False):
-                email_conditions.append("(email IS NOT NULL AND email != '')")
-            if contact_filters.get('keepContactsWithoutEmail', False):
-                email_conditions.append("(email IS NULL OR email = '')")
-            
-            # Combine conditions
-            if domain_conditions:
-                conditions.append(f"({' OR '.join(domain_conditions)})")
-            if email_conditions:
-                conditions.append(f"({' OR '.join(email_conditions)})")
-            
-            if conditions:
-                where_clause = f"campaign_id = ? AND ({' AND '.join(conditions)})"
-                cursor.execute(f"""
+            # Check if "All contacts" is selected - if so, copy all contacts
+            if contact_filters.get('keepAllContacts', False):
+                cursor.execute("""
                     SELECT address, business_name, category, domain, email, facebook, 
                            instagram, phone, place_id, rating, review_count, twitter, yelp, status
                     FROM contacts 
-                    WHERE {where_clause}
+                    WHERE campaign_id = ?
                 """, (campaign_id,))
                 
                 contacts_to_copy = cursor.fetchall()
@@ -543,6 +521,71 @@ async def duplicate_campaign(campaign_id: int, request: Request):
                         contact["status"]
                     ))
                     copied_contacts += 1
+            else:
+                conditions = []
+                
+                # Build the WHERE clause based on filters
+                domain_conditions = []
+                email_conditions = []
+                phone_conditions = []
+                
+                if contact_filters.get('keepContactsWithDomain', False):
+                    domain_conditions.append("(domain IS NOT NULL AND domain != '')")
+                if contact_filters.get('keepContactsWithoutDomain', False):
+                    domain_conditions.append("(domain IS NULL OR domain = '')")
+                    
+                if contact_filters.get('keepContactsWithEmail', False):
+                    email_conditions.append("(email IS NOT NULL AND email != '')")
+                if contact_filters.get('keepContactsWithoutEmail', False):
+                    email_conditions.append("(email IS NULL OR email = '')")
+                
+                if contact_filters.get('keepContactsWithPhone', False):
+                    phone_conditions.append("(phone IS NOT NULL AND phone != '')")
+                
+                # Combine conditions
+                if domain_conditions:
+                    conditions.append(f"({' OR '.join(domain_conditions)})")
+                if email_conditions:
+                    conditions.append(f"({' OR '.join(email_conditions)})")
+                if phone_conditions:
+                    conditions.append(f"({' OR '.join(phone_conditions)})")
+                
+                if conditions:
+                    where_clause = f"campaign_id = ? AND ({' AND '.join(conditions)})"
+                    cursor.execute(f"""
+                        SELECT address, business_name, category, domain, email, facebook, 
+                               instagram, phone, place_id, rating, review_count, twitter, yelp, status
+                        FROM contacts 
+                        WHERE {where_clause}
+                    """, (campaign_id,))
+                    
+                    contacts_to_copy = cursor.fetchall()
+                    
+                    for contact in contacts_to_copy:
+                        cursor.execute("""
+                            INSERT INTO contacts 
+                            (address, business_name, campaign_id, category, domain, email, facebook, 
+                             instagram, phone, place_id, rating, request_id, review_count, twitter, yelp, status) 
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            contact["address"],
+                            contact["business_name"],
+                            new_campaign_id,
+                            contact["category"],
+                            contact["domain"],
+                            contact["email"],
+                            contact["facebook"],
+                            contact["instagram"],
+                            contact["phone"],
+                            contact["place_id"],
+                            contact["rating"],
+                            None,  # request_id will be None for duplicated contacts
+                            contact["review_count"],
+                            contact["twitter"],
+                            contact["yelp"],
+                            contact["status"]
+                        ))
+                        copied_contacts += 1
         
         conn.commit()
         return {
