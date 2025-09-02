@@ -119,14 +119,23 @@ class ManyReachIntegration:
         """Make actual API call to ManyReach bulk endpoint"""
         import requests
         
-        url = f"{self.base_url}/api/campaigns/prospects/add/bulk"
+        # Extract API key and campaign ID from bulk_data
+        api_key = bulk_data.pop('apikey', '')
+        campaign_id = bulk_data.pop('campaignid', '')
+        
+        # Build URL with query parameters
+        url = f"{self.base_url}/api/campaigns/prospects/add/bulk?apikey={api_key}&campaignid={campaign_id}"
         
         headers = {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
         }
         
+        # Send only the prospects array as the body
+        prospects_data = bulk_data.get('prospects', [])
+        
         try:
-            response = requests.post(url, json=bulk_data, headers=headers, timeout=30)
+            response = requests.post(url, json=prospects_data, headers=headers, timeout=30)
             
             if response.status_code == 200:
                 return response.json()
