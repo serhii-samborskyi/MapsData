@@ -871,21 +871,33 @@ async def export_campaign(campaign_id: int, request: Request):
                 "prospects": transformed_contacts
             }
             
-            # Log the export
-            cursor.execute("""
-                INSERT INTO export_logs (campaign_id, template_id, contacts_exported, status)
-                VALUES (?, ?, ?, ?)
-            """, (campaign_id, template_id, len(transformed_contacts), "simulated"))
-            conn.commit()
-            
-            return {
-                "status": "Export prepared (simulated)",
-                "service": "manyreach",
-                "contacts_exported": len(transformed_contacts),
-                "export_data": bulk_data,
-                "endpoint": "https://app.manyreach.com/api/campaigns/prospects/add/bulk",
-                "note": "This is a simulation. In production, this would send data to ManyReach bulk API."
-            }
+            # Make real API call to ManyReach
+            try:
+                api_response = integration.export_to_manyreach_bulk(bulk_data)
+                
+                # Log the successful export
+                cursor.execute("""
+                    INSERT INTO export_logs (campaign_id, template_id, contacts_exported, status)
+                    VALUES (?, ?, ?, ?)
+                """, (campaign_id, template_id, len(transformed_contacts), "completed"))
+                conn.commit()
+                
+                return {
+                    "status": "Export completed successfully",
+                    "service": "manyreach",
+                    "contacts_exported": len(transformed_contacts),
+                    "api_response": api_response,
+                    "endpoint": "https://app.manyreach.com/api/campaigns/prospects/add/bulk"
+                }
+            except Exception as e:
+                # Log the failed export
+                cursor.execute("""
+                    INSERT INTO export_logs (campaign_id, template_id, contacts_exported, status)
+                    VALUES (?, ?, ?, ?)
+                """, (campaign_id, template_id, 0, f"failed: {str(e)}"))
+                conn.commit()
+                
+                raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
     
     return {"error": "Service not supported"}
 

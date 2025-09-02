@@ -114,3 +114,24 @@ class ManyReachIntegration:
     def validate_contact(self, contact: Dict) -> bool:
         """Validate that contact has required fields"""
         return bool(contact.get('email'))
+    
+    def export_to_manyreach_bulk(self, bulk_data: Dict) -> Dict:
+        """Make actual API call to ManyReach bulk endpoint"""
+        import requests
+        
+        url = f"{self.base_url}/api/campaigns/prospects/add/bulk"
+        
+        headers = {
+            'Content-Type': 'application/json'
+        }
+        
+        try:
+            response = requests.post(url, json=bulk_data, headers=headers, timeout=30)
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                raise Exception(f"API returned status {response.status_code}: {response.text}")
+                
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Network error: {str(e)}")
