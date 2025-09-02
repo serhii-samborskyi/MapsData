@@ -100,6 +100,44 @@
         </div>
     </div>
 
+    <!-- Edit Template Modal -->
+    <div id="editTemplateModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+        <div class="flex items-center justify-center min-h-screen">
+            <div class="bg-white rounded-lg p-6 w-full max-w-md mx-4">
+                <h3 class="text-lg font-semibold mb-4">Edit Template</h3>
+                <form id="editTemplateForm">
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium mb-2">Template Name</label>
+                        <input type="text" id="editTemplateName" class="w-full p-2 border border-gray-300 rounded-lg" required>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium mb-2">Service</label>
+                        <select id="editTemplateService" class="w-full p-2 border border-gray-300 rounded-lg" disabled>
+                            <option value="manyreach">ManyReach</option>
+                        </select>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium mb-2">API Key</label>
+                        <input type="password" id="editTemplateApiKey" class="w-full p-2 border border-gray-300 rounded-lg" required>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium mb-2">ManyReach Campaign ID</label>
+                        <input type="text" id="editTemplateCampaignId" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="Enter your ManyReach campaign ID" required>
+                        <div class="text-xs text-gray-500 mt-1">This is the unique identifier of the campaign in ManyReach where prospects will be added</div>
+                    </div>
+                    <div class="flex gap-3">
+                        <button type="button" onclick="closeEditTemplateModal()" class="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
+                            Cancel
+                        </button>
+                        <button type="submit" class="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+                            Update
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <!-- Create Template Modal -->
     <div id="createTemplateModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
         <div class="flex items-center justify-center min-h-screen">
@@ -192,8 +230,16 @@
                                 <h3 class="font-medium">${template.name}</h3>
                                 <p class="text-sm text-gray-600">${template.service.toUpperCase()}</p>
                             </div>
-                            <div class="text-sm text-gray-500">
-                                ${new Date(template.created_at).toLocaleDateString()}
+                            <div class="flex items-center gap-2">
+                                <button onclick="editTemplate(${template.id})" class="text-blue-600 hover:text-blue-800 text-sm px-2 py-1 border border-blue-300 rounded">
+                                    Edit
+                                </button>
+                                <button onclick="deleteTemplate(${template.id})" class="text-red-600 hover:text-red-800 text-sm px-2 py-1 border border-red-300 rounded">
+                                    Delete
+                                </button>
+                                <div class="text-sm text-gray-500">
+                                    ${new Date(template.created_at).toLocaleDateString()}
+                                </div>
                             </div>
                         </div>
                     `;
@@ -381,6 +427,53 @@
             document.getElementById('createTemplateForm').reset();
         }
 
+        let editingTemplateId = null;
+
+        async function editTemplate(templateId) {
+            try {
+                const response = await fetch(`/api/templates/${templateId}`);
+                const template = await response.json();
+                
+                editingTemplateId = templateId;
+                document.getElementById('editTemplateName').value = template.name;
+                document.getElementById('editTemplateService').value = template.service;
+                document.getElementById('editTemplateApiKey').value = template.api_config.api_key || '';
+                document.getElementById('editTemplateCampaignId').value = template.api_config.manyreach_campaign_id || '';
+                
+                document.getElementById('editTemplateModal').classList.remove('hidden');
+            } catch (error) {
+                alert('Error loading template: ' + error.message);
+            }
+        }
+
+        function closeEditTemplateModal() {
+            document.getElementById('editTemplateModal').classList.add('hidden');
+            document.getElementById('editTemplateForm').reset();
+            editingTemplateId = null;
+        }
+
+        async function deleteTemplate(templateId) {
+            if (!confirm('Are you sure you want to delete this template?')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/templates/${templateId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    await loadTemplates();
+                    alert('Template deleted successfully!');
+                } else {
+                    const error = await response.json();
+                    alert('Error deleting template: ' + error.detail);
+                }
+            } catch (error) {
+                alert('Error deleting template: ' + error.message);
+            }
+        }
+
         // Event listeners
         document.getElementById('createTemplateBtn').addEventListener('click', openCreateTemplateModal);
         document.getElementById('previewExportBtn').addEventListener('click', previewExport);
@@ -459,6 +552,80 @@
         document.getElementById('campaignSelect').addEventListener('change', async () => {
             if (selectedCampaign) {
                 await loadExportHistory();
+            }
+        });
+
+        // Edit template form submission
+        document.getElementById('editTemplateForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            if (!editingTemplateId) {
+                alert('No template selected for editing');
+                return;
+            }
+            
+            const name = document.getElementById('editTemplateName').value;
+            const service = document.getElementById('editTemplateService').value;
+            const apiKey = document.getElementById('editTemplateApiKey').value;
+            const campaignId = document.getElementById('editTemplateCampaignId').value;
+            
+            // Get default ManyReach mapping
+            const integration = {
+                "email": "email",
+                "company": "business_name", 
+                "www": "domain",
+                "phone": "phone",
+                "industry": "category",
+                "firstname": "",
+                "lastname": "",
+                "custom_3": "",
+                "custom_4": "",
+                "custom_5": "",
+                "custom_6": "",
+                "custom_7": "",
+                "custom_8": "",
+                "custom_9": "",
+                "custom_10": "",
+                "custom_11": "",
+                "custom_12": "",
+                "custom_13": "",
+                "custom_14": "",
+                "custom_15": "",
+                "custom_16": "",
+                "custom_17": "",
+                "custom_18": "",
+                "custom_19": "",
+                "custom_20": ""
+            };
+            
+            try {
+                const response = await fetch(`/api/templates/${editingTemplateId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        name: name,
+                        field_mappings: integration,
+                        api_config: {
+                            api_key: apiKey,
+                            manyreach_campaign_id: campaignId,
+                            endpoint: "/api/campaigns/prospects/add",
+                            method: "POST"
+                        }
+                    })
+                });
+                
+                if (response.ok) {
+                    closeEditTemplateModal();
+                    await loadTemplates();
+                    alert('Template updated successfully!');
+                } else {
+                    const error = await response.json();
+                    alert('Error updating template: ' + error.detail);
+                }
+            } catch (error) {
+                alert('Error updating template: ' + error.message);
             }
         });
     </script>

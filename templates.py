@@ -36,14 +36,21 @@ class TemplateManager:
             return cursor.lastrowid
     
     @staticmethod
-    def update_template(template_id: int, name: str, field_mappings: Dict, api_config: Dict):
+    def update_template(template_id: int, name: str, field_mappings: Dict, api_config: Dict, service: str = None):
         with get_db() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE export_templates 
-                SET name = ?, field_mappings = ?, api_config = ?
-                WHERE id = ?
-            """, (name, json.dumps(field_mappings), json.dumps(api_config), template_id))
+            if service:
+                cursor.execute("""
+                    UPDATE export_templates 
+                    SET name = ?, service = ?, field_mappings = ?, api_config = ?
+                    WHERE id = ?
+                """, (name, service, json.dumps(field_mappings), json.dumps(api_config), template_id))
+            else:
+                cursor.execute("""
+                    UPDATE export_templates 
+                    SET name = ?, field_mappings = ?, api_config = ?
+                    WHERE id = ?
+                """, (name, json.dumps(field_mappings), json.dumps(api_config), template_id))
             conn.commit()
     
     @staticmethod

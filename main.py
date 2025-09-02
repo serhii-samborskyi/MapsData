@@ -744,14 +744,19 @@ async def update_template(template_id: int, request: Request):
     data = await request.json()
     
     # Check if template exists
-    if not TemplateManager.get_template(template_id):
+    template = TemplateManager.get_template(template_id)
+    if not template:
         raise HTTPException(status_code=404, detail="Template not found")
+    
+    # Use existing service if not provided in update
+    service = data.get('service', template['service'])
     
     TemplateManager.update_template(
         template_id,
         data['name'],
         data['field_mappings'],
-        data['api_config']
+        data['api_config'],
+        service
     )
     
     return {"status": "Template updated"}
