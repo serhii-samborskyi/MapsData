@@ -71,6 +71,7 @@ class ManyReachIntegration:
             "email": "email",
             "company": "business_name", 
             "www": "domain",
+            "domain": "domain",
             "phone": "phone",
             "industry": "category",
             "firstname": "custom_1",
