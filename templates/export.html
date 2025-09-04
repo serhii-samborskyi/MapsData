@@ -65,16 +65,23 @@
                 </div>
             </div>
 
-            <div class="mt-6 flex gap-3">
-                <button id="previewExportBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
-                    Preview Export
-                </button>
-                <button id="executeExportBtn" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">
-                    Execute Export
-                </button>
-                <button id="exportAllBtn" class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700">
-                    Export All (Batch 50)
-                </button>
+            <div class="mt-6">
+                <div class="mb-4">
+                    <label class="block text-sm font-medium mb-2">List Name (optional)</label>
+                    <input type="text" id="newListName" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="Enter list name for ManyReach (optional)">
+                    <div class="text-xs text-gray-500 mt-1">If provided, this will create a new list in ManyReach with this name</div>
+                </div>
+                <div class="flex gap-3">
+                    <button id="previewExportBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
+                        Preview Export
+                    </button>
+                    <button id="executeExportBtn" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">
+                        Execute Export
+                    </button>
+                    <button id="exportAllBtn" class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700">
+                        Export All (Batch 50)
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -413,6 +420,8 @@
                 return;
             }
 
+            const newListName = document.getElementById('newListName').value.trim();
+
             try {
                 const response = await fetch(`/api/campaign/${selectedCampaign}/export`, {
                     method: 'POST',
@@ -422,7 +431,8 @@
                     body: JSON.stringify({
                         template_id: selectedTemplate.id,
                         batch_size: parseInt(batchSize),
-                        field_mappings: currentFieldMappings
+                        field_mappings: currentFieldMappings,
+                        newListName: newListName
                     })
                 });
 
@@ -617,6 +627,8 @@
                 const offset = (batchNumber - 1) * batchSize;
 
                 try {
+                    const newListName = document.getElementById('newListName').value.trim();
+                    
                     const response = await fetch(`/api/campaign/${selectedCampaign}/export`, {
                         method: 'POST',
                         headers: {
@@ -626,7 +638,8 @@
                             template_id: selectedTemplate.id,
                             batch_size: batchSize,
                             offset: offset,
-                            field_mappings: currentFieldMappings
+                            field_mappings: currentFieldMappings,
+                            newListName: newListName
                         })
                     });
 
