@@ -68,13 +68,30 @@ class ManyReachIntegration:
     def get_default_field_mapping(self):
         return {
             "email": "email",
-            "company": "business_name", 
-            "www": "domain",
-            "domain": "domain",
-            "phone": "phone",
+            "fullName": "",
             "industry": "category",
-            "firstname": "custom_1",
-            "lastname": "custom_2",
+            "city": "",
+            "www": "domain",
+            "phone": "phone",
+            "firstname": "",
+            "lastname": "",
+            "company": "business_name",
+            "country": "",
+            "domain": "domain",
+            "companySocial": "",
+            "companySize": "",
+            "personalJobPosition": "",
+            "personalProspectLocation": "",
+            "personalUserSocial": "",
+            "screenshot": "",
+            "logo": "",
+            "state": "",
+            "icebreaker": "",
+            "timeZoneOffsetMin": "",
+            "notes": "",
+            "tagsImport": "",
+            "custom_1": "",
+            "custom_2": "",
             "custom_3": "",
             "custom_4": "",
             "custom_5": "",
@@ -95,7 +112,7 @@ class ManyReachIntegration:
             "custom_20": ""
         }
 
-    def transform_contact(self, contact: Dict, field_mapping: Dict, manyreach_campaign_id: str = None) -> Dict:
+    def transform_contact(self, contact: Dict, field_mapping: Dict, manyreach_campaign_id: str = None, new_list_name: str = None) -> Dict:
         """Transform contact data according to field mapping"""
         transformed = {}
 
@@ -154,16 +171,22 @@ class ManyReachIntegration:
         """Make actual API call to ManyReach bulk endpoint"""
         import requests
 
-        # Extract API key and campaign ID from bulk_data
+        # Extract API key, campaign ID, and newListName from bulk_data
         api_key = bulk_data.pop('apikey', '')
         campaign_id = bulk_data.pop('campaignid', '')
+        new_list_name = bulk_data.pop('newListName', '')
 
         # Build URL with query parameters
         url = f"{self.base_url}/api/campaigns/prospects/add/bulk?apikey={api_key}&campaignid={campaign_id}"
+        
+        # Add newListName parameter if provided
+        if new_list_name:
+            url += f"&newListName={new_list_name}"
 
         headers = {
             'Content-Type': 'application/json',
-            'Accept': 'application/json'
+            'Accept': 'application/json',
+            'apiKey': api_key  # Add apiKey to headers as shown in your example
         }
 
         # Send only the prospects array as the body

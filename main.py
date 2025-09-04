@@ -278,33 +278,33 @@ async def update_contact_email(campaign_id: int, data: dict):
             raise HTTPException(status_code=400, detail="No contacts provided in batch")
         if len(contacts) > 100:
             raise HTTPException(status_code=400, detail="Batch size cannot exceed 100 contacts")
-            
+
         updated_count = 0
         failed_updates = []
-        
+
         with get_db() as conn:
             cursor = conn.cursor()
             for contact in contacts:
                 contact_id = contact.get('id')
                 email = contact.get('email')
-                
+
                 if not contact_id or not email:
                     failed_updates.append({"id": contact_id, "error": "Missing id or email"})
                     continue
-                    
+
                 cursor.execute("""
                     UPDATE contacts 
                     SET email = ? 
                     WHERE id = ? AND campaign_id = ?
                 """, (email, contact_id, campaign_id))
-                
+
                 if cursor.rowcount > 0:
                     updated_count += 1
                 else:
                     failed_updates.append({"id": contact_id, "error": "Contact not found"})
-            
+
             conn.commit()
-            
+
         return {
             "status": "Batch update completed",
             "updated_count": updated_count,
@@ -315,10 +315,10 @@ async def update_contact_email(campaign_id: int, data: dict):
         # Single update (backward compatibility)
         contact_id = data.get('id')
         email = data.get('email')
-        
+
         if not contact_id or not email:
             raise HTTPException(status_code=400, detail="Missing id or email in request body")
-            
+
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -327,17 +327,17 @@ async def update_contact_email(campaign_id: int, data: dict):
                 WHERE id = ? AND campaign_id = ?
             """, (email, contact_id, campaign_id))
             conn.commit()
-            
+
             if cursor.rowcount == 0:
                 raise HTTPException(status_code=404, detail="Contact not found")
-                
+
             return {"status": "Email updated successfully"}
 
 @app.get("/api/campaign/{campaign_id}/nomail")
 async def get_random_contact_without_email(campaign_id: int, batch: int = 1):
     if batch < 0 or batch > 1000:
         raise HTTPException(status_code=400, detail="Batch size must be between 0 and 1000")
-        
+
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -351,7 +351,7 @@ async def get_random_contact_without_email(campaign_id: int, batch: int = 1):
         contacts = cursor.fetchall()
         if not contacts:
             raise HTTPException(status_code=404, detail="No contacts found matching criteria")
-            
+
         results = []
         for contact in contacts:
             # Clean domain: remove protocol, www, and URL parameters
@@ -359,28 +359,28 @@ async def get_random_contact_without_email(campaign_id: int, batch: int = 1):
             domain = domain.replace("http://", "").replace("https://", "").replace("www.", "")
             domain = domain.split("?")[0].split("/")[0]
             results.append({"id": str(contact["id"]), "domain": domain})
-        
+
         return {"contacts": results, "count": len(results)}
 
 @app.post("/api/campaign/{campaign_id}/remove_duplicates")
 async def remove_duplicate_contacts(campaign_id: int, request: Request = None):
     field = "domain"  # default field
-    
+
     if request:
         try:
             data = await request.json()
             field = data.get('field', 'domain')
         except:
             pass
-    
+
     # Validate field
     valid_fields = ["domain", "business_name", "email", "phone"]
     if field not in valid_fields:
         raise HTTPException(status_code=400, detail=f"Invalid field. Must be one of: {valid_fields}")
-    
+
     with get_db() as conn:
         cursor = conn.cursor()
-        
+
         # Remove duplicates by specified field
         cursor.execute(f"""
             DELETE FROM contacts 
@@ -397,7 +397,7 @@ async def remove_duplicate_contacts(campaign_id: int, request: Request = None):
             AND {field} != ''
         """, (campaign_id, campaign_id))
         duplicate_count = cursor.rowcount
-        
+
         conn.commit()
         return {
             "status": "success", 
@@ -423,13 +423,13 @@ async def remove_filtered_contacts(campaign_id: int, data: dict):
     keywords = data.get('keywords', [])
     if not keywords:
         return {"status": "error", "message": "No keywords provided"}
-    
+
     with get_db() as conn:
         cursor = conn.cursor()
         placeholders = ','.join(['?' for _ in keywords])
         like_conditions = []
         params = []
-        
+
         for keyword in keywords:
             like_conditions.extend([
                 "business_name LIKE ?",
@@ -437,15 +437,15 @@ async def remove_filtered_contacts(campaign_id: int, data: dict):
                 "email LIKE ?",
             ])
             params.extend([f"%{keyword}%", f"%{keyword}%", f"%{keyword}%"])
-        
+
         params.append(campaign_id)
-        
+
         query = f"""
             DELETE FROM contacts 
             WHERE ({' OR '.join(like_conditions)})
             AND campaign_id = ?
         """
-        
+
         cursor.execute(query, params)
         deleted_count = cursor.rowcount
         conn.commit()
@@ -460,16 +460,16 @@ async def duplicate_campaign(campaign_id: int, request: Request):
     except:
         custom_name = ''
         contact_filters = {}
-    
+
     with get_db() as conn:
         cursor = conn.cursor()
-        
+
         # Get original campaign
         cursor.execute("SELECT * FROM search_campaigns WHERE id = ?", (campaign_id,))
         original_campaign = cursor.fetchone()
         if not original_campaign:
             raise HTTPException(status_code=404, detail="Campaign not found")
-        
+
         # Determine new campaign name
         if custom_name:
             # Check if custom name already exists
@@ -482,31 +482,31 @@ async def duplicate_campaign(campaign_id: int, request: Request):
             base_name = original_campaign["name"]
             counter = 1
             new_name = f"{base_name} {counter}"
-            
+
             while True:
                 cursor.execute("SELECT id FROM search_campaigns WHERE name = ?", (new_name,))
                 if not cursor.fetchone():
                     break
                 counter += 1
                 new_name = f"{base_name} {counter}"
-        
+
         # Create new campaign
         cursor.execute(
             "INSERT INTO search_campaigns (name, status) VALUES (?, ?)",
             (new_name, "active")
         )
         new_campaign_id = cursor.lastrowid
-        
+
         # Copy all requests from original campaign
         cursor.execute("SELECT req_text FROM requests WHERE campaign_id = ?", (campaign_id,))
         requests = cursor.fetchall()
-        
+
         for request in requests:
             cursor.execute(
                 "INSERT INTO requests (campaign_id, req_text, status) VALUES (?, ?, ?)",
                 (new_campaign_id, request["req_text"], "pending")
             )
-        
+
         # Copy contacts based on filters
         copied_contacts = 0
         if contact_filters:
@@ -518,9 +518,9 @@ async def duplicate_campaign(campaign_id: int, request: Request):
                     FROM contacts 
                     WHERE campaign_id = ?
                 """, (campaign_id,))
-                
+
                 contacts_to_copy = cursor.fetchall()
-                
+
                 for contact in contacts_to_copy:
                     cursor.execute("""
                         INSERT INTO contacts 
@@ -548,25 +548,25 @@ async def duplicate_campaign(campaign_id: int, request: Request):
                     copied_contacts += 1
             else:
                 conditions = []
-                
+
                 # Build the WHERE clause based on filters
                 domain_conditions = []
                 email_conditions = []
                 phone_conditions = []
-                
+
                 if contact_filters.get('keepContactsWithDomain', False):
                     domain_conditions.append("(domain IS NOT NULL AND domain != '')")
                 if contact_filters.get('keepContactsWithoutDomain', False):
                     domain_conditions.append("(domain IS NULL OR domain = '')")
-                    
+
                 if contact_filters.get('keepContactsWithEmail', False):
                     email_conditions.append("(email IS NOT NULL AND email != '')")
                 if contact_filters.get('keepContactsWithoutEmail', False):
                     email_conditions.append("(email IS NULL OR email = '')")
-                
+
                 if contact_filters.get('keepContactsWithPhone', False):
                     phone_conditions.append("(phone IS NOT NULL AND phone != '')")
-                
+
                 # Combine conditions
                 if domain_conditions:
                     conditions.append(f"({' OR '.join(domain_conditions)})")
@@ -574,7 +574,7 @@ async def duplicate_campaign(campaign_id: int, request: Request):
                     conditions.append(f"({' OR '.join(email_conditions)})")
                 if phone_conditions:
                     conditions.append(f"({' OR '.join(phone_conditions)})")
-                
+
                 if conditions:
                     where_clause = f"campaign_id = ? AND ({' AND '.join(conditions)})"
                     cursor.execute(f"""
@@ -583,9 +583,9 @@ async def duplicate_campaign(campaign_id: int, request: Request):
                         FROM contacts 
                         WHERE {where_clause}
                     """, (campaign_id,))
-                    
+
                     contacts_to_copy = cursor.fetchall()
-                    
+
                     for contact in contacts_to_copy:
                         cursor.execute("""
                             INSERT INTO contacts 
@@ -611,7 +611,7 @@ async def duplicate_campaign(campaign_id: int, request: Request):
                             contact["status"]
                         ))
                         copied_contacts += 1
-        
+
         conn.commit()
         return {
             "status": "success", 
@@ -629,15 +629,15 @@ async def exclude_contacts_from_campaigns(campaign_id: int, request: Request):
         exclude_campaigns = data.get('excludeCampaigns', [])
     except:
         raise HTTPException(status_code=400, detail="Invalid request body")
-    
+
     if not exclude_all and not exclude_campaigns:
         raise HTTPException(status_code=400, detail="No campaigns specified for exclusion")
-    
+
     with get_db() as conn:
         cursor = conn.cursor()
-        
+
         excluded_count = 0
-        
+
         if exclude_all:
             # Remove contacts from current campaign that exist in ANY other campaign
             cursor.execute("""
@@ -664,7 +664,7 @@ async def exclude_contacts_from_campaigns(campaign_id: int, request: Request):
             # Remove contacts from current campaign that exist in specific campaigns
             campaign_placeholders = ','.join(['?' for _ in exclude_campaigns])
             params = [campaign_id, campaign_id] + exclude_campaigns + [campaign_id]
-            
+
             cursor.execute(f"""
                 DELETE FROM contacts 
                 WHERE campaign_id = ? 
@@ -686,7 +686,7 @@ async def exclude_contacts_from_campaigns(campaign_id: int, request: Request):
                 )
             """, params)
             excluded_count = cursor.rowcount
-        
+
         conn.commit()
         return {
             "status": "success", 
@@ -724,33 +724,33 @@ async def get_template(template_id: int):
 @app.post("/api/templates")
 async def create_template(request: Request):
     data = await request.json()
-    
+
     required_fields = ['name', 'service', 'field_mappings', 'api_config']
     for field in required_fields:
         if field not in data:
             raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
-    
+
     template_id = TemplateManager.create_template(
         data['name'],
         data['service'],
         data['field_mappings'],
         data['api_config']
     )
-    
+
     return {"status": "Template created", "template_id": template_id}
 
 @app.put("/api/templates/{template_id}")
 async def update_template(template_id: int, request: Request):
     data = await request.json()
-    
+
     # Check if template exists
     template = TemplateManager.get_template(template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
-    
+
     # Use existing service if not provided in update
     service = data.get('service', template['service'])
-    
+
     TemplateManager.update_template(
         template_id,
         data['name'],
@@ -758,14 +758,14 @@ async def update_template(template_id: int, request: Request):
         data['api_config'],
         service
     )
-    
+
     return {"status": "Template updated"}
 
 @app.delete("/api/templates/{template_id}")
 async def delete_template(template_id: int):
     if not TemplateManager.get_template(template_id):
         raise HTTPException(status_code=404, detail="Template not found")
-    
+
     TemplateManager.delete_template(template_id)
     return {"status": "Template deleted"}
 
@@ -776,7 +776,7 @@ async def preview_export(campaign_id: int, template_id: int):
     template = TemplateManager.get_template(template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
-    
+
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -787,7 +787,7 @@ async def preview_export(campaign_id: int, template_id: int):
             LIMIT 5
         """, (campaign_id,))
         contacts = [dict(row) for row in cursor.fetchall()]
-    
+
     if template['service'] == 'manyreach':
         integration = ManyReachIntegration("")
         manyreach_campaign_id = template['api_config'].get('manyreach_campaign_id', '')
@@ -795,7 +795,7 @@ async def preview_export(campaign_id: int, template_id: int):
         for contact in contacts:
             transformed = integration.transform_contact(contact, template['field_mappings'], manyreach_campaign_id)
             preview_data.append(transformed)
-        
+
         return {
             "template_name": template['name'],
             "service": template['service'],
@@ -803,7 +803,7 @@ async def preview_export(campaign_id: int, template_id: int):
             "preview_data": preview_data,
             "field_mappings": template['field_mappings']
         }
-    
+
     return {"error": "Service not supported"}
 
 @app.post("/api/campaign/{campaign_id}/export")
@@ -811,38 +811,38 @@ async def export_campaign(campaign_id: int, request: Request):
     data = await request.json()
     template_id = data.get('template_id')
     batch_size = data.get('batch_size', 10)
-    
+
     if not template_id:
         raise HTTPException(status_code=400, detail="Template ID required")
-    
+
     template = TemplateManager.get_template(template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
-    
+
     # Rate limiting check
     now = datetime.now()
     rate_limit_window = now - timedelta(minutes=1)
-    
+
     with get_db() as conn:
         cursor = conn.cursor()
-        
+
         # Check recent exports for rate limiting
         cursor.execute("""
             SELECT COUNT(*) as recent_exports
             FROM export_logs 
             WHERE created_at > ? AND template_id = ?
         """, (rate_limit_window.isoformat(), template_id))
-        
+
         recent_exports = cursor.fetchone()['recent_exports']
-        
+
         if template['service'] == 'manyreach':
             integration = ManyReachIntegration(template['api_config'].get('api_key', ''))
             if recent_exports >= integration.rate_limit:
                 raise HTTPException(status_code=429, detail=f"Rate limit exceeded. Max {integration.rate_limit} exports per minute.")
-        
+
         # Get batch offset from request data
         offset = data.get('offset', 0)
-        
+
         # Get contacts to export with offset for batch processing
         cursor.execute("""
             SELECT * FROM contacts 
@@ -853,39 +853,46 @@ async def export_campaign(campaign_id: int, request: Request):
             LIMIT ? OFFSET ?
         """, (campaign_id, batch_size, offset))
         contacts = [dict(row) for row in cursor.fetchall()]
-        
+
         if not contacts:
             raise HTTPException(status_code=404, detail="No contacts with email found")
-        
+
+        # Get newListName from request data
+        new_list_name = data.get('newListName', '')
+
         # Transform contacts
         if template['service'] == 'manyreach':
             integration = ManyReachIntegration(template['api_config'].get('api_key', ''))
             manyreach_campaign_id = template['api_config'].get('manyreach_campaign_id', '')
             transformed_contacts = []
-            
+
             for contact in contacts:
                 if integration.validate_contact(contact):
-                    transformed = integration.transform_contact(contact, template['field_mappings'], manyreach_campaign_id)
+                    transformed = integration.transform_contact(contact, template['field_mappings'], manyreach_campaign_id, new_list_name)
                     transformed_contacts.append(transformed)
-            
+
             # Format for bulk API - wrap contacts in array for bulk endpoint
             bulk_data = {
                 "apikey": template['api_config'].get('api_key', ''),
                 "campaignid": manyreach_campaign_id,
                 "prospects": transformed_contacts
             }
-            
+
+            # Add newListName if provided
+            if new_list_name:
+                bulk_data["newListName"] = new_list_name
+
             # Make real API call to ManyReach
             try:
                 api_response = integration.export_to_manyreach_bulk(bulk_data)
-                
+
                 # Log the successful export
                 cursor.execute("""
                     INSERT INTO export_logs (campaign_id, template_id, contacts_exported, status)
                     VALUES (?, ?, ?, ?)
                 """, (campaign_id, template_id, len(transformed_contacts), "completed"))
                 conn.commit()
-                
+
                 return {
                     "status": "Export completed successfully",
                     "service": "manyreach",
@@ -900,9 +907,9 @@ async def export_campaign(campaign_id: int, request: Request):
                     VALUES (?, ?, ?, ?)
                 """, (campaign_id, template_id, 0, f"failed: {str(e)}"))
                 conn.commit()
-                
+
                 raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
-    
+
     return {"error": "Service not supported"}
 
 @app.get("/api/campaign/{campaign_id}/export/history")
@@ -923,13 +930,13 @@ async def get_export_history(campaign_id: int):
 async def create_default_templates():
     with get_db() as conn:
         cursor = conn.cursor()
-        
+
         # Check if ManyReach template already exists
         cursor.execute("SELECT id FROM export_templates WHERE service = 'manyreach'")
         if not cursor.fetchone():
             integration = ManyReachIntegration("")
             default_mapping = integration.get_default_field_mapping()
-            
+
             TemplateManager.create_template(
                 "ManyReach Default",
                 "manyreach",

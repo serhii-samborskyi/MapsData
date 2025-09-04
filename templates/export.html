@@ -317,7 +317,7 @@
                 fieldDiv.className = 'flex items-center space-x-2';
 
                 const isCustomValue = contactField && !['business_name', 'email', 'phone', 'domain', 'address', 'category', 'rating', 'review_count', 'facebook', 'instagram', 'twitter', 'yelp'].includes(contactField);
-                
+
                 fieldDiv.innerHTML = `
                     <label class="w-24 text-sm font-medium">${apiField}:</label>
                     <div class="flex-1 flex gap-2">
@@ -356,7 +356,7 @@
 
         function handleFieldMappingChange(apiField, selectedValue) {
             const customInput = document.getElementById(`custom_${apiField}`);
-            
+
             if (selectedValue === '_custom') {
                 // Show custom input field
                 customInput.classList.remove('hidden');
@@ -549,7 +549,7 @@
                 const campaignResponse = await fetch(`/api/campaign/${selectedCampaign}`);
                 const campaignData = await campaignResponse.json();
                 const contactsWithEmail = campaignData.contacts.filter(c => c.email && c.email.trim() !== '');
-                
+
                 if (contactsWithEmail.length === 0) {
                     alert('No contacts with email found in this campaign');
                     return;
@@ -558,7 +558,7 @@
                 // Show modal and start batch export
                 showBatchExportModal(contactsWithEmail.length);
                 await executeBatchExport(contactsWithEmail.length);
-                
+
             } catch (error) {
                 alert('Error starting batch export: ' + error.message);
             }
@@ -567,7 +567,7 @@
         function showBatchExportModal(totalContacts) {
             const batchSize = 50;
             const totalBatches = Math.ceil(totalContacts / batchSize);
-            
+
             document.getElementById('totalContacts').textContent = totalContacts;
             document.getElementById('totalBatches').textContent = totalBatches;
             document.getElementById('currentBatch').textContent = '0';
@@ -576,7 +576,7 @@
             document.getElementById('progressBar').style.width = '0%';
             document.getElementById('batchStatus').textContent = 'Starting batch export...';
             document.getElementById('batchExportLogs').innerHTML = '';
-            
+
             batchExportCancelled = false;
             document.getElementById('cancelBatchExport').disabled = false;
             document.getElementById('batchExportModal').classList.remove('hidden');
@@ -595,7 +595,7 @@
             const totalBatches = Math.ceil(totalContacts / batchSize);
             let exportedCount = 0;
             let failedCount = 0;
-            
+
             addBatchLog(`Starting export of ${totalContacts} contacts in ${totalBatches} batches`);
 
             for (let batchNumber = 1; batchNumber <= totalBatches; batchNumber++) {
@@ -607,7 +607,7 @@
                 // Update UI
                 document.getElementById('currentBatch').textContent = batchNumber;
                 document.getElementById('batchStatus').textContent = `Processing batch ${batchNumber} of ${totalBatches}...`;
-                
+
                 const progress = ((batchNumber - 1) / totalBatches) * 100;
                 document.getElementById('progressBar').style.width = `${progress}%`;
 
@@ -635,7 +635,7 @@
                     if (response.ok) {
                         exportedCount += data.contacts_exported;
                         addBatchLog(`Batch ${batchNumber} completed: ${data.contacts_exported} contacts exported`);
-                        
+
                         // Update counters
                         document.getElementById('exportedContacts').textContent = exportedCount;
                     } else {
@@ -662,7 +662,7 @@
             document.getElementById('batchStatus').textContent = batchExportCancelled ? 'Export cancelled' : 'Export completed!';
             document.getElementById('cancelBatchExport').textContent = 'Close';
             document.getElementById('cancelBatchExport').disabled = false;
-            
+
             if (!batchExportCancelled) {
                 addBatchLog(`Export completed! Total: ${exportedCount} exported, ${failedCount} failed`);
                 await loadExportHistory();
@@ -692,13 +692,30 @@
             // Get default ManyReach mapping
             const integration = {
                 "email": "email",
-                "company": "business_name", 
-                "www": "domain",
-                "domain": "domain",
-                "phone": "phone",
+                "fullName": "",
                 "industry": "category",
+                "city": "",
+                "www": "domain",
+                "phone": "phone",
                 "firstname": "",
                 "lastname": "",
+                "company": "business_name",
+                "country": "",
+                "domain": "domain",
+                "companySocial": "",
+                "companySize": "",
+                "personalJobPosition": "",
+                "personalProspectLocation": "",
+                "personalUserSocial": "",
+                "screenshot": "",
+                "logo": "",
+                "state": "",
+                "icebreaker": "",
+                "timeZoneOffsetMin": "",
+                "notes": "",
+                "tagsImport": "",
+                "custom_1": "",
+                "custom_2": "",
                 "custom_3": "",
                 "custom_4": "",
                 "custom_5": "",
@@ -775,13 +792,30 @@
             // Get default ManyReach mapping
             const integration = {
                 "email": "email",
-                "company": "business_name", 
-                "www": "domain",
-                "domain": "domain",
-                "phone": "phone",
+                "fullName": "",
                 "industry": "category",
+                "city": "",
+                "www": "domain",
+                "phone": "phone",
                 "firstname": "",
                 "lastname": "",
+                "company": "business_name",
+                "country": "",
+                "domain": "domain",
+                "companySocial": "",
+                "companySize": "",
+                "personalJobPosition": "",
+                "personalProspectLocation": "",
+                "personalUserSocial": "",
+                "screenshot": "",
+                "logo": "",
+                "state": "",
+                "icebreaker": "",
+                "timeZoneOffsetMin": "",
+                "notes": "",
+                "tagsImport": "",
+                "custom_1": "",
+                "custom_2": "",
                 "custom_3": "",
                 "custom_4": "",
                 "custom_5": "",
