@@ -16,19 +16,7 @@
 
         <!-- Campaign Selection -->
         <div class="bg-white rounded-lg shadow-md p-6 mb-6">
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-xl font-semibold">Select Campaign to Export</h2>
-                <div class="flex items-center gap-4">
-                    <label class="flex items-center">
-                        <input type="radio" name="campaignFilter" value="active" checked class="mr-2">
-                        <span class="text-sm">Active Only</span>
-                    </label>
-                    <label class="flex items-center">
-                        <input type="radio" name="campaignFilter" value="all" class="mr-2">
-                        <span class="text-sm">All Campaigns</span>
-                    </label>
-                </div>
-            </div>
+            <h2 class="text-xl font-semibold mb-4">Select Campaign to Export</h2>
             <select id="campaignSelect" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
                 <option value="">Select a campaign...</option>
             </select>
@@ -266,37 +254,12 @@
         document.addEventListener('DOMContentLoaded', async () => {
             await loadCampaigns();
             await loadTemplates();
-            
-            // Add event listeners for campaign filter radio buttons
-            document.querySelectorAll('input[name="campaignFilter"]').forEach(radio => {
-                radio.addEventListener('change', async (e) => {
-                    await loadCampaigns(e.target.value);
-                    selectedCampaign = null; // Reset selection when filter changes
-                    document.getElementById('fieldMappingSection').classList.add('hidden');
-                    document.getElementById('exportPreview').classList.add('hidden');
-                });
-            });
         });
 
-        async function loadCampaigns(filter = 'active') {
+        async function loadCampaigns() {
             try {
-                let url = '/api/campaigns/active';
-                if (filter === 'all') {
-                    url = '/';
-                }
-                
-                const response = await fetch(url);
-                let data;
-                
-                if (filter === 'all') {
-                    // Parse HTML response to extract campaigns data
-                    const text = await response.text();
-                    // For now, let's create a new endpoint for all campaigns
-                    const allCampaignsResponse = await fetch('/api/campaigns/all');
-                    data = await allCampaignsResponse.json();
-                } else {
-                    data = await response.json();
-                }
+                const response = await fetch('/api/campaigns/all');
+                const data = await response.json();
                 
                 const select = document.getElementById('campaignSelect');
                 select.innerHTML = '<option value="">Select a campaign...</option>';
