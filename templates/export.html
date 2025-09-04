@@ -316,23 +316,34 @@
                 const fieldDiv = document.createElement('div');
                 fieldDiv.className = 'flex items-center space-x-2';
 
+                const isCustomValue = contactField && !['business_name', 'email', 'phone', 'domain', 'address', 'category', 'rating', 'review_count', 'facebook', 'instagram', 'twitter', 'yelp'].includes(contactField);
+                
                 fieldDiv.innerHTML = `
                     <label class="w-24 text-sm font-medium">${apiField}:</label>
-                    <select class="flex-1 p-2 border border-gray-300 rounded text-sm" onchange="updateFieldMapping('${apiField}', this.value)">
-                        <option value="">-- Select Field --</option>
-                        <option value="business_name" ${contactField === 'business_name' ? 'selected' : ''}>Business Name</option>
-                        <option value="email" ${contactField === 'email' ? 'selected' : ''}>Email</option>
-                        <option value="phone" ${contactField === 'phone' ? 'selected' : ''}>Phone</option>
-                        <option value="domain" ${contactField === 'domain' ? 'selected' : ''}>Domain</option>
-                        <option value="address" ${contactField === 'address' ? 'selected' : ''}>Address</option>
-                        <option value="category" ${contactField === 'category' ? 'selected' : ''}>Category</option>
-                        <option value="rating" ${contactField === 'rating' ? 'selected' : ''}>Rating</option>
-                        <option value="review_count" ${contactField === 'review_count' ? 'selected' : ''}>Review Count</option>
-                        <option value="facebook" ${contactField === 'facebook' ? 'selected' : ''}>Facebook</option>
-                        <option value="instagram" ${contactField === 'instagram' ? 'selected' : ''}>Instagram</option>
-                        <option value="twitter" ${contactField === 'twitter' ? 'selected' : ''}>Twitter</option>
-                        <option value="yelp" ${contactField === 'yelp' ? 'selected' : ''}>Yelp</option>
-                    </select>
+                    <div class="flex-1 flex gap-2">
+                        <select class="flex-1 p-2 border border-gray-300 rounded text-sm" onchange="handleFieldMappingChange('${apiField}', this.value)">
+                            <option value="">-- Select Field --</option>
+                            <option value="business_name" ${contactField === 'business_name' ? 'selected' : ''}>Business Name</option>
+                            <option value="email" ${contactField === 'email' ? 'selected' : ''}>Email</option>
+                            <option value="phone" ${contactField === 'phone' ? 'selected' : ''}>Phone</option>
+                            <option value="domain" ${contactField === 'domain' ? 'selected' : ''}>Domain</option>
+                            <option value="address" ${contactField === 'address' ? 'selected' : ''}>Address</option>
+                            <option value="category" ${contactField === 'category' ? 'selected' : ''}>Category</option>
+                            <option value="rating" ${contactField === 'rating' ? 'selected' : ''}>Rating</option>
+                            <option value="review_count" ${contactField === 'review_count' ? 'selected' : ''}>Review Count</option>
+                            <option value="facebook" ${contactField === 'facebook' ? 'selected' : ''}>Facebook</option>
+                            <option value="instagram" ${contactField === 'instagram' ? 'selected' : ''}>Instagram</option>
+                            <option value="twitter" ${contactField === 'twitter' ? 'selected' : ''}>Twitter</option>
+                            <option value="yelp" ${contactField === 'yelp' ? 'selected' : ''}>Yelp</option>
+                            <option value="_custom" ${isCustomValue ? 'selected' : ''}>Custom Value</option>
+                        </select>
+                        <input type="text" 
+                               id="custom_${apiField}" 
+                               class="flex-1 p-2 border border-gray-300 rounded text-sm ${isCustomValue ? '' : 'hidden'}" 
+                               placeholder="Enter custom value" 
+                               value="${isCustomValue ? contactField : ''}"
+                               onchange="updateFieldMapping('${apiField}', this.value)">
+                    </div>
                 `;
 
                 apiFields.appendChild(fieldDiv);
@@ -341,6 +352,22 @@
 
         function updateFieldMapping(apiField, contactField) {
             currentFieldMappings[apiField] = contactField;
+        }
+
+        function handleFieldMappingChange(apiField, selectedValue) {
+            const customInput = document.getElementById(`custom_${apiField}`);
+            
+            if (selectedValue === '_custom') {
+                // Show custom input field
+                customInput.classList.remove('hidden');
+                customInput.focus();
+                // Set the mapping to whatever is in the custom input (or empty string)
+                currentFieldMappings[apiField] = customInput.value || '';
+            } else {
+                // Hide custom input field and use selected value
+                customInput.classList.add('hidden');
+                currentFieldMappings[apiField] = selectedValue;
+            }
         }
 
         async function previewExport() {
