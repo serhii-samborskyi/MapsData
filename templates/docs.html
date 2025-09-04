@@ -247,23 +247,79 @@
                 <div class="bg-gray-50 p-4 rounded mb-4">
                     <h3 class="font-medium mb-2">JSON Request Body:</h3>
                     <p class="mb-2">Single contact object or array of contact objects with the following properties:</p>
-                    <ul class="list-disc list-inside space-y-1">
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">campaign_id</code> - Campaign ID</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">request_id</code> - Request ID</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">business_name</code> - Name of the business</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">review_count</code> - Number of reviews</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">phone</code> - Phone number (optional)</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">domain</code> - Website domain (optional)</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">email</code> - Email address (optional)</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">address</code> - Business address (optional)</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">category</code> - Business category (optional)</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">rating</code> - Business rating (optional)</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">facebook</code> - Facebook URL (optional)</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">instagram</code> - Instagram URL (optional)</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">twitter</code> - Twitter URL (optional)</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">yelp</code> - Yelp URL (optional)</li>
-                        <li><code class="bg-gray-200 px-2 py-1 rounded">place_id</code> - Place ID (optional)</li>
-                    </ul>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <h4 class="font-semibold mb-2">Required Fields:</h4>
+                            <ul class="list-disc list-inside space-y-1 text-sm">
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">campaign_id</code> - Campaign ID</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">request_id</code> - Request ID</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">business_name</code> - Name of the business</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">review_count</code> - Number of reviews</li>
+                            </ul>
+                        </div>
+                        <div>
+                            <h4 class="font-semibold mb-2">Basic Optional Fields:</h4>
+                            <ul class="list-disc list-inside space-y-1 text-sm">
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">phone</code> - Phone number</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">domain</code> - Website domain</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">email</code> - Email address</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">address</code> - Business address</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">category</code> - Business category</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">rating</code> - Business rating</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">place_id</code> - Place ID</li>
+                            </ul>
+                        </div>
+                        <div>
+                            <h4 class="font-semibold mb-2">Social Media Fields:</h4>
+                            <ul class="list-disc list-inside space-y-1 text-sm">
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">facebook</code> - Facebook URL</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">instagram</code> - Instagram URL</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">twitter</code> - Twitter URL</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">yelp</code> - Yelp URL</li>
+                            </ul>
+                        </div>
+                        <div>
+                            <h4 class="font-semibold mb-2">Personal Information:</h4>
+                            <ul class="list-disc list-inside space-y-1 text-sm">
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">full_name</code> - Full name</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">firstname</code> - First name</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">lastname</code> - Last name</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">industry</code> - Industry</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">city</code> - City</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">state</code> - State</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">country</code> - Country</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">www</code> - Website URL</li>
+                            </ul>
+                        </div>
+                        <div>
+                            <h4 class="font-semibold mb-2">Company Information:</h4>
+                            <ul class="list-disc list-inside space-y-1 text-sm">
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">company</code> - Company name</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">company_social</code> - Company social media</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">company_size</code> - Company size</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">personal_job_position</code> - Job position</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">personal_prospect_location</code> - Prospect location</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">personal_user_social</code> - Personal social media</li>
+                            </ul>
+                        </div>
+                        <div>
+                            <h4 class="font-semibold mb-2">Additional Fields:</h4>
+                            <ul class="list-disc list-inside space-y-1 text-sm">
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">screenshot</code> - Screenshot URL</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">logo</code> - Logo URL</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">icebreaker</code> - Icebreaker text</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">time_zone_offset_min</code> - Timezone offset in minutes</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">notes</code> - Additional notes</li>
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">tags_import</code> - Import tags</li>
+                            </ul>
+                        </div>
+                        <div>
+                            <h4 class="font-semibold mb-2">Custom Fields (1-20):</h4>
+                            <ul class="list-disc list-inside space-y-1 text-sm">
+                                <li><code class="bg-gray-200 px-2 py-1 rounded">custom_1</code> to <code class="bg-gray-200 px-2 py-1 rounded">custom_20</code> - Custom field values</li>
+                            </ul>
+                        </div>
+                    </div>
                 </div>
                 <div class="bg-gray-50 p-4 rounded mb-4">
                     <h3 class="font-medium mb-2">Request Example:</h3>
@@ -276,7 +332,27 @@
     "review_count": 10,
     "phone": "123-456-7890",
     "domain": "example1.com",
-    "email": "contact@example1.com"
+    "email": "contact@example1.com",
+    "address": "123 Main St, New York, NY",
+    "category": "Restaurant",
+    "rating": 4.5,
+    "full_name": "John Doe",
+    "firstname": "John",
+    "lastname": "Doe",
+    "company": "Example Corp",
+    "city": "New York",
+    "state": "NY",
+    "country": "USA",
+    "industry": "Food & Beverage",
+    "www": "https://example1.com",
+    "company_size": "50-100",
+    "personal_job_position": "Manager",
+    "facebook": "https://facebook.com/business1",
+    "instagram": "https://instagram.com/business1",
+    "custom_1": "Custom value 1",
+    "custom_2": "Custom value 2",
+    "notes": "High-quality prospect",
+    "tags_import": "restaurant,nyc,premium"
   },
   {
     "campaign_id": 1,
@@ -285,7 +361,25 @@
     "review_count": 20,
     "phone": "098-765-4321",
     "domain": "example2.com",
-    "email": "contact@example2.com"
+    "email": "contact@example2.com",
+    "address": "456 Oak Ave, Los Angeles, CA",
+    "category": "Retail",
+    "rating": 4.8,
+    "full_name": "Jane Smith",
+    "firstname": "Jane",
+    "lastname": "Smith",
+    "company": "Sample Inc",
+    "city": "Los Angeles",
+    "state": "CA",
+    "country": "USA",
+    "industry": "Retail",
+    "www": "https://example2.com",
+    "company_size": "10-50",
+    "personal_job_position": "Owner",
+    "twitter": "https://twitter.com/business2",
+    "yelp": "https://yelp.com/biz/business2",
+    "time_zone_offset_min": -480,
+    "icebreaker": "Great reviews on your latest products!"
   }
 ]</pre>
                 </div>
