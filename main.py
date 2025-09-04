@@ -177,6 +177,24 @@ async def get_active_campaigns():
         campaigns = [dict(row) for row in cursor.fetchall()]
         return {"campaigns": campaigns}
 
+@app.get("/api/campaigns/all")
+async def get_all_campaigns():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                sc.*,
+                COUNT(DISTINCT r.id) as total_requests,
+                COUNT(DISTINCT c.id) as total_contacts
+            FROM search_campaigns sc
+            LEFT JOIN requests r ON sc.id = r.campaign_id
+            LEFT JOIN contacts c ON sc.id = c.campaign_id
+            GROUP BY sc.id
+            ORDER BY sc.status = 'active' DESC, sc.name ASC
+        """)
+        campaigns = [dict(row) for row in cursor.fetchall()]
+        return {"campaigns": campaigns}
+
 @app.get("/api/campaign/{campaign_name}/requests")
 async def get_campaign_requests(campaign_name: str):
     with get_db() as conn:
