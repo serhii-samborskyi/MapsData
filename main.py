@@ -238,8 +238,16 @@ async def save_contacts(request: Request):
 
             cursor.execute(
                 """INSERT INTO contacts 
-                   (address, business_name, campaign_id, category, domain, email, facebook, instagram, phone, place_id, rating, request_id, review_count, twitter, yelp, status) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (address, business_name, campaign_id, category, domain, email, facebook, instagram, phone, place_id, rating, request_id, review_count, twitter, yelp, status,
+                    full_name, industry, city, www, firstname, lastname, company, country, company_social, company_size, personal_job_position, personal_prospect_location,
+                    personal_user_social, screenshot, logo, state, icebreaker, time_zone_offset_min, notes, tags_import,
+                    custom_1, custom_2, custom_3, custom_4, custom_5, custom_6, custom_7, custom_8, custom_9, custom_10,
+                    custom_11, custom_12, custom_13, custom_14, custom_15, custom_16, custom_17, custom_18, custom_19, custom_20) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     contact.get('address'),
                     contact.get('business_name', contact.get('title')),
@@ -256,7 +264,48 @@ async def save_contacts(request: Request):
                     contact.get('review_count', contact.get('reviewsCount', 0)),
                     contact.get('twitter'),
                     contact.get('yelp'),
-                    "pending"
+                    "pending",
+                    # New fields
+                    contact.get('full_name'),
+                    contact.get('industry'),
+                    contact.get('city'),
+                    contact.get('www'),
+                    contact.get('firstname'),
+                    contact.get('lastname'),
+                    contact.get('company'),
+                    contact.get('country'),
+                    contact.get('company_social'),
+                    contact.get('company_size'),
+                    contact.get('personal_job_position'),
+                    contact.get('personal_prospect_location'),
+                    contact.get('personal_user_social'),
+                    contact.get('screenshot'),
+                    contact.get('logo'),
+                    contact.get('state'),
+                    contact.get('icebreaker'),
+                    contact.get('time_zone_offset_min'),
+                    contact.get('notes'),
+                    contact.get('tags_import'),
+                    contact.get('custom_1'),
+                    contact.get('custom_2'),
+                    contact.get('custom_3'),
+                    contact.get('custom_4'),
+                    contact.get('custom_5'),
+                    contact.get('custom_6'),
+                    contact.get('custom_7'),
+                    contact.get('custom_8'),
+                    contact.get('custom_9'),
+                    contact.get('custom_10'),
+                    contact.get('custom_11'),
+                    contact.get('custom_12'),
+                    contact.get('custom_13'),
+                    contact.get('custom_14'),
+                    contact.get('custom_15'),
+                    contact.get('custom_16'),
+                    contact.get('custom_17'),
+                    contact.get('custom_18'),
+                    contact.get('custom_19'),
+                    contact.get('custom_20')
                 )
             )
             saved_contacts.append({

@@ -49,6 +49,47 @@ def init_db():
                 twitter TEXT,
                 yelp TEXT,
                 status TEXT NOT NULL,
+                -- New ManyReach fields
+                full_name TEXT,
+                industry TEXT,
+                city TEXT,
+                www TEXT,
+                firstname TEXT,
+                lastname TEXT,
+                company TEXT,
+                country TEXT,
+                company_social TEXT,
+                company_size TEXT,
+                personal_job_position TEXT,
+                personal_prospect_location TEXT,
+                personal_user_social TEXT,
+                screenshot TEXT,
+                logo TEXT,
+                state TEXT,
+                icebreaker TEXT,
+                time_zone_offset_min INTEGER,
+                notes TEXT,
+                tags_import TEXT,
+                custom_1 TEXT,
+                custom_2 TEXT,
+                custom_3 TEXT,
+                custom_4 TEXT,
+                custom_5 TEXT,
+                custom_6 TEXT,
+                custom_7 TEXT,
+                custom_8 TEXT,
+                custom_9 TEXT,
+                custom_10 TEXT,
+                custom_11 TEXT,
+                custom_12 TEXT,
+                custom_13 TEXT,
+                custom_14 TEXT,
+                custom_15 TEXT,
+                custom_16 TEXT,
+                custom_17 TEXT,
+                custom_18 TEXT,
+                custom_19 TEXT,
+                custom_20 TEXT,
                 FOREIGN KEY (campaign_id) REFERENCES search_campaigns(id),
                 FOREIGN KEY (request_id) REFERENCES requests(id)
             )
@@ -77,3 +118,63 @@ def init_db():
             )
         ''')
         conn.commit()
+
+        # Add new columns to existing contacts table if they don't exist
+        try:
+            # Get existing columns
+            cursor.execute("PRAGMA table_info(contacts)")
+            existing_columns = [row[1] for row in cursor.fetchall()]
+            
+            # List of new columns to add
+            new_columns = [
+                ('full_name', 'TEXT'),
+                ('industry', 'TEXT'),
+                ('city', 'TEXT'),
+                ('www', 'TEXT'),
+                ('firstname', 'TEXT'),
+                ('lastname', 'TEXT'),
+                ('company', 'TEXT'),
+                ('country', 'TEXT'),
+                ('company_social', 'TEXT'),
+                ('company_size', 'TEXT'),
+                ('personal_job_position', 'TEXT'),
+                ('personal_prospect_location', 'TEXT'),
+                ('personal_user_social', 'TEXT'),
+                ('screenshot', 'TEXT'),
+                ('logo', 'TEXT'),
+                ('state', 'TEXT'),
+                ('icebreaker', 'TEXT'),
+                ('time_zone_offset_min', 'INTEGER'),
+                ('notes', 'TEXT'),
+                ('tags_import', 'TEXT'),
+                ('custom_1', 'TEXT'),
+                ('custom_2', 'TEXT'),
+                ('custom_3', 'TEXT'),
+                ('custom_4', 'TEXT'),
+                ('custom_5', 'TEXT'),
+                ('custom_6', 'TEXT'),
+                ('custom_7', 'TEXT'),
+                ('custom_8', 'TEXT'),
+                ('custom_9', 'TEXT'),
+                ('custom_10', 'TEXT'),
+                ('custom_11', 'TEXT'),
+                ('custom_12', 'TEXT'),
+                ('custom_13', 'TEXT'),
+                ('custom_14', 'TEXT'),
+                ('custom_15', 'TEXT'),
+                ('custom_16', 'TEXT'),
+                ('custom_17', 'TEXT'),
+                ('custom_18', 'TEXT'),
+                ('custom_19', 'TEXT'),
+                ('custom_20', 'TEXT')
+            ]
+            
+            # Add missing columns
+            for column_name, column_type in new_columns:
+                if column_name not in existing_columns:
+                    cursor.execute(f"ALTER TABLE contacts ADD COLUMN {column_name} {column_type}")
+            
+            conn.commit()
+        except Exception as e:
+            # If there's an error (like table doesn't exist yet), just continue
+            pass
