@@ -1311,6 +1311,21 @@ async def get_verification_history(campaign_id: int):
         """, (campaign_id,))
         return {"history": [dict(row) for row in cursor.fetchall()]}
 
+@app.delete("/api/campaign/{campaign_id}/contact/{contact_id}")
+async def remove_contact(campaign_id: int, contact_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            DELETE FROM contacts 
+            WHERE id = ? AND campaign_id = ?
+        """, (contact_id, campaign_id))
+        
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Contact not found")
+        
+        conn.commit()
+        return {"status": "Contact removed successfully"}
+
 @app.get("/api/campaign/{campaign_id}/email-statuses")
 async def get_email_statuses(campaign_id: int):
     with get_db() as conn:
