@@ -33,56 +33,54 @@ async def get_verify_page(request: Request):
 async def get_campaigns(request: Request, partial: bool = False):
     with get_db() as conn:
         cursor = conn.cursor()
+        
+        # Single optimized query to get all campaign data at once
         cursor.execute("""
             SELECT 
-                sc.*,
+                sc.id,
+                sc.name,
+                sc.status,
                 COUNT(DISTINCT r.id) as total_requests,
                 COUNT(DISTINCT c.id) as total_contacts,
-                (SELECT COUNT(*) FROM requests WHERE campaign_id = sc.id AND status = 'completed') as completed_requests,
-                (SELECT COUNT(*) FROM contacts WHERE campaign_id = sc.id AND email IS NOT NULL AND email != '') as email_count
+                COUNT(DISTINCT CASE WHEN r.status = 'completed' THEN r.id END) as completed_requests,
+                COUNT(DISTINCT CASE WHEN c.email IS NOT NULL AND c.email != '' THEN c.id END) as email_count,
+                COUNT(DISTINCT CASE WHEN c.email IS NOT NULL AND c.email != '' AND c.email_status = 'Valid' THEN c.id END) as valid_email_count
             FROM search_campaigns sc
             LEFT JOIN requests r ON sc.id = r.campaign_id
             LEFT JOIN contacts c ON sc.id = c.campaign_id
-            GROUP BY sc.id
+            GROUP BY sc.id, sc.name, sc.status
+            ORDER BY sc.id DESC
         """)
+        
         campaigns = []
         for row in cursor.fetchall():
             campaign = dict(row)
-            cursor.execute("""
-                SELECT r.*, COUNT(c.id) as contact_count 
-                FROM requests r 
-                LEFT JOIN contacts c ON r.campaign_id = c.campaign_id AND r.id = c.request_id
-                WHERE r.campaign_id = ? 
-                GROUP BY r.id
-            """, (campaign['id'],))
-            campaign['requests'] = [dict(r) for r in cursor.fetchall()]
+            
+            # Only load detailed data if specifically requested (not for main list view)
+            if not partial:
+                # Get requests for this campaign (simplified)
+                cursor.execute("""
+                    SELECT id, req_text, status
+                    FROM requests 
+                    WHERE campaign_id = ? 
+                    ORDER BY id
+                """, (campaign['id'],))
+                campaign['requests'] = [dict(r) for r in cursor.fetchall()]
 
-            cursor.execute("SELECT * FROM contacts WHERE campaign_id = ?", (campaign['id'],))
-            campaign['contacts'] = [dict(r) for r in cursor.fetchall()]
+                # Get sample contacts (limit to first 100 for performance)
+                cursor.execute("""
+                    SELECT * FROM contacts 
+                    WHERE campaign_id = ? 
+                    ORDER BY id 
+                    LIMIT 100
+                """, (campaign['id'],))
+                campaign['contacts'] = [dict(r) for r in cursor.fetchall()]
+            else:
+                # For partial loads (table refresh), skip detailed data
+                campaign['requests'] = []
+                campaign['contacts'] = []
 
             campaigns.append(campaign)
-
-        # Get email counts for each campaign
-        cursor.execute("""
-            SELECT campaign_id, COUNT(*) as email_count
-            FROM contacts 
-            WHERE email IS NOT NULL AND email != ''
-            GROUP BY campaign_id
-        """)
-        email_counts = {row[0]: row[1] for row in cursor.fetchall()}
-
-        # Get valid email counts for each campaign
-        cursor.execute("""
-            SELECT campaign_id, COUNT(*) as valid_email_count
-            FROM contacts 
-            WHERE email IS NOT NULL AND email != '' AND email_status = 'Valid'
-            GROUP BY campaign_id
-        """)
-        valid_email_counts = {row[0]: row[1] for row in cursor.fetchall()}
-
-        for campaign in campaigns:
-            campaign['email_count'] = email_counts.get(campaign['id'], 0)
-            campaign['valid_email_count'] = valid_email_counts.get(campaign['id'], 0)
 
     template = "index.html" if not partial else "partials/table.html"
     return templates.TemplateResponse(template, {"request": request, "campaigns": campaigns})
