@@ -173,7 +173,16 @@
                                                 <td class="px-3 py-2">
                                                     <div class="space-y-1">
                                                         <div class="text-sm text-gray-700">{{ contact.phone or '-' }}</div>
-                                                        <div class="text-sm text-gray-700">{{ contact.email.split(',')[0] if contact.email else '-' }}</div>
+                                                        <div class="text-sm text-gray-700 flex items-center gap-2">
+                                                            <span>{{ contact.email.split(',')[0] if contact.email else '-' }}</span>
+                                                            {% if contact.email and contact.email_status %}
+                                                                {% if contact.email_status == 'Valid' %}
+                                                                    <span class="text-green-500 font-bold" title="Valid Email">✓</span>
+                                                                {% elif contact.email_status in ['Invalid', 'Unknown', 'Catch-all'] %}
+                                                                    <span class="text-red-500 font-bold" title="{{ contact.email_status }} Email">✗</span>
+                                                                {% endif %}
+                                                            {% endif %}
+                                                        </div>
                                                         <div class="text-sm text-gray-700">
                                                             {% if contact.domain %}
                                                             {% set display_url = contact.domain.replace('https://', '').replace('http://', '').split('?')[0] %}
