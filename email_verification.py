@@ -60,7 +60,7 @@ class MyEmailVerifierIntegration:
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.base_url = "https://client.myemailverifier.com/verifier/validate_single"
-        self.rate_limit = 60  # 60 requests per minute
+        self.rate_limit = 30  # 30 requests per minute per API documentation
 
     def verify_email(self, email: str) -> Dict:
         """Verify a single email using MyEmailVerifier API"""
