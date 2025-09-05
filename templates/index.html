@@ -82,6 +82,7 @@
                             <td class="px-4 py-3 space-x-2">
                                 <button onclick="toggleRequests({{ campaign.id }})" class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-blue-200 transition-all">Requests</button>
                                 <button onclick="toggleContacts({{ campaign.id }})" class="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-purple-200 transition-all">Contacts</button>
+                                <button onclick="downloadCsv({{ campaign.id }})" class="bg-teal-100 text-teal-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-teal-200 transition-all">Download CSV</button>
                                 <button onclick="duplicateCampaign({{ campaign.id }})" class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-green-200 transition-all">Duplicate</button>
                                 <button onclick="showExcludeModal({{ campaign.id }})" class="bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-indigo-200 transition-all">Exclude</button>
                                 <button onclick="showRemoveDuplicatesModal({{ campaign.id }})" class="bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-orange-200 transition-all">Remove Duplicates</button>
@@ -735,6 +736,15 @@
                 console.error('Error removing contact:', error);
                 alert('Error removing contact');
             }
+        }
+
+        function downloadCsv(campaignId) {
+            const link = document.createElement('a');
+            link.href = `/api/campaign/${campaignId}/export/csv`;
+            link.download = `campaign_${campaignId}_contacts.csv`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
         }
 
         // Add event listeners for all search inputs

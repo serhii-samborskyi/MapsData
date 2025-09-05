@@ -1361,6 +1361,57 @@ async def get_email_statuses(campaign_id: int):
         
         return {"status_counts": statuses, "contact_details": details}
 
+@app.get("/api/campaign/{campaign_id}/export/csv")
+async def export_campaign_csv(campaign_id: int):
+    from fastapi.responses import StreamingResponse
+    import csv
+    import io
+    
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # Get campaign name
+        cursor.execute("SELECT name FROM search_campaigns WHERE id = ?", (campaign_id,))
+        campaign = cursor.fetchone()
+        if not campaign:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        
+        # Get all contacts for the campaign
+        cursor.execute("""
+            SELECT 
+                id, business_name, address, category, phone, email, domain, 
+                rating, review_count, facebook, instagram, twitter, yelp,
+                email_status, status, place_id, full_name, industry, city, 
+                country, www, firstname, lastname, company
+            FROM contacts 
+            WHERE campaign_id = ? 
+            ORDER BY id
+        """, (campaign_id,))
+        contacts = [dict(row) for row in cursor.fetchall()]
+        
+        if not contacts:
+            raise HTTPException(status_code=404, detail="No contacts found for this campaign")
+        
+        # Create CSV in memory
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=contacts[0].keys())
+        writer.writeheader()
+        writer.writerows(contacts)
+        
+        # Create response
+        csv_content = output.getvalue()
+        output.close()
+        
+        # Create filename with campaign name
+        safe_campaign_name = "".join(c for c in campaign['name'] if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        filename = f"campaign_{campaign_id}_{safe_campaign_name.replace(' ', '_')}.csv"
+        
+        return StreamingResponse(
+            io.StringIO(csv_content),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
 # Initialize default ManyReach template
 @app.on_event("startup")
 async def create_default_templates():
