@@ -362,7 +362,7 @@ async def update_email_verification_status(campaign_id: int, request: Request):
                     failed_updates.append({"id": contact_id, "error": "Missing id or email_status"})
                     continue
 
-                if email_status not in ['unverified', 'verified', 'invalid', 'bounced']:
+                if email_status not in ['unverified', 'verified', 'invalid', 'bounced', 'catch-all', 'unknown']:
                     failed_updates.append({"id": contact_id, "error": "Invalid email_status"})
                     continue
 
@@ -393,8 +393,8 @@ async def update_email_verification_status(campaign_id: int, request: Request):
         if not contact_id or not email_status:
             raise HTTPException(status_code=400, detail="Missing id or email_status in request body")
 
-        if email_status not in ['unverified', 'verified', 'invalid', 'bounced']:
-            raise HTTPException(status_code=400, detail="Invalid email_status. Must be: unverified, verified, invalid, or bounced")
+        if email_status not in ['unverified', 'verified', 'invalid', 'bounced', 'catch-all', 'unknown']:
+            raise HTTPException(status_code=400, detail="Invalid email_status. Must be: unverified, verified, invalid, bounced, catch-all, or unknown")
 
         with get_db() as conn:
             cursor = conn.cursor()
