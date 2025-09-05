@@ -321,6 +321,18 @@
                                 <input type="checkbox" id="keepContactsWithPhone" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
                                 <span class="ml-2 text-sm text-gray-700">Contacts with phone</span>
                             </label>
+                            <label class="flex items-center gap-2">
+                                <input type="checkbox" id="keepContactsWithLessReviews" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                                <span class="text-sm text-gray-700">Contacts with less than</span>
+                                <input type="number" id="lessReviewsCount" min="0" value="10" class="w-16 px-2 py-1 border border-gray-300 rounded text-sm">
+                                <span class="text-sm text-gray-700">reviews</span>
+                            </label>
+                            <label class="flex items-center gap-2">
+                                <input type="checkbox" id="keepContactsWithMoreReviews" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                                <span class="text-sm text-gray-700">Contacts with more than</span>
+                                <input type="number" id="moreReviewsCount" min="0" value="50" class="w-16 px-2 py-1 border border-gray-300 rounded text-sm">
+                                <span class="text-sm text-gray-700">reviews</span>
+                            </label>
                             <label class="flex items-center">
                                 <input type="checkbox" id="keepAllContacts" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
                                 <span class="ml-2 text-sm text-gray-700">All contacts</span>
@@ -657,6 +669,10 @@
             document.getElementById('keepContactsWithValidEmail').checked = false;
             document.getElementById('keepContactsWithoutEmail').checked = false;
             document.getElementById('keepContactsWithPhone').checked = false;
+            document.getElementById('keepContactsWithLessReviews').checked = false;
+            document.getElementById('keepContactsWithMoreReviews').checked = false;
+            document.getElementById('lessReviewsCount').value = '10';
+            document.getElementById('moreReviewsCount').value = '50';
             document.getElementById('keepAllContacts').checked = false;
             pendingDuplicateCampaignId = null;
         }
@@ -676,6 +692,10 @@
                 keepContactsWithValidEmail: document.getElementById('keepContactsWithValidEmail').checked,
                 keepContactsWithoutEmail: document.getElementById('keepContactsWithoutEmail').checked,
                 keepContactsWithPhone: document.getElementById('keepContactsWithPhone').checked,
+                keepContactsWithLessReviews: document.getElementById('keepContactsWithLessReviews').checked,
+                keepContactsWithMoreReviews: document.getElementById('keepContactsWithMoreReviews').checked,
+                lessReviewsCount: parseInt(document.getElementById('lessReviewsCount').value) || 0,
+                moreReviewsCount: parseInt(document.getElementById('moreReviewsCount').value) || 0,
                 keepAllContacts: document.getElementById('keepAllContacts').checked
             };
 

@@ -739,6 +739,16 @@ async def duplicate_campaign(campaign_id: int, request: Request):
                 if contact_filters.get('keepContactsWithPhone', False):
                     phone_conditions.append("(phone IS NOT NULL AND phone != '')")
 
+                # Review count filters
+                review_conditions = []
+                if contact_filters.get('keepContactsWithLessReviews', False):
+                    less_count = contact_filters.get('lessReviewsCount', 0)
+                    review_conditions.append(f"(review_count IS NOT NULL AND review_count < {less_count})")
+                
+                if contact_filters.get('keepContactsWithMoreReviews', False):
+                    more_count = contact_filters.get('moreReviewsCount', 0)
+                    review_conditions.append(f"(review_count IS NOT NULL AND review_count > {more_count})")
+
                 # Combine conditions
                 if domain_conditions:
                     conditions.append(f"({' OR '.join(domain_conditions)})")
@@ -746,6 +756,8 @@ async def duplicate_campaign(campaign_id: int, request: Request):
                     conditions.append(f"({' OR '.join(email_conditions)})")
                 if phone_conditions:
                     conditions.append(f"({' OR '.join(phone_conditions)})")
+                if review_conditions:
+                    conditions.append(f"({' OR '.join(review_conditions)})")
 
                 if conditions:
                     where_clause = f"campaign_id = ? AND ({' AND '.join(conditions)})"
