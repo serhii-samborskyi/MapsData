@@ -61,6 +61,29 @@ async def get_campaigns(request: Request, partial: bool = False):
             campaign['contacts'] = [dict(r) for r in cursor.fetchall()]
 
             campaigns.append(campaign)
+    
+    # Get email counts for each campaign
+    cursor.execute("""
+        SELECT campaign_id, COUNT(*) as email_count
+        FROM contacts 
+        WHERE email IS NOT NULL AND email != ''
+        GROUP BY campaign_id
+    """)
+    email_counts = {row[0]: row[1] for row in cursor.fetchall()}
+
+    # Get valid email counts for each campaign
+    cursor.execute("""
+        SELECT campaign_id, COUNT(*) as valid_email_count
+        FROM contacts 
+        WHERE email IS NOT NULL AND email != '' AND email_status = 'valid'
+        GROUP BY campaign_id
+    """)
+    valid_email_counts = {row[0]: row[1] for row in cursor.fetchall()}
+
+    for campaign in campaigns:
+        campaign['email_count'] = email_counts.get(campaign['id'], 0)
+        campaign['valid_email_count'] = valid_email_counts.get(campaign['id'], 0)
+
     template = "index.html" if not partial else "partials/table.html"
     return templates.TemplateResponse(template, {"request": request, "campaigns": campaigns})
 
@@ -344,7 +367,7 @@ async def save_contacts(request: Request):
 @app.post("/api/campaign/{campaign_id}/email_verify")
 async def update_email_verification_status(campaign_id: int, request: Request):
     data = await request.json()
-    
+
     # Check if it's a batch update or single update
     if 'contacts' in data:
         # Batch update
@@ -1130,30 +1153,30 @@ async def verify_single_email(campaign_id: int, request: Request):
 
     # Initialize verification service
     verification_service = EmailVerificationService()
-    
+
     try:
         # Verify single email
         results = verification_service.verify_batch([email], template, 0)
         result = results[0] if results else None
-        
+
         if not result:
             raise HTTPException(status_code=500, detail="No result from verification service")
 
         with get_db() as conn:
             cursor = conn.cursor()
-            
+
             if result['success']:
                 email_status = result['mapped_status']
-                
+
                 # Update database with result
                 cursor.execute("""
                     UPDATE contacts 
                     SET email_status = ? 
                     WHERE id = ? AND campaign_id = ?
                 """, (email_status, contact_id, campaign_id))
-                
+
                 conn.commit()
-                
+
                 return {
                     "status": email_status,
                     "email": email,
@@ -1169,7 +1192,7 @@ async def verify_single_email(campaign_id: int, request: Request):
                     "error": result.get('error', 'Unknown error'),
                     "details": "Verification failed"
                 }
-                
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")
 
@@ -1192,7 +1215,7 @@ async def verify_campaign_emails(campaign_id: int, request: Request):
     # Get unverified emails from campaign
     with get_db() as conn:
         cursor = conn.cursor()
-        
+
         if verify_all:
             cursor.execute("""
                 SELECT id, email FROM contacts 
@@ -1210,9 +1233,9 @@ async def verify_campaign_emails(campaign_id: int, request: Request):
                 AND (email_status IS NULL OR email_status = 'unverified')
                 LIMIT ?
             """, (campaign_id, batch_size))
-        
+
         contacts = cursor.fetchall()
-        
+
         if not contacts:
             raise HTTPException(status_code=404, detail="No unverified emails found")
 
@@ -1222,40 +1245,40 @@ async def verify_campaign_emails(campaign_id: int, request: Request):
 
         # Initialize verification service
         verification_service = EmailVerificationService()
-        
+
         # Verify emails
         try:
             results = verification_service.verify_batch(emails, template, delay)
-            
+
             # Update database with results
             verified_count = 0
             invalid_count = 0
-            
+
             for result in results:
                 if result['success']:
                     email_status = result['mapped_status']
                     contact_id = contact_map[result['email']]
-                    
+
                     cursor.execute("""
                         UPDATE contacts 
                         SET email_status = ? 
                         WHERE id = ? AND campaign_id = ?
                     """, (email_status, contact_id, campaign_id))
-                    
+
                     if email_status == 'verified':
                         verified_count += 1
                     elif email_status == 'invalid':
                         invalid_count += 1
-            
+
             # Log the verification
             cursor.execute("""
                 INSERT INTO email_verification_logs 
                 (campaign_id, template_id, emails_processed, emails_verified, emails_invalid, status)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (campaign_id, template_id, len(emails), verified_count, invalid_count, "completed"))
-            
+
             conn.commit()
-            
+
             return {
                 "status": "Verification completed",
                 "emails_processed": len(emails),
@@ -1263,7 +1286,7 @@ async def verify_campaign_emails(campaign_id: int, request: Request):
                 "emails_invalid": invalid_count,
                 "template_name": template['name']
             }
-            
+
         except Exception as e:
             # Log the failed verification
             cursor.execute("""
@@ -1272,7 +1295,7 @@ async def verify_campaign_emails(campaign_id: int, request: Request):
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (campaign_id, template_id, 0, 0, 0, "failed", str(e)))
             conn.commit()
-            
+
             raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")
 
 @app.get("/api/campaign/{campaign_id}/verification-history")
