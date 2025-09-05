@@ -88,11 +88,8 @@
 
             <div class="mt-6">
                 <div class="flex gap-3">
-                    <button id="verifyBatchBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
-                        Verify Batch
-                    </button>
-                    <button id="verifyAllBtn" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">
-                        Verify All Unverified
+                    <button id="verifyAllBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
+                        Verify Unverified Emails
                     </button>
                 </div>
             </div>
@@ -115,7 +112,7 @@
                     <h3 class="text-lg font-semibold mb-4">Email Verification Progress</h3>
                     <div class="mb-4">
                         <div class="text-sm text-gray-600 mb-2">
-                            Batch <span id="currentBatch">1</span> of <span id="totalBatches">1</span>
+                            Progress: <span id="processedEmails">0</span> of <span id="totalEmails">0</span> emails
                         </div>
                         <div class="w-full bg-gray-200 rounded-full h-2.5">
                             <div id="progressBar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
@@ -123,7 +120,7 @@
                     </div>
                     <div class="mb-4">
                         <div class="text-sm">
-                            <div>Processed: <span id="processedEmails">0</span></div>
+                            <div>Current Email: <span id="currentEmail">-</span></div>
                             <div>Verified: <span id="verifiedEmails">0</span></div>
                             <div>Invalid: <span id="invalidEmails">0</span></div>
                             <div>Failed: <span id="failedEmails">0</span></div>
@@ -419,67 +416,122 @@
             }
         }
 
-        async function verifyBatch() {
-            if (!selectedCampaign || !selectedTemplate) {
-                alert('Please select both a campaign and template');
-                return;
-            }
-
-            const batchSize = parseInt(document.getElementById('batchSize').value);
-            const delay = parseFloat(document.getElementById('requestDelay').value);
-
-            await executeVerification(batchSize, delay, false);
-        }
-
         async function verifyAll() {
             if (!selectedCampaign || !selectedTemplate) {
                 alert('Please select both a campaign and template');
                 return;
             }
 
-            const batchSize = parseInt(document.getElementById('batchSize').value);
             const delay = parseFloat(document.getElementById('requestDelay').value);
 
             if (!confirm('Are you sure you want to verify all unverified emails in this campaign? This may consume many API credits.')) {
                 return;
             }
 
-            await executeVerification(batchSize, delay, true);
+            await executeVerification(delay);
         }
 
-        async function executeVerification(batchSize, delay, verifyAll) {
+        async function executeVerification(delay) {
             showVerificationModal();
 
             try {
-                const response = await fetch(`/api/campaign/${selectedCampaign}/verify-emails`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        template_id: selectedTemplate.id,
-                        batch_size: batchSize,
-                        delay: delay,
-                        verify_all: verifyAll
-                    })
-                });
+                // First get the list of unverified emails
+                const campaignResponse = await fetch(`/api/campaign/${selectedCampaign}`);
+                const campaignData = await campaignResponse.json();
+                
+                const unverifiedContacts = campaignData.contacts.filter(c => 
+                    c.email && c.email.trim() !== '' && 
+                    (!c.email_status || c.email_status === 'unverified')
+                );
 
-                const data = await response.json();
-
-                if (response.ok) {
-                    addVerificationLog(`Verification completed! ${data.emails_processed} emails processed`);
-                    document.getElementById('verificationStatus').textContent = 'Verification completed successfully!';
+                if (unverifiedContacts.length === 0) {
+                    addVerificationLog('No unverified emails found');
+                    document.getElementById('verificationStatus').textContent = 'No emails to verify';
                     document.getElementById('cancelVerification').textContent = 'Close';
-                    document.getElementById('cancelVerification').disabled = false;
+                    return;
+                }
+
+                document.getElementById('totalEmails').textContent = unverifiedContacts.length;
+                
+                let processed = 0;
+                let verified = 0;
+                let invalid = 0;
+                let failed = 0;
+
+                // Process emails one by one with real-time updates
+                for (let i = 0; i < unverifiedContacts.length && !verificationCancelled; i++) {
+                    const contact = unverifiedContacts[i];
+                    document.getElementById('currentEmail').textContent = contact.email;
+                    addVerificationLog(`Verifying: ${contact.email}`);
+
+                    try {
+                        const response = await fetch(`/api/campaign/${selectedCampaign}/verify-single-email`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                template_id: selectedTemplate.id,
+                                contact_id: contact.id,
+                                email: contact.email
+                            })
+                        });
+
+                        const result = await response.json();
+                        
+                        if (response.ok) {
+                            processed++;
+                            if (result.status === 'verified') {
+                                verified++;
+                                addVerificationLog(`✓ ${contact.email} - Verified`);
+                            } else if (result.status === 'invalid') {
+                                invalid++;
+                                addVerificationLog(`✗ ${contact.email} - Invalid`);
+                            } else {
+                                addVerificationLog(`? ${contact.email} - ${result.status}`);
+                            }
+                        } else {
+                            failed++;
+                            addVerificationLog(`! ${contact.email} - Failed: ${result.detail}`);
+                        }
+                    } catch (error) {
+                        failed++;
+                        addVerificationLog(`! ${contact.email} - Error: ${error.message}`);
+                    }
+
+                    // Update progress
+                    document.getElementById('processedEmails').textContent = processed + failed;
+                    document.getElementById('verifiedEmails').textContent = verified;
+                    document.getElementById('invalidEmails').textContent = invalid;
+                    document.getElementById('failedEmails').textContent = failed;
+                    
+                    const progress = ((processed + failed) / unverifiedContacts.length) * 100;
+                    document.getElementById('progressBar').style.width = progress + '%';
+
+                    // Add delay between requests (except for last one)
+                    if (i < unverifiedContacts.length - 1 && !verificationCancelled) {
+                        await new Promise(resolve => setTimeout(resolve, delay * 1000));
+                    }
+                }
+
+                if (verificationCancelled) {
+                    document.getElementById('verificationStatus').textContent = 'Verification cancelled';
+                    addVerificationLog('Verification cancelled by user');
+                } else {
+                    document.getElementById('verificationStatus').textContent = 'Verification completed successfully!';
+                    addVerificationLog(`Verification completed! ${processed} emails processed`);
                     
                     await loadCampaignStats();
                     await loadVerificationHistory();
-                } else {
-                    addVerificationLog(`Verification failed: ${data.detail}`);
-                    alert('Verification failed: ' + data.detail);
                 }
+                
+                document.getElementById('currentEmail').textContent = '-';
+                document.getElementById('cancelVerification').textContent = 'Close';
+                document.getElementById('cancelVerification').disabled = false;
+
             } catch (error) {
                 addVerificationLog(`Error: ${error.message}`);
+                document.getElementById('verificationStatus').textContent = 'Verification failed';
                 alert('Error during verification: ' + error.message);
             }
         }
@@ -549,7 +601,6 @@
 
         // Event listeners
         document.getElementById('createTemplateBtn').addEventListener('click', openCreateTemplateModal);
-        document.getElementById('verifyBatchBtn').addEventListener('click', verifyBatch);
         document.getElementById('verifyAllBtn').addEventListener('click', verifyAll);
         document.getElementById('cancelVerification').addEventListener('click', closeVerificationModal);
 

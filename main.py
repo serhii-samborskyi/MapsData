@@ -1113,6 +1113,66 @@ async def delete_verification_template(template_id: int):
     EmailVerificationManager.delete_template(template_id)
     return {"status": "Template deleted"}
 
+# Single Email Verification for real-time progress
+@app.post("/api/campaign/{campaign_id}/verify-single-email")
+async def verify_single_email(campaign_id: int, request: Request):
+    data = await request.json()
+    template_id = data.get('template_id')
+    contact_id = data.get('contact_id')
+    email = data.get('email')
+
+    if not template_id or not contact_id or not email:
+        raise HTTPException(status_code=400, detail="Template ID, contact ID, and email required")
+
+    template = EmailVerificationManager.get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    # Initialize verification service
+    verification_service = EmailVerificationService()
+    
+    try:
+        # Verify single email
+        results = verification_service.verify_batch([email], template, 0)
+        result = results[0] if results else None
+        
+        if not result:
+            raise HTTPException(status_code=500, detail="No result from verification service")
+
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            if result['success']:
+                email_status = result['mapped_status']
+                
+                # Update database with result
+                cursor.execute("""
+                    UPDATE contacts 
+                    SET email_status = ? 
+                    WHERE id = ? AND campaign_id = ?
+                """, (email_status, contact_id, campaign_id))
+                
+                conn.commit()
+                
+                return {
+                    "status": email_status,
+                    "email": email,
+                    "success": True,
+                    "details": result.get('diagnosis', ''),
+                    "raw_response": result.get('raw_response', {})
+                }
+            else:
+                return {
+                    "status": "unknown",
+                    "email": email,
+                    "success": False,
+                    "error": result.get('error', 'Unknown error'),
+                    "details": "Verification failed"
+                }
+                
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")
+
 # Email Verification
 @app.post("/api/campaign/{campaign_id}/verify-emails")
 async def verify_campaign_emails(campaign_id: int, request: Request):
