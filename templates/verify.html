@@ -1,0 +1,578 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Email Verification Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="bg-gray-50 font-sans">
+    <div class="container mx-auto px-4 py-8">
+        <div class="flex justify-between items-center mb-6">
+            <h1 class="text-3xl font-bold text-gray-800">Email Verification Manager</h1>
+            <a href="/" class="text-blue-600 hover:text-blue-800">← Back to Campaigns</a>
+        </div>
+
+        <!-- Campaign Selection -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <h2 class="text-xl font-semibold mb-4">Select Campaign to Verify</h2>
+            <select id="campaignSelect" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                <option value="">Select a campaign...</option>
+            </select>
+            <div id="campaignStats" class="mt-4 hidden">
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-center">
+                    <div class="bg-blue-50 rounded-lg p-3">
+                        <div class="text-sm text-gray-600">Total Contacts</div>
+                        <div id="totalContacts" class="text-2xl font-bold text-blue-600">0</div>
+                    </div>
+                    <div class="bg-green-50 rounded-lg p-3">
+                        <div class="text-sm text-gray-600">With Email</div>
+                        <div id="withEmail" class="text-2xl font-bold text-green-600">0</div>
+                    </div>
+                    <div class="bg-yellow-50 rounded-lg p-3">
+                        <div class="text-sm text-gray-600">Unverified</div>
+                        <div id="unverified" class="text-2xl font-bold text-yellow-600">0</div>
+                    </div>
+                    <div class="bg-purple-50 rounded-lg p-3">
+                        <div class="text-sm text-gray-600">Verified</div>
+                        <div id="verified" class="text-2xl font-bold text-purple-600">0</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Template Selection -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-semibold">Verification Templates</h2>
+                <button id="createTemplateBtn" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">
+                    Create Template
+                </button>
+            </div>
+            <div id="templatesList" class="space-y-3">
+                <!-- Templates will be loaded here -->
+            </div>
+        </div>
+
+        <!-- Verification Controls -->
+        <div id="verificationSection" class="bg-white rounded-lg shadow-md p-6 mb-6 hidden">
+            <h2 class="text-xl font-semibold mb-4">Email Verification</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <label class="block text-sm font-medium mb-2">Batch Size</label>
+                    <select id="batchSize" class="w-full p-2 border border-gray-300 rounded-lg">
+                        <option value="10">10 emails</option>
+                        <option value="25" selected>25 emails</option>
+                        <option value="50">50 emails</option>
+                        <option value="100">100 emails</option>
+                    </select>
+                    <div class="text-xs text-gray-500 mt-1">Number of emails to verify per batch</div>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-2">Delay Between Requests (seconds)</label>
+                    <select id="requestDelay" class="w-full p-2 border border-gray-300 rounded-lg">
+                        <option value="0.5">0.5 seconds</option>
+                        <option value="1" selected>1 second</option>
+                        <option value="2">2 seconds</option>
+                        <option value="3">3 seconds</option>
+                    </select>
+                    <div class="text-xs text-gray-500 mt-1">Delay to respect API rate limits</div>
+                </div>
+            </div>
+
+            <div class="mt-6">
+                <div class="flex gap-3">
+                    <button id="verifyBatchBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
+                        Verify Batch
+                    </button>
+                    <button id="verifyAllBtn" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">
+                        Verify All Unverified
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Rate Limit Status -->
+        <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
+            <h3 class="font-medium text-yellow-800 mb-2">Rate Limiting & Credits</h3>
+            <div class="text-sm text-yellow-700">
+                <div>MyEmailVerifier: <span id="rateLimitStatus">60 requests per minute</span></div>
+                <div>Last verification: <span id="lastVerificationTime">Never</span></div>
+                <div class="text-xs text-gray-600 mt-2">Make sure you have sufficient credits in your MyEmailVerifier account</div>
+            </div>
+        </div>
+
+        <!-- Verification Progress Modal -->
+        <div id="verificationModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+            <div class="flex items-center justify-center min-h-screen">
+                <div class="bg-white rounded-lg p-6 w-full max-w-md mx-4">
+                    <h3 class="text-lg font-semibold mb-4">Email Verification Progress</h3>
+                    <div class="mb-4">
+                        <div class="text-sm text-gray-600 mb-2">
+                            Batch <span id="currentBatch">1</span> of <span id="totalBatches">1</span>
+                        </div>
+                        <div class="w-full bg-gray-200 rounded-full h-2.5">
+                            <div id="progressBar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="mb-4">
+                        <div class="text-sm">
+                            <div>Processed: <span id="processedEmails">0</span></div>
+                            <div>Verified: <span id="verifiedEmails">0</span></div>
+                            <div>Invalid: <span id="invalidEmails">0</span></div>
+                            <div>Failed: <span id="failedEmails">0</span></div>
+                        </div>
+                    </div>
+                    <div id="verificationStatus" class="text-sm text-gray-600 mb-4">
+                        Preparing verification...
+                    </div>
+                    <div id="verificationLogs" class="bg-gray-50 rounded p-3 h-24 overflow-y-auto text-xs mb-4">
+                        <!-- Logs will appear here -->
+                    </div>
+                    <button id="cancelVerification" class="w-full px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50" disabled>
+                        Cancel Verification
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Verification History -->
+        <div class="bg-white rounded-lg shadow-md p-6">
+            <h2 class="text-xl font-semibold mb-4">Verification History</h2>
+            <div id="verificationHistory" class="space-y-3">
+                <!-- Verification history will be loaded here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Template Modal -->
+    <div id="createTemplateModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+        <div class="flex items-center justify-center min-h-screen">
+            <div class="bg-white rounded-lg p-6 w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
+                <h3 class="text-lg font-semibold mb-4">Create Verification Template</h3>
+                <form id="createTemplateForm">
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium mb-2">Template Name</label>
+                        <input type="text" id="templateName" class="w-full p-2 border border-gray-300 rounded-lg" required>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium mb-2">Service</label>
+                        <select id="templateService" class="w-full p-2 border border-gray-300 rounded-lg" required>
+                            <option value="myemailverifier">MyEmailVerifier.com</option>
+                        </select>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium mb-2">API Key</label>
+                        <input type="password" id="templateApiKey" class="w-full p-2 border border-gray-300 rounded-lg" required>
+                        <div class="text-xs text-gray-500 mt-1">Your MyEmailVerifier.com API key</div>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium mb-3">Status Mapping</label>
+                        <div class="text-xs text-gray-600 mb-3">Map API responses to your internal email statuses:</div>
+                        <div class="space-y-2">
+                            <div class="flex items-center gap-2">
+                                <span class="w-20 text-sm">Valid:</span>
+                                <select class="flex-1 p-1 border border-gray-300 rounded text-sm" data-api-status="valid">
+                                    <option value="verified" selected>verified</option>
+                                    <option value="unverified">unverified</option>
+                                    <option value="invalid">invalid</option>
+                                    <option value="bounced">bounced</option>
+                                    <option value="catch-all">catch-all</option>
+                                    <option value="unknown">unknown</option>
+                                </select>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="w-20 text-sm">Invalid:</span>
+                                <select class="flex-1 p-1 border border-gray-300 rounded text-sm" data-api-status="invalid">
+                                    <option value="verified">verified</option>
+                                    <option value="unverified">unverified</option>
+                                    <option value="invalid" selected>invalid</option>
+                                    <option value="bounced">bounced</option>
+                                    <option value="catch-all">catch-all</option>
+                                    <option value="unknown">unknown</option>
+                                </select>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="w-20 text-sm">Catch-all:</span>
+                                <select class="flex-1 p-1 border border-gray-300 rounded text-sm" data-api-status="catch-all">
+                                    <option value="verified">verified</option>
+                                    <option value="unverified">unverified</option>
+                                    <option value="invalid">invalid</option>
+                                    <option value="bounced">bounced</option>
+                                    <option value="catch-all" selected>catch-all</option>
+                                    <option value="unknown">unknown</option>
+                                </select>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="w-20 text-sm">Unknown:</span>
+                                <select class="flex-1 p-1 border border-gray-300 rounded text-sm" data-api-status="unknown">
+                                    <option value="verified">verified</option>
+                                    <option value="unverified">unverified</option>
+                                    <option value="invalid">invalid</option>
+                                    <option value="bounced">bounced</option>
+                                    <option value="catch-all">catch-all</option>
+                                    <option value="unknown" selected>unknown</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex gap-3">
+                        <button type="button" onclick="closeCreateTemplateModal()" class="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
+                            Cancel
+                        </button>
+                        <button type="submit" class="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">
+                            Create
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let selectedCampaign = null;
+        let selectedTemplate = null;
+        let verificationCancelled = false;
+
+        // Load campaigns and templates on page load
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadCampaigns();
+            await loadVerificationTemplates();
+        });
+
+        async function loadCampaigns() {
+            try {
+                const response = await fetch('/api/campaigns/all');
+                const data = await response.json();
+                
+                const select = document.getElementById('campaignSelect');
+                select.innerHTML = '<option value="">Select a campaign...</option>';
+                
+                data.campaigns.forEach(campaign => {
+                    const option = document.createElement('option');
+                    option.value = campaign.id;
+                    const statusLabel = campaign.status === 'completed' ? ' [COMPLETED]' : '';
+                    option.textContent = `${campaign.name} (${campaign.total_contacts} contacts)${statusLabel}`;
+                    select.appendChild(option);
+                });
+
+                select.addEventListener('change', async (e) => {
+                    selectedCampaign = e.target.value;
+                    if (selectedCampaign) {
+                        await loadCampaignStats();
+                        if (selectedTemplate) {
+                            showVerificationSection();
+                        }
+                    } else {
+                        hideVerificationSection();
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading campaigns:', error);
+            }
+        }
+
+        async function loadCampaignStats() {
+            if (!selectedCampaign) return;
+
+            try {
+                const response = await fetch(`/api/campaign/${selectedCampaign}`);
+                const data = await response.json();
+                
+                const contacts = data.contacts;
+                const withEmail = contacts.filter(c => c.email && c.email.trim() !== '');
+                const unverified = withEmail.filter(c => !c.email_status || c.email_status === 'unverified');
+                const verified = withEmail.filter(c => c.email_status === 'verified');
+
+                document.getElementById('totalContacts').textContent = contacts.length;
+                document.getElementById('withEmail').textContent = withEmail.length;
+                document.getElementById('unverified').textContent = unverified.length;
+                document.getElementById('verified').textContent = verified.length;
+
+                document.getElementById('campaignStats').classList.remove('hidden');
+                await loadVerificationHistory();
+            } catch (error) {
+                console.error('Error loading campaign stats:', error);
+            }
+        }
+
+        async function loadVerificationTemplates() {
+            try {
+                const response = await fetch('/api/email-verification/templates');
+                const data = await response.json();
+                const container = document.getElementById('templatesList');
+
+                container.innerHTML = '';
+                if (data.templates.length === 0) {
+                    container.innerHTML = '<p class="text-gray-500 text-center py-4">No templates found. Create one to get started.</p>';
+                    return;
+                }
+
+                data.templates.forEach(template => {
+                    const templateDiv = document.createElement('div');
+                    templateDiv.className = 'border border-gray-200 rounded-lg p-4 cursor-pointer hover:bg-blue-50 transition-colors';
+                    templateDiv.onclick = () => selectTemplate(template);
+
+                    templateDiv.innerHTML = `
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <h3 class="font-medium">${template.name}</h3>
+                                <p class="text-sm text-gray-600">${template.service.toUpperCase()}</p>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <button onclick="deleteTemplate(${template.id})" class="text-red-600 hover:text-red-800 text-sm px-2 py-1 border border-red-300 rounded">
+                                    Delete
+                                </button>
+                                <div class="text-sm text-gray-500">
+                                    ${new Date(template.created_at).toLocaleDateString()}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+
+                    container.appendChild(templateDiv);
+                });
+            } catch (error) {
+                console.error('Error loading templates:', error);
+            }
+        }
+
+        function selectTemplate(template) {
+            selectedTemplate = template;
+
+            // Update UI to show selected template
+            document.querySelectorAll('#templatesList > div').forEach(div => {
+                div.classList.remove('bg-blue-100', 'border-blue-500');
+                div.classList.add('border-gray-200');
+            });
+
+            event.currentTarget.classList.remove('border-gray-200');
+            event.currentTarget.classList.add('bg-blue-100', 'border-blue-500');
+
+            if (selectedCampaign && selectedTemplate) {
+                showVerificationSection();
+            }
+        }
+
+        function showVerificationSection() {
+            document.getElementById('verificationSection').classList.remove('hidden');
+        }
+
+        function hideVerificationSection() {
+            document.getElementById('verificationSection').classList.add('hidden');
+        }
+
+        function openCreateTemplateModal() {
+            document.getElementById('createTemplateModal').classList.remove('hidden');
+        }
+
+        function closeCreateTemplateModal() {
+            document.getElementById('createTemplateModal').classList.add('hidden');
+            document.getElementById('createTemplateForm').reset();
+        }
+
+        async function deleteTemplate(templateId) {
+            if (!confirm('Are you sure you want to delete this template?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/email-verification/templates/${templateId}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    await loadVerificationTemplates();
+                    alert('Template deleted successfully!');
+                    selectedTemplate = null;
+                    hideVerificationSection();
+                } else {
+                    const error = await response.json();
+                    alert('Error deleting template: ' + error.detail);
+                }
+            } catch (error) {
+                alert('Error deleting template: ' + error.message);
+            }
+        }
+
+        async function verifyBatch() {
+            if (!selectedCampaign || !selectedTemplate) {
+                alert('Please select both a campaign and template');
+                return;
+            }
+
+            const batchSize = parseInt(document.getElementById('batchSize').value);
+            const delay = parseFloat(document.getElementById('requestDelay').value);
+
+            await executeVerification(batchSize, delay, false);
+        }
+
+        async function verifyAll() {
+            if (!selectedCampaign || !selectedTemplate) {
+                alert('Please select both a campaign and template');
+                return;
+            }
+
+            const batchSize = parseInt(document.getElementById('batchSize').value);
+            const delay = parseFloat(document.getElementById('requestDelay').value);
+
+            if (!confirm('Are you sure you want to verify all unverified emails in this campaign? This may consume many API credits.')) {
+                return;
+            }
+
+            await executeVerification(batchSize, delay, true);
+        }
+
+        async function executeVerification(batchSize, delay, verifyAll) {
+            showVerificationModal();
+
+            try {
+                const response = await fetch(`/api/campaign/${selectedCampaign}/verify-emails`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        template_id: selectedTemplate.id,
+                        batch_size: batchSize,
+                        delay: delay,
+                        verify_all: verifyAll
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    addVerificationLog(`Verification completed! ${data.emails_processed} emails processed`);
+                    document.getElementById('verificationStatus').textContent = 'Verification completed successfully!';
+                    document.getElementById('cancelVerification').textContent = 'Close';
+                    document.getElementById('cancelVerification').disabled = false;
+                    
+                    await loadCampaignStats();
+                    await loadVerificationHistory();
+                } else {
+                    addVerificationLog(`Verification failed: ${data.detail}`);
+                    alert('Verification failed: ' + data.detail);
+                }
+            } catch (error) {
+                addVerificationLog(`Error: ${error.message}`);
+                alert('Error during verification: ' + error.message);
+            }
+        }
+
+        function showVerificationModal() {
+            verificationCancelled = false;
+            document.getElementById('verificationModal').classList.remove('hidden');
+            document.getElementById('verificationStatus').textContent = 'Starting verification...';
+            document.getElementById('verificationLogs').innerHTML = '';
+            document.getElementById('cancelVerification').disabled = false;
+            document.getElementById('cancelVerification').textContent = 'Cancel';
+        }
+
+        function addVerificationLog(message) {
+            const logsDiv = document.getElementById('verificationLogs');
+            const logEntry = document.createElement('div');
+            logEntry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
+            logsDiv.appendChild(logEntry);
+            logsDiv.scrollTop = logsDiv.scrollHeight;
+        }
+
+        function closeVerificationModal() {
+            verificationCancelled = true;
+            document.getElementById('verificationModal').classList.add('hidden');
+        }
+
+        async function loadVerificationHistory() {
+            if (!selectedCampaign) return;
+
+            try {
+                const response = await fetch(`/api/campaign/${selectedCampaign}/verification-history`);
+                const data = await response.json();
+
+                const historyDiv = document.getElementById('verificationHistory');
+                historyDiv.innerHTML = '';
+
+                if (data.history.length === 0) {
+                    historyDiv.innerHTML = '<p class="text-gray-500">No verification history</p>';
+                    return;
+                }
+
+                data.history.forEach(log => {
+                    const logDiv = document.createElement('div');
+                    logDiv.className = 'border border-gray-200 rounded-lg p-3';
+
+                    logDiv.innerHTML = `
+                        <div class="flex justify-between items-center">
+                            <div>
+                                <span class="font-medium">${log.template_name}</span>
+                                <span class="text-sm text-gray-600">(${log.service})</span>
+                            </div>
+                            <div class="text-sm text-gray-500">
+                                ${new Date(log.created_at).toLocaleString()}
+                            </div>
+                        </div>
+                        <div class="text-sm text-gray-600 mt-1">
+                            Processed: ${log.emails_processed} | Verified: ${log.emails_verified} | Invalid: ${log.emails_invalid} - Status: ${log.status}
+                        </div>
+                    `;
+
+                    historyDiv.appendChild(logDiv);
+                });
+            } catch (error) {
+                console.error('Error loading verification history:', error);
+            }
+        }
+
+        // Event listeners
+        document.getElementById('createTemplateBtn').addEventListener('click', openCreateTemplateModal);
+        document.getElementById('verifyBatchBtn').addEventListener('click', verifyBatch);
+        document.getElementById('verifyAllBtn').addEventListener('click', verifyAll);
+        document.getElementById('cancelVerification').addEventListener('click', closeVerificationModal);
+
+        document.getElementById('createTemplateForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const name = document.getElementById('templateName').value;
+            const service = document.getElementById('templateService').value;
+            const apiKey = document.getElementById('templateApiKey').value;
+
+            // Get status mapping
+            const statusMapping = {};
+            document.querySelectorAll('[data-api-status]').forEach(select => {
+                const apiStatus = select.getAttribute('data-api-status');
+                statusMapping[apiStatus] = select.value;
+            });
+
+            try {
+                const response = await fetch('/api/email-verification/templates', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        name: name,
+                        service: service,
+                        api_config: {
+                            api_key: apiKey
+                        },
+                        status_mapping: statusMapping
+                    })
+                });
+
+                if (response.ok) {
+                    closeCreateTemplateModal();
+                    await loadVerificationTemplates();
+                    alert('Template created successfully!');
+                } else {
+                    const error = await response.json();
+                    alert('Error creating template: ' + error.detail);
+                }
+            } catch (error) {
+                alert('Error creating template: ' + error.message);
+            }
+        });
+    </script>
+</body>
+</html>

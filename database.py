@@ -118,6 +118,31 @@ def init_db():
                 FOREIGN KEY (template_id) REFERENCES export_templates(id)
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS email_verification_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                service TEXT NOT NULL,
+                api_config TEXT NOT NULL,
+                status_mapping TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS email_verification_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id INTEGER,
+                template_id INTEGER,
+                emails_processed INTEGER,
+                emails_verified INTEGER,
+                emails_invalid INTEGER,
+                status TEXT,
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (campaign_id) REFERENCES search_campaigns(id),
+                FOREIGN KEY (template_id) REFERENCES email_verification_templates(id)
+            )
+        ''')
         conn.commit()
 
         # Add new columns to existing contacts table if they don't exist

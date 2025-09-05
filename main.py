@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from database import init_db, get_db
 from templates import TemplateManager, ManyReachIntegration
+from email_verification import EmailVerificationManager, EmailVerificationService, MyEmailVerifierIntegration
 from typing import List, Union
 import json
 import time
@@ -23,6 +24,10 @@ async def get_api_docs(request: Request):
 @app.get("/export", response_class=HTMLResponse)
 async def get_export_page(request: Request):
     return templates.TemplateResponse("export.html", {"request": request})
+
+@app.get("/verify", response_class=HTMLResponse)
+async def get_verify_page(request: Request):
+    return templates.TemplateResponse("verify.html", {"request": request})
 
 @app.get("/", response_class=HTMLResponse)
 async def get_campaigns(request: Request, partial: bool = False):
@@ -1067,6 +1072,160 @@ async def get_export_history(campaign_id: int):
         """, (campaign_id,))
         return {"history": [dict(row) for row in cursor.fetchall()]}
 
+# Email Verification Template Management
+@app.get("/api/email-verification/templates")
+async def get_verification_templates():
+    templates = EmailVerificationManager.get_all_templates()
+    return {"templates": templates}
+
+@app.get("/api/email-verification/templates/{template_id}")
+async def get_verification_template(template_id: int):
+    template = EmailVerificationManager.get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return template
+
+@app.post("/api/email-verification/templates")
+async def create_verification_template(request: Request):
+    data = await request.json()
+
+    required_fields = ['name', 'service', 'api_config', 'status_mapping']
+    for field in required_fields:
+        if field not in data:
+            raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
+
+    template_id = EmailVerificationManager.create_template(
+        data['name'],
+        data['service'],
+        data['api_config'],
+        data['status_mapping']
+    )
+
+    return {"status": "Template created", "template_id": template_id}
+
+@app.delete("/api/email-verification/templates/{template_id}")
+async def delete_verification_template(template_id: int):
+    if not EmailVerificationManager.get_template(template_id):
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    EmailVerificationManager.delete_template(template_id)
+    return {"status": "Template deleted"}
+
+# Email Verification
+@app.post("/api/campaign/{campaign_id}/verify-emails")
+async def verify_campaign_emails(campaign_id: int, request: Request):
+    data = await request.json()
+    template_id = data.get('template_id')
+    batch_size = data.get('batch_size', 25)
+    delay = data.get('delay', 1.0)
+    verify_all = data.get('verify_all', False)
+
+    if not template_id:
+        raise HTTPException(status_code=400, detail="Template ID required")
+
+    template = EmailVerificationManager.get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    # Get unverified emails from campaign
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        if verify_all:
+            cursor.execute("""
+                SELECT id, email FROM contacts 
+                WHERE campaign_id = ? 
+                AND email IS NOT NULL 
+                AND email != ''
+                AND (email_status IS NULL OR email_status = 'unverified')
+            """, (campaign_id,))
+        else:
+            cursor.execute("""
+                SELECT id, email FROM contacts 
+                WHERE campaign_id = ? 
+                AND email IS NOT NULL 
+                AND email != ''
+                AND (email_status IS NULL OR email_status = 'unverified')
+                LIMIT ?
+            """, (campaign_id, batch_size))
+        
+        contacts = cursor.fetchall()
+        
+        if not contacts:
+            raise HTTPException(status_code=404, detail="No unverified emails found")
+
+        # Extract emails for verification
+        emails = [contact['email'] for contact in contacts]
+        contact_map = {contact['email']: contact['id'] for contact in contacts}
+
+        # Initialize verification service
+        verification_service = EmailVerificationService()
+        
+        # Verify emails
+        try:
+            results = verification_service.verify_batch(emails, template, delay)
+            
+            # Update database with results
+            verified_count = 0
+            invalid_count = 0
+            
+            for result in results:
+                if result['success']:
+                    email_status = result['mapped_status']
+                    contact_id = contact_map[result['email']]
+                    
+                    cursor.execute("""
+                        UPDATE contacts 
+                        SET email_status = ? 
+                        WHERE id = ? AND campaign_id = ?
+                    """, (email_status, contact_id, campaign_id))
+                    
+                    if email_status == 'verified':
+                        verified_count += 1
+                    elif email_status == 'invalid':
+                        invalid_count += 1
+            
+            # Log the verification
+            cursor.execute("""
+                INSERT INTO email_verification_logs 
+                (campaign_id, template_id, emails_processed, emails_verified, emails_invalid, status)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (campaign_id, template_id, len(emails), verified_count, invalid_count, "completed"))
+            
+            conn.commit()
+            
+            return {
+                "status": "Verification completed",
+                "emails_processed": len(emails),
+                "emails_verified": verified_count,
+                "emails_invalid": invalid_count,
+                "template_name": template['name']
+            }
+            
+        except Exception as e:
+            # Log the failed verification
+            cursor.execute("""
+                INSERT INTO email_verification_logs 
+                (campaign_id, template_id, emails_processed, emails_verified, emails_invalid, status, error_message)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (campaign_id, template_id, 0, 0, 0, "failed", str(e)))
+            conn.commit()
+            
+            raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")
+
+@app.get("/api/campaign/{campaign_id}/verification-history")
+async def get_verification_history(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT vl.*, vt.name as template_name, vt.service
+            FROM email_verification_logs vl
+            JOIN email_verification_templates vt ON vl.template_id = vt.id
+            WHERE vl.campaign_id = ?
+            ORDER BY vl.created_at DESC
+        """, (campaign_id,))
+        return {"history": [dict(row) for row in cursor.fetchall()]}
+
 # Initialize default ManyReach template
 @app.on_event("startup")
 async def create_default_templates():
@@ -1089,4 +1248,19 @@ async def create_default_templates():
                     "endpoint": "/api/campaigns/prospects/add/bulk",
                     "method": "POST"
                 }
+            )
+
+        # Check if MyEmailVerifier template already exists
+        cursor.execute("SELECT id FROM email_verification_templates WHERE service = 'myemailverifier'")
+        if not cursor.fetchone():
+            integration = MyEmailVerifierIntegration("")
+            default_status_mapping = integration.get_default_status_mapping()
+
+            EmailVerificationManager.create_template(
+                "MyEmailVerifier Default",
+                "myemailverifier",
+                {
+                    "api_key": "XbK0x309Xoe06IU1"
+                },
+                default_status_mapping
             )
