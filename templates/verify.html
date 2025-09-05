@@ -22,22 +22,26 @@
                 <option value="">Select a campaign...</option>
             </select>
             <div id="campaignStats" class="mt-4 hidden">
-                <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-center">
+                <div class="grid grid-cols-1 md:grid-cols-5 gap-4 text-center">
                     <div class="bg-blue-50 rounded-lg p-3">
-                        <div class="text-sm text-gray-600">Total Contacts</div>
-                        <div id="totalContacts" class="text-2xl font-bold text-blue-600">0</div>
-                    </div>
-                    <div class="bg-green-50 rounded-lg p-3">
-                        <div class="text-sm text-gray-600">With Email</div>
-                        <div id="withEmail" class="text-2xl font-bold text-green-600">0</div>
+                        <div class="text-sm text-gray-600">Total Emails</div>
+                        <div id="withEmail" class="text-2xl font-bold text-blue-600">0</div>
                     </div>
                     <div class="bg-yellow-50 rounded-lg p-3">
                         <div class="text-sm text-gray-600">Unverified</div>
                         <div id="unverified" class="text-2xl font-bold text-yellow-600">0</div>
                     </div>
-                    <div class="bg-purple-50 rounded-lg p-3">
+                    <div class="bg-green-50 rounded-lg p-3">
                         <div class="text-sm text-gray-600">Verified</div>
-                        <div id="verified" class="text-2xl font-bold text-purple-600">0</div>
+                        <div id="verified" class="text-2xl font-bold text-green-600">0</div>
+                    </div>
+                    <div class="bg-red-50 rounded-lg p-3">
+                        <div class="text-sm text-gray-600">Invalid</div>
+                        <div id="invalid" class="text-2xl font-bold text-red-600">0</div>
+                    </div>
+                    <div class="bg-gray-50 rounded-lg p-3">
+                        <div class="text-sm text-gray-600">Other Status</div>
+                        <div id="otherStatus" class="text-2xl font-bold text-gray-600">0</div>
                     </div>
                 </div>
             </div>
@@ -250,11 +254,26 @@
                 const select = document.getElementById('campaignSelect');
                 select.innerHTML = '<option value="">Select a campaign...</option>';
                 
-                data.campaigns.forEach(campaign => {
+                // Filter campaigns to only show those with emails > 0
+                const campaignsWithEmails = [];
+                
+                for (const campaign of data.campaigns) {
+                    // Get detailed campaign info to count emails
+                    const detailResponse = await fetch(`/api/campaign/${campaign.id}`);
+                    const detailData = await detailResponse.json();
+                    const emailCount = detailData.contacts.filter(c => c.email && c.email.trim() !== '').length;
+                    
+                    if (emailCount > 0) {
+                        campaign.email_count = emailCount;
+                        campaignsWithEmails.push(campaign);
+                    }
+                }
+                
+                campaignsWithEmails.forEach(campaign => {
                     const option = document.createElement('option');
                     option.value = campaign.id;
                     const statusLabel = campaign.status === 'completed' ? ' [COMPLETED]' : '';
-                    option.textContent = `${campaign.name} (${campaign.total_contacts} contacts)${statusLabel}`;
+                    option.textContent = `${campaign.name} (${campaign.email_count} emails)${statusLabel}`;
                     select.appendChild(option);
                 });
 
@@ -285,11 +304,14 @@
                 const withEmail = contacts.filter(c => c.email && c.email.trim() !== '');
                 const unverified = withEmail.filter(c => !c.email_status || c.email_status === 'unverified');
                 const verified = withEmail.filter(c => c.email_status === 'verified');
+                const invalid = withEmail.filter(c => c.email_status === 'invalid' || c.email_status === 'bounced');
+                const otherStatus = withEmail.filter(c => c.email_status && !['unverified', 'verified', 'invalid', 'bounced'].includes(c.email_status));
 
-                document.getElementById('totalContacts').textContent = contacts.length;
                 document.getElementById('withEmail').textContent = withEmail.length;
                 document.getElementById('unverified').textContent = unverified.length;
                 document.getElementById('verified').textContent = verified.length;
+                document.getElementById('invalid').textContent = invalid.length;
+                document.getElementById('otherStatus').textContent = otherStatus.length;
 
                 document.getElementById('campaignStats').classList.remove('hidden');
                 await loadVerificationHistory();
