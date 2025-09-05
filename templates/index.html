@@ -292,6 +292,10 @@
                                 <span class="ml-2 text-sm text-gray-700">Contacts with email</span>
                             </label>
                             <label class="flex items-center">
+                                <input type="checkbox" id="keepContactsWithValidEmail" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                                <span class="ml-2 text-sm text-gray-700">Contacts with valid email</span>
+                            </label>
+                            <label class="flex items-center">
                                 <input type="checkbox" id="keepContactsWithoutEmail" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
                                 <span class="ml-2 text-sm text-gray-700">Contacts without email</span>
                             </label>
@@ -632,6 +636,7 @@
             document.getElementById('keepContactsWithDomain').checked = true;
             document.getElementById('keepContactsWithoutDomain').checked = false;
             document.getElementById('keepContactsWithEmail').checked = true;
+            document.getElementById('keepContactsWithValidEmail').checked = false;
             document.getElementById('keepContactsWithoutEmail').checked = false;
             document.getElementById('keepContactsWithPhone').checked = false;
             document.getElementById('keepAllContacts').checked = false;
@@ -650,6 +655,7 @@
                 keepContactsWithDomain: document.getElementById('keepContactsWithDomain').checked,
                 keepContactsWithoutDomain: document.getElementById('keepContactsWithoutDomain').checked,
                 keepContactsWithEmail: document.getElementById('keepContactsWithEmail').checked,
+                keepContactsWithValidEmail: document.getElementById('keepContactsWithValidEmail').checked,
                 keepContactsWithoutEmail: document.getElementById('keepContactsWithoutEmail').checked,
                 keepContactsWithPhone: document.getElementById('keepContactsWithPhone').checked,
                 keepAllContacts: document.getElementById('keepAllContacts').checked

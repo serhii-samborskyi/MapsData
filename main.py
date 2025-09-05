@@ -733,6 +733,8 @@ async def duplicate_campaign(campaign_id: int, request: Request):
 
                 if contact_filters.get('keepContactsWithEmail', False):
                     email_conditions.append("(email IS NOT NULL AND email != '')")
+                if contact_filters.get('keepContactsWithValidEmail', False):
+                    email_conditions.append("(email IS NOT NULL AND email != '' AND email_status = 'Valid')")
                 if contact_filters.get('keepContactsWithoutEmail', False):
                     email_conditions.append("(email IS NULL OR email = '')")
 
