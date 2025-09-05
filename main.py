@@ -75,7 +75,7 @@ async def get_campaigns(request: Request, partial: bool = False):
         cursor.execute("""
             SELECT campaign_id, COUNT(*) as valid_email_count
             FROM contacts 
-            WHERE email IS NOT NULL AND email != '' AND email_status = 'verified'
+            WHERE email IS NOT NULL AND email != '' AND email_status = 'Valid'
             GROUP BY campaign_id
         """)
         valid_email_counts = {row[0]: row[1] for row in cursor.fetchall()}
@@ -390,7 +390,7 @@ async def update_email_verification_status(campaign_id: int, request: Request):
                     failed_updates.append({"id": contact_id, "error": "Missing id or email_status"})
                     continue
 
-                if email_status not in ['unverified', 'verified', 'invalid', 'bounced', 'catch-all', 'unknown']:
+                if email_status not in ['unverified', 'Valid', 'Invalid', 'Catch-all', 'Unknown']:
                     failed_updates.append({"id": contact_id, "error": "Invalid email_status"})
                     continue
 
@@ -421,8 +421,8 @@ async def update_email_verification_status(campaign_id: int, request: Request):
         if not contact_id or not email_status:
             raise HTTPException(status_code=400, detail="Missing id or email_status in request body")
 
-        if email_status not in ['unverified', 'verified', 'invalid', 'bounced', 'catch-all', 'unknown']:
-            raise HTTPException(status_code=400, detail="Invalid email_status. Must be: unverified, verified, invalid, bounced, catch-all, or unknown")
+        if email_status not in ['unverified', 'Valid', 'Invalid', 'Catch-all', 'Unknown']:
+            raise HTTPException(status_code=400, detail="Invalid email_status. Must be: unverified, Valid, Invalid, Catch-all, or Unknown")
 
         with get_db() as conn:
             cursor = conn.cursor()

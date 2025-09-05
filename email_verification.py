@@ -104,14 +104,14 @@ class MyEmailVerifierIntegration:
         return status_mapping.get(api_status, 'unknown')
 
     def get_default_status_mapping(self) -> Dict:
-        """Default status mapping for MyEmailVerifier"""
+        """Default status mapping for MyEmailVerifier - now using raw API statuses"""
         return {
-            "valid": "verified",
-            "invalid": "invalid", 
-            "catch-all": "catch-all",
-            "unknown": "unknown",
-            "disposable": "invalid",
-            "role_based": "verified"
+            "valid": "Valid",
+            "invalid": "Invalid", 
+            "catch-all": "Catch-all",
+            "unknown": "Unknown",
+            "disposable": "Invalid",
+            "role_based": "Valid"
         }
 
 class EmailVerificationService:
@@ -141,10 +141,10 @@ class EmailVerificationService:
             
             result = integration.verify_email(email)
             if result['success']:
-                # Map the status using template mapping
-                result['mapped_status'] = integration.map_status(result['status'], status_mapping)
+                # Use the raw API status directly
+                result['mapped_status'] = result['status'].title()  # Capitalize first letter (valid -> Valid)
             else:
-                result['mapped_status'] = 'unknown'
+                result['mapped_status'] = 'Unknown'
             
             results.append(result)
         
