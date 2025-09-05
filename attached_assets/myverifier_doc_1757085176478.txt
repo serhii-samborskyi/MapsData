@@ -1,0 +1,52 @@
+This API Key is required to use our Email verification API. Store it to the safe place.You can change it any time.
+
+This is your API KEY - You should NEVER SHARE IT WITH OTHERS.
+XbK0x309Xoe06IU1
+API-Validate Single Email Documentation
+Looking to validate emails via our API? Click the documentation button above to help you get started. Be sure to check out all the easy to use API Wrappers to speed up the development process.
+
+EndPoint
+https://client.myemailverifier.com/verifier/validate_single/example@example.com/API_KEY
+
+Example Request
+curl "https://client.myemailverifier.com/verifier/validate_single/example@example.com/API_KEY"
+
+Example Response
+  {
+        "Address":"support@myemailverifier.com",
+        "catch_all": "false",
+        "Status":"Valid",
+        "Disposable_Domain":"false",
+        "Role_Based":"true"
+        "Free_Domain":"false",
+        "Greylisted":"false",
+        "Diagnosis":"Mailbox Exists and Active"
+    }
+Address: The provided email address.
+Status: Can be either Valid, Invalid,Catch-all, or Unknown.
+Disposable Domain: Indicates if the domain is disposable.
+Free Domain: Indicates if the email is not a business address.
+Greylisted: The server may not respond properly on the first attempt. Frequent multiple attempts are not advised.
+Diagnosis: Provides helpful information about Invalid addresses.
+
+Status Code: 200
+
+Other Response
+
+Response Status: false
+Response Messages:
+
+Verify your payment for uninterrupted service. Reply to our recent email with the requested card and ID documents. Thank you for helping us ensure secure transactions.
+Your Account is blocked. Please contact support for more details.
+You do not have enough credits.
+Unknown error occurred.
+Rate Limit: 30 requests per minute
+
+Status Code: 429
+
+Example Response
+ {
+    "status": false,
+    "message": "Too many requests. Please try again later.",
+    "retryAfter": 60
+}
