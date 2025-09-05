@@ -416,7 +416,8 @@ async def update_email_verification_status(campaign_id: int, request: Request):
             return {"status": "Email verification status updated successfully"}
 
 @app.post("/api/campaign/{campaign_id}/email_update")
-async def update_contact_email(campaign_id: int, data: dict):
+async def update_contact_email(campaign_id: int, request: Request):
+    data = await request.json()
     # Check if it's a batch update or single update
     if 'contacts' in data:
         # Batch update
@@ -566,7 +567,8 @@ async def remove_empty_domains(campaign_id: int):
         return {"status": "success", "removed_contacts": deleted_count}
 
 @app.post("/api/campaign/{campaign_id}/remove_filtered")
-async def remove_filtered_contacts(campaign_id: int, data: dict):
+async def remove_filtered_contacts(campaign_id: int, request: Request):
+    data = await request.json()
     keywords = data.get('keywords', [])
     if not keywords:
         return {"status": "error", "message": "No keywords provided"}
