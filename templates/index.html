@@ -19,7 +19,7 @@
                 <a href="/docs/api" class="text-blue-600 hover:text-blue-800 text-sm font-medium">API Docs</a>
                 <a href="/export" class="text-green-600 hover:text-green-800 text-sm font-medium">Export Manager</a>
                 <a href="/verify" class="text-purple-600 hover:text-purple-800 text-sm font-medium">Email Verification</a>
-                <button onclick="openCreateModal()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 font-medium">
+                <button onclick="toggleCampaignForm()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 font-medium">
                     Create Campaign
                 </button>
             </div>
@@ -331,6 +331,11 @@
         function toggleCampaignForm() {
             const form = document.getElementById('campaignForm');
             form.classList.toggle('hidden');
+        }
+
+        function openCreateModal() {
+            const form = document.getElementById('campaignForm');
+            form.classList.remove('hidden');
         }
 
         async function refreshCampaigns() {
