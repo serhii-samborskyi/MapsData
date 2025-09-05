@@ -98,6 +98,13 @@
                     <input type="text" id="newListName" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="Enter list name for ManyReach (optional)">
                     <div class="text-xs text-gray-500 mt-1">If provided, this will create a new list in ManyReach with this name</div>
                 </div>
+                <div class="mb-4">
+                    <label class="flex items-center">
+                        <input type="checkbox" id="exportValidEmailsOnly" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm font-medium">Export valid emails only</span>
+                    </label>
+                    <div class="text-xs text-gray-500 mt-1">Only export contacts with email_status = 'Valid'</div>
+                </div>
                 <div class="flex gap-3">
                     <button id="previewExportBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
                         Preview Export
@@ -450,6 +457,7 @@
             }
 
             const newListName = document.getElementById('newListName').value.trim();
+            const exportValidOnly = document.getElementById('exportValidEmailsOnly').checked;
 
             try {
                 const response = await fetch(`/api/campaign/${selectedCampaign}/export`, {
@@ -461,7 +469,8 @@
                         template_id: selectedTemplate.id,
                         batch_size: parseInt(batchSize),
                         field_mappings: currentFieldMappings,
-                        newListName: newListName
+                        newListName: newListName,
+                        export_valid_only: exportValidOnly
                     })
                 });
 
@@ -587,10 +596,24 @@
             try {
                 const campaignResponse = await fetch(`/api/campaign/${selectedCampaign}`);
                 const campaignData = await campaignResponse.json();
-                const contactsWithEmail = campaignData.contacts.filter(c => c.email && c.email.trim() !== '');
+                const exportValidOnly = document.getElementById('exportValidEmailsOnly').checked;
+                
+                let contactsWithEmail;
+                if (exportValidOnly) {
+                    contactsWithEmail = campaignData.contacts.filter(c => 
+                        c.email && c.email.trim() !== '' && c.email_status === 'Valid'
+                    );
+                } else {
+                    contactsWithEmail = campaignData.contacts.filter(c => 
+                        c.email && c.email.trim() !== ''
+                    );
+                }
 
                 if (contactsWithEmail.length === 0) {
-                    alert('No contacts with email found in this campaign');
+                    const message = exportValidOnly ? 
+                        'No contacts with valid emails found in this campaign' : 
+                        'No contacts with email found in this campaign';
+                    alert(message);
                     return;
                 }
 
@@ -657,6 +680,7 @@
 
                 try {
                     const newListName = document.getElementById('newListName').value.trim();
+                    const exportValidOnly = document.getElementById('exportValidEmailsOnly').checked;
                     
                     const response = await fetch(`/api/campaign/${selectedCampaign}/export`, {
                         method: 'POST',
@@ -668,7 +692,8 @@
                             batch_size: batchSize,
                             offset: offset,
                             field_mappings: currentFieldMappings,
-                            newListName: newListName
+                            newListName: newListName,
+                            export_valid_only: exportValidOnly
                         })
                     });
 

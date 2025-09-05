@@ -951,6 +951,7 @@ async def preview_export(campaign_id: int, template_id: int):
 
     with get_db() as conn:
         cursor = conn.cursor()
+        # For preview, always show regular contacts with email (not filtered by valid status)
         cursor.execute("""
             SELECT * FROM contacts 
             WHERE campaign_id = ? 
@@ -1012,18 +1013,30 @@ async def export_campaign(campaign_id: int, request: Request):
             if recent_exports >= integration.rate_limit:
                 raise HTTPException(status_code=429, detail=f"Rate limit exceeded. Max {integration.rate_limit} exports per minute.")
 
-        # Get batch offset from request data
+        # Get batch offset and valid emails only filter from request data
         offset = data.get('offset', 0)
+        export_valid_only = data.get('export_valid_only', False)
 
         # Get contacts to export with offset for batch processing
-        cursor.execute("""
-            SELECT * FROM contacts 
-            WHERE campaign_id = ? 
-            AND email IS NOT NULL 
-            AND email != ''
-            ORDER BY id
-            LIMIT ? OFFSET ?
-        """, (campaign_id, batch_size, offset))
+        if export_valid_only:
+            cursor.execute("""
+                SELECT * FROM contacts 
+                WHERE campaign_id = ? 
+                AND email IS NOT NULL 
+                AND email != ''
+                AND email_status = 'Valid'
+                ORDER BY id
+                LIMIT ? OFFSET ?
+            """, (campaign_id, batch_size, offset))
+        else:
+            cursor.execute("""
+                SELECT * FROM contacts 
+                WHERE campaign_id = ? 
+                AND email IS NOT NULL 
+                AND email != ''
+                ORDER BY id
+                LIMIT ? OFFSET ?
+            """, (campaign_id, batch_size, offset))
         contacts = [dict(row) for row in cursor.fetchall()]
 
         if not contacts:
