@@ -75,7 +75,7 @@ async def get_campaigns(request: Request, partial: bool = False):
         cursor.execute("""
             SELECT campaign_id, COUNT(*) as valid_email_count
             FROM contacts 
-            WHERE email IS NOT NULL AND email != '' AND email_status = 'valid'
+            WHERE email IS NOT NULL AND email != '' AND email_status = 'verified'
             GROUP BY campaign_id
         """)
         valid_email_counts = {row[0]: row[1] for row in cursor.fetchall()}
@@ -1310,6 +1310,28 @@ async def get_verification_history(campaign_id: int):
             ORDER BY vl.created_at DESC
         """, (campaign_id,))
         return {"history": [dict(row) for row in cursor.fetchall()]}
+
+@app.get("/api/campaign/{campaign_id}/email-statuses")
+async def get_email_statuses(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT email_status, COUNT(*) as count
+            FROM contacts 
+            WHERE campaign_id = ? AND email IS NOT NULL AND email != ''
+            GROUP BY email_status
+        """, (campaign_id,))
+        statuses = [dict(row) for row in cursor.fetchall()]
+        
+        cursor.execute("""
+            SELECT id, email, email_status
+            FROM contacts 
+            WHERE campaign_id = ? AND email IS NOT NULL AND email != ''
+            ORDER BY email_status, id
+        """, (campaign_id,))
+        details = [dict(row) for row in cursor.fetchall()]
+        
+        return {"status_counts": statuses, "contact_details": details}
 
 # Initialize default ManyReach template
 @app.on_event("startup")
