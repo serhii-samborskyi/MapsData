@@ -90,6 +90,7 @@ def init_db():
                 custom_18 TEXT,
                 custom_19 TEXT,
                 custom_20 TEXT,
+                email_status TEXT DEFAULT 'unverified',
                 FOREIGN KEY (campaign_id) REFERENCES search_campaigns(id),
                 FOREIGN KEY (request_id) REFERENCES requests(id)
             )
@@ -166,7 +167,8 @@ def init_db():
                 ('custom_17', 'TEXT'),
                 ('custom_18', 'TEXT'),
                 ('custom_19', 'TEXT'),
-                ('custom_20', 'TEXT')
+                ('custom_20', 'TEXT'),
+                ('email_status', 'TEXT DEFAULT \'unverified\'')
             ]
             
             # Add missing columns

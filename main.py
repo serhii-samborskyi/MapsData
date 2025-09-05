@@ -260,12 +260,12 @@ async def save_contacts(request: Request):
                     full_name, industry, city, www, firstname, lastname, company, country, company_social, company_size, personal_job_position, personal_prospect_location,
                     personal_user_social, screenshot, logo, state, icebreaker, time_zone_offset_min, notes, tags_import,
                     custom_1, custom_2, custom_3, custom_4, custom_5, custom_6, custom_7, custom_8, custom_9, custom_10,
-                    custom_11, custom_12, custom_13, custom_14, custom_15, custom_16, custom_17, custom_18, custom_19, custom_20) 
+                    custom_11, custom_12, custom_13, custom_14, custom_15, custom_16, custom_17, custom_18, custom_19, custom_20, email_status) 
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                            ?, ?, ?, ?, ?, ?, ?, ?,
                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     contact.get('address'),
                     contact.get('business_name', contact.get('title')),
@@ -323,7 +323,8 @@ async def save_contacts(request: Request):
                     contact.get('custom_17'),
                     contact.get('custom_18'),
                     contact.get('custom_19'),
-                    contact.get('custom_20')
+                    contact.get('custom_20'),
+                    contact.get('email_status', 'unverified')
                 )
             )
             saved_contacts.append({
@@ -334,6 +335,80 @@ async def save_contacts(request: Request):
 
         conn.commit()
     return {"status": "Contacts saved successfully", "saved_contacts": saved_contacts}
+
+@app.post("/api/campaign/{campaign_id}/email_verify")
+async def update_email_verification_status(campaign_id: int, request: Request):
+    data = await request.json()
+    
+    # Check if it's a batch update or single update
+    if 'contacts' in data:
+        # Batch update
+        contacts = data.get('contacts', [])
+        if not contacts:
+            raise HTTPException(status_code=400, detail="No contacts provided in batch")
+        if len(contacts) > 100:
+            raise HTTPException(status_code=400, detail="Batch size cannot exceed 100 contacts")
+
+        updated_count = 0
+        failed_updates = []
+
+        with get_db() as conn:
+            cursor = conn.cursor()
+            for contact in contacts:
+                contact_id = contact.get('id')
+                email_status = contact.get('email_status')
+
+                if not contact_id or not email_status:
+                    failed_updates.append({"id": contact_id, "error": "Missing id or email_status"})
+                    continue
+
+                if email_status not in ['unverified', 'verified', 'invalid', 'bounced']:
+                    failed_updates.append({"id": contact_id, "error": "Invalid email_status"})
+                    continue
+
+                cursor.execute("""
+                    UPDATE contacts 
+                    SET email_status = ? 
+                    WHERE id = ? AND campaign_id = ?
+                """, (email_status, contact_id, campaign_id))
+
+                if cursor.rowcount > 0:
+                    updated_count += 1
+                else:
+                    failed_updates.append({"id": contact_id, "error": "Contact not found"})
+
+            conn.commit()
+
+        return {
+            "status": "Batch verification update completed",
+            "updated_count": updated_count,
+            "failed_count": len(failed_updates),
+            "failed_updates": failed_updates
+        }
+    else:
+        # Single update
+        contact_id = data.get('id')
+        email_status = data.get('email_status')
+
+        if not contact_id or not email_status:
+            raise HTTPException(status_code=400, detail="Missing id or email_status in request body")
+
+        if email_status not in ['unverified', 'verified', 'invalid', 'bounced']:
+            raise HTTPException(status_code=400, detail="Invalid email_status. Must be: unverified, verified, invalid, or bounced")
+
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE contacts 
+                SET email_status = ? 
+                WHERE id = ? AND campaign_id = ?
+            """, (email_status, contact_id, campaign_id))
+            conn.commit()
+
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Contact not found")
+
+            return {"status": "Email verification status updated successfully"}
 
 @app.post("/api/campaign/{campaign_id}/email_update")
 async def update_contact_email(campaign_id: int, data: dict):
