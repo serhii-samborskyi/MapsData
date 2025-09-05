@@ -61,28 +61,28 @@ async def get_campaigns(request: Request, partial: bool = False):
             campaign['contacts'] = [dict(r) for r in cursor.fetchall()]
 
             campaigns.append(campaign)
-    
-    # Get email counts for each campaign
-    cursor.execute("""
-        SELECT campaign_id, COUNT(*) as email_count
-        FROM contacts 
-        WHERE email IS NOT NULL AND email != ''
-        GROUP BY campaign_id
-    """)
-    email_counts = {row[0]: row[1] for row in cursor.fetchall()}
 
-    # Get valid email counts for each campaign
-    cursor.execute("""
-        SELECT campaign_id, COUNT(*) as valid_email_count
-        FROM contacts 
-        WHERE email IS NOT NULL AND email != '' AND email_status = 'valid'
-        GROUP BY campaign_id
-    """)
-    valid_email_counts = {row[0]: row[1] for row in cursor.fetchall()}
+        # Get email counts for each campaign
+        cursor.execute("""
+            SELECT campaign_id, COUNT(*) as email_count
+            FROM contacts 
+            WHERE email IS NOT NULL AND email != ''
+            GROUP BY campaign_id
+        """)
+        email_counts = {row[0]: row[1] for row in cursor.fetchall()}
 
-    for campaign in campaigns:
-        campaign['email_count'] = email_counts.get(campaign['id'], 0)
-        campaign['valid_email_count'] = valid_email_counts.get(campaign['id'], 0)
+        # Get valid email counts for each campaign
+        cursor.execute("""
+            SELECT campaign_id, COUNT(*) as valid_email_count
+            FROM contacts 
+            WHERE email IS NOT NULL AND email != '' AND email_status = 'valid'
+            GROUP BY campaign_id
+        """)
+        valid_email_counts = {row[0]: row[1] for row in cursor.fetchall()}
+
+        for campaign in campaigns:
+            campaign['email_count'] = email_counts.get(campaign['id'], 0)
+            campaign['valid_email_count'] = valid_email_counts.get(campaign['id'], 0)
 
     template = "index.html" if not partial else "partials/table.html"
     return templates.TemplateResponse(template, {"request": request, "campaigns": campaigns})
