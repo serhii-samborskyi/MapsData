@@ -1374,7 +1374,7 @@ async def get_email_statuses(campaign_id: int):
         return {"status_counts": statuses, "contact_details": details}
 
 @app.get("/api/campaign/{campaign_id}/export/csv")
-async def export_campaign_csv(campaign_id: int):
+async def export_campaign_csv(campaign_id: int, fields: str = None):
     from fastapi.responses import StreamingResponse
     import csv
     import io
@@ -1388,27 +1388,65 @@ async def export_campaign_csv(campaign_id: int):
         if not campaign:
             raise HTTPException(status_code=404, detail="Campaign not found")
         
-        # Get all contacts for the campaign
-        cursor.execute("""
-            SELECT 
-                id, business_name, address, category, phone, email, domain, 
-                rating, review_count, facebook, instagram, twitter, yelp,
-                email_status, status, place_id, full_name, industry, city, 
-                country, www, firstname, lastname, company
-            FROM contacts 
-            WHERE campaign_id = ? 
-            ORDER BY id
-        """, (campaign_id,))
+        # Define available fields and their database column names
+        available_fields = {
+            'id': 'id',
+            'business_name': 'business_name',
+            'address': 'address',
+            'category': 'category',
+            'phone': 'phone',
+            'email': 'email',
+            'domain': 'domain',
+            'rating': 'rating',
+            'review_count': 'review_count',
+            'facebook': 'facebook',
+            'instagram': 'instagram',
+            'twitter': 'twitter',
+            'yelp': 'yelp',
+            'email_status': 'email_status',
+            'status': 'status',
+            'place_id': 'place_id',
+            'full_name': 'full_name',
+            'industry': 'industry',
+            'city': 'city',
+            'country': 'country',
+            'www': 'www',
+            'firstname': 'firstname',
+            'lastname': 'lastname',
+            'company': 'company'
+        }
+        
+        # Determine which fields to include
+        if fields:
+            selected_fields = [f.strip() for f in fields.split(',') if f.strip() in available_fields]
+            if not selected_fields:
+                selected_fields = list(available_fields.keys())
+        else:
+            # Default fields if none specified
+            selected_fields = list(available_fields.keys())
+        
+        # Build SQL query with selected fields
+        field_columns = [available_fields[field] for field in selected_fields]
+        query = f"SELECT {', '.join(field_columns)} FROM contacts WHERE campaign_id = ? ORDER BY id"
+        
+        cursor.execute(query, (campaign_id,))
         contacts = [dict(row) for row in cursor.fetchall()]
         
         if not contacts:
             raise HTTPException(status_code=404, detail="No contacts found for this campaign")
         
-        # Create CSV in memory
+        # Create CSV in memory with selected fields only
         output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=contacts[0].keys())
+        writer = csv.DictWriter(output, fieldnames=selected_fields)
         writer.writeheader()
-        writer.writerows(contacts)
+        
+        # Map database column names back to field names for CSV
+        for contact in contacts:
+            csv_row = {}
+            for field in selected_fields:
+                db_column = available_fields[field]
+                csv_row[field] = contact.get(db_column, '')
+            writer.writerow(csv_row)
         
         # Create response
         csv_content = output.getvalue()

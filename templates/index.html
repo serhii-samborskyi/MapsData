@@ -289,6 +289,123 @@
         </div>
     </div>
 
+    <!-- Modal for CSV field selection -->
+    <div id="csvFieldModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+        <div class="flex items-center justify-center min-h-screen p-4">
+            <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-2xl max-h-[80vh] overflow-y-auto">
+                <h3 class="text-lg font-semibold text-gray-800 mb-4">Select CSV Fields to Export</h3>
+                <div class="grid grid-cols-2 gap-3 mb-6">
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_business_name" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500" checked>
+                        <span class="ml-2 text-sm text-gray-700">Business Name</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_email" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500" checked>
+                        <span class="ml-2 text-sm text-gray-700">Email</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_phone" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500" checked>
+                        <span class="ml-2 text-sm text-gray-700">Phone</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_domain" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500" checked>
+                        <span class="ml-2 text-sm text-gray-700">Domain</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_address" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">Address</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_category" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">Category</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_rating" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">Rating</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_review_count" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">Review Count</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_email_status" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">Email Status</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_facebook" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">Facebook</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_instagram" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">Instagram</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_twitter" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">Twitter</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_yelp" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">Yelp</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_place_id" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">Place ID</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_full_name" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">Full Name</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_industry" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">Industry</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_city" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">City</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_country" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">Country</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_firstname" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">First Name</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_lastname" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">Last Name</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_company" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">Company</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" id="csvField_status" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm text-gray-700">Status</span>
+                    </label>
+                </div>
+                <div class="flex gap-3 justify-between">
+                    <div>
+                        <button onclick="selectAllCsvFields()" class="px-4 py-2 text-blue-600 border border-blue-600 rounded-lg hover:bg-blue-50 transition-all text-sm">
+                            Select All
+                        </button>
+                        <button onclick="deselectAllCsvFields()" class="px-4 py-2 text-gray-600 border border-gray-600 rounded-lg hover:bg-gray-50 transition-all text-sm ml-2">
+                            Deselect All
+                        </button>
+                    </div>
+                    <div>
+                        <button onclick="closeCsvFieldModal()" class="px-4 py-2 text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-all">
+                            Cancel
+                        </button>
+                        <button onclick="confirmCsvDownload()" class="px-4 py-2 bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-all ml-2">
+                            Download CSV
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Modal for campaign duplication -->
     <div id="duplicateModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
         <div class="flex items-center justify-center min-h-screen p-4">
@@ -739,6 +856,10 @@
                 confirmExcludeCampaigns();
             } else if (event.key === 'Escape' && !document.getElementById('excludeModal').classList.contains('hidden')) {
                 closeExcludeModal();
+            } else if (event.key === 'Enter' && !document.getElementById('csvFieldModal').classList.contains('hidden')) {
+                confirmCsvDownload();
+            } else if (event.key === 'Escape' && !document.getElementById('csvFieldModal').classList.contains('hidden')) {
+                closeCsvFieldModal();
             }
         });
 
@@ -763,13 +884,52 @@
             }
         }
 
+        let pendingCsvCampaignId = null;
+
         function downloadCsv(campaignId) {
+            pendingCsvCampaignId = campaignId;
+            document.getElementById('csvFieldModal').classList.remove('hidden');
+        }
+
+        function closeCsvFieldModal() {
+            document.getElementById('csvFieldModal').classList.add('hidden');
+            pendingCsvCampaignId = null;
+        }
+
+        function selectAllCsvFields() {
+            const checkboxes = document.querySelectorAll('[id^="csvField_"]');
+            checkboxes.forEach(checkbox => checkbox.checked = true);
+        }
+
+        function deselectAllCsvFields() {
+            const checkboxes = document.querySelectorAll('[id^="csvField_"]');
+            checkboxes.forEach(checkbox => checkbox.checked = false);
+        }
+
+        function confirmCsvDownload() {
+            const selectedFields = [];
+            const checkboxes = document.querySelectorAll('[id^="csvField_"]:checked');
+            
+            if (checkboxes.length === 0) {
+                alert('Please select at least one field to export');
+                return;
+            }
+
+            checkboxes.forEach(checkbox => {
+                const fieldName = checkbox.id.replace('csvField_', '');
+                selectedFields.push(fieldName);
+            });
+
+            // Create download link with selected fields
+            const fieldParams = selectedFields.join(',');
             const link = document.createElement('a');
-            link.href = `/api/campaign/${campaignId}/export/csv`;
-            link.download = `campaign_${campaignId}_contacts.csv`;
+            link.href = `/api/campaign/${pendingCsvCampaignId}/export/csv?fields=${encodeURIComponent(fieldParams)}`;
+            link.download = `campaign_${pendingCsvCampaignId}_contacts.csv`;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
+
+            closeCsvFieldModal();
         }
 
         // Add event listeners for all search inputs
