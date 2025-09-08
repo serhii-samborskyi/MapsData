@@ -859,13 +859,24 @@
                         contactFilters: filterOptions
                     })
                 });
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    alert(`Error: ${errorData.detail || 'Failed to duplicate campaign'}`);
+                    return;
+                }
+                
                 const data = await response.json();
-                alert(`Campaign duplicated as "${data.new_campaign_name}" with ${data.copied_requests} requests and ${data.copied_contacts} contacts`);
+                const campaignName = data.new_campaign_name || newName;
+                const requestCount = data.copied_requests || 0;
+                const contactCount = data.copied_contacts || 0;
+                
+                alert(`Campaign duplicated as "${campaignName}" with ${requestCount} requests and ${contactCount} contacts`);
                 closeDuplicateModal();
                 await refreshCampaigns();
             } catch (error) {
                 console.error('Error duplicating campaign:', error);
-                alert('Error duplicating campaign');
+                alert('Error duplicating campaign: ' + error.message);
             }
         }
 
