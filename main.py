@@ -56,26 +56,29 @@ async def get_campaigns(request: Request, partial: bool = False):
         for row in cursor.fetchall():
             campaign = dict(row)
             
-            # Get requests for this campaign (simplified)
-            cursor.execute("""
-                SELECT id, req_text, status,
-                COUNT(*) OVER() as contact_count
-                FROM requests 
-                WHERE campaign_id = ? 
-                ORDER BY id
-            """, (campaign['id'],))
-            requests_data = cursor.fetchall()
-            campaign['requests'] = [dict(r) for r in requests_data]
+            # Only load detailed data if specifically requested (not for main list view)
+            if not partial:
+                # Get requests for this campaign (simplified)
+                cursor.execute("""
+                    SELECT id, req_text, status
+                    FROM requests 
+                    WHERE campaign_id = ? 
+                    ORDER BY id
+                """, (campaign['id'],))
+                campaign['requests'] = [dict(r) for r in cursor.fetchall()]
 
-            # For partial loads, limit contacts to improve performance but still load some for display
-            contact_limit = 20 if partial else 100
-            cursor.execute(f"""
-                SELECT * FROM contacts 
-                WHERE campaign_id = ? 
-                ORDER BY id 
-                LIMIT {contact_limit}
-            """, (campaign['id'],))
-            campaign['contacts'] = [dict(r) for r in cursor.fetchall()]
+                # Get sample contacts (limit to first 100 for performance)
+                cursor.execute("""
+                    SELECT * FROM contacts 
+                    WHERE campaign_id = ? 
+                    ORDER BY id 
+                    LIMIT 100
+                """, (campaign['id'],))
+                campaign['contacts'] = [dict(r) for r in cursor.fetchall()]
+            else:
+                # For partial loads (table refresh), skip detailed data
+                campaign['requests'] = []
+                campaign['contacts'] = []
 
             campaigns.append(campaign)
 

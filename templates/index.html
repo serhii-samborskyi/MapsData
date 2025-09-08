@@ -501,39 +501,12 @@
 
         async function refreshCampaigns() {
             try {
-                // Store which request/contact rows are currently expanded
-                const expandedRequests = [];
-                const expandedContacts = [];
-                document.querySelectorAll('[id^="requests-"]:not(.hidden)').forEach(el => {
-                    expandedRequests.push(el.id.split('-')[1]);
-                });
-                document.querySelectorAll('[id^="contacts-"]:not(.hidden)').forEach(el => {
-                    expandedContacts.push(el.id.split('-')[1]);
-                });
-
-                const response = await fetch('/');
+                const response = await fetch('/?partial=true');
                 const html = await response.text();
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(html, 'text/html');
                 const newTable = doc.querySelector('table');
                 document.querySelector('table').innerHTML = newTable.innerHTML;
-
-                // Restore expanded states
-                expandedRequests.forEach(campaignId => {
-                    const row = document.getElementById(`requests-${campaignId}`);
-                    if (row) row.classList.remove('hidden');
-                });
-                expandedContacts.forEach(campaignId => {
-                    const row = document.getElementById(`contacts-${campaignId}`);
-                    if (row) row.classList.remove('hidden');
-                });
-
-                // Re-attach search input event listeners
-                document.querySelectorAll('[id^="search-contacts-"]').forEach(input => {
-                    const campaignId = input.id.split('-').pop();
-                    input.addEventListener('input', () => filterContacts(campaignId));
-                    input.addEventListener('keyup', () => filterContacts(campaignId));
-                });
             } catch (error) {
                 console.error('Error refreshing campaigns:', error);
             }
@@ -859,24 +832,13 @@
                         contactFilters: filterOptions
                     })
                 });
-                
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    alert(`Error: ${errorData.detail || 'Failed to duplicate campaign'}`);
-                    return;
-                }
-                
                 const data = await response.json();
-                const campaignName = data.new_campaign_name || newName;
-                const requestCount = data.copied_requests || 0;
-                const contactCount = data.copied_contacts || 0;
-                
-                alert(`Campaign duplicated as "${campaignName}" with ${requestCount} requests and ${contactCount} contacts`);
+                alert(`Campaign duplicated as "${data.new_campaign_name}" with ${data.copied_requests} requests and ${data.copied_contacts} contacts`);
                 closeDuplicateModal();
                 await refreshCampaigns();
             } catch (error) {
                 console.error('Error duplicating campaign:', error);
-                alert('Error duplicating campaign: ' + error.message);
+                alert('Error duplicating campaign');
             }
         }
 
