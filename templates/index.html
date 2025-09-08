@@ -507,6 +507,13 @@
                 const doc = parser.parseFromString(html, 'text/html');
                 const newTable = doc.querySelector('table');
                 document.querySelector('table').innerHTML = newTable.innerHTML;
+
+                // Re-attach event listeners for search inputs after refresh
+                document.querySelectorAll('[id^="search-contacts-"]').forEach(input => {
+                    const campaignId = input.id.split('-').pop();
+                    input.addEventListener('input', (event) => filterContacts(campaignId));
+                    input.addEventListener('keyup', (event) => filterContacts(campaignId));
+                });
             } catch (error) {
                 console.error('Error refreshing campaigns:', error);
             }
@@ -909,7 +916,7 @@
         function confirmCsvDownload() {
             const selectedFields = [];
             const checkboxes = document.querySelectorAll('[id^="csvField_"]:checked');
-            
+
             if (checkboxes.length === 0) {
                 alert('Please select at least one field to export');
                 return;
