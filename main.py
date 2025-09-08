@@ -627,9 +627,11 @@ async def duplicate_campaign(campaign_id: int, request: Request):
         data = await request.json()
         custom_name = data.get('name', '').strip()
         contact_filters = data.get('contactFilters', {})
-    except:
-        custom_name = ''
-        contact_filters = {}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON data: {str(e)}")
+
+    if not custom_name:
+        raise HTTPException(status_code=400, detail="Campaign name is required")
 
     with get_db() as conn:
         cursor = conn.cursor()
@@ -640,42 +642,29 @@ async def duplicate_campaign(campaign_id: int, request: Request):
         if not original_campaign:
             raise HTTPException(status_code=404, detail="Campaign not found")
 
-        # Determine new campaign name
-        if custom_name:
-            # Check if custom name already exists
-            cursor.execute("SELECT id FROM search_campaigns WHERE name = ?", (custom_name,))
-            if cursor.fetchone():
-                raise HTTPException(status_code=400, detail="Campaign name already exists")
-            new_name = custom_name
-        else:
-            # Find next available number for campaign name
-            base_name = original_campaign["name"]
-            counter = 1
-            new_name = f"{base_name} {counter}"
-
-            while True:
-                cursor.execute("SELECT id FROM search_campaigns WHERE name = ?", (new_name,))
-                if not cursor.fetchone():
-                    break
-                counter += 1
-                new_name = f"{base_name} {counter}"
+        # Check if custom name already exists
+        cursor.execute("SELECT id FROM search_campaigns WHERE name = ?", (custom_name,))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Campaign name already exists")
 
         # Create new campaign
         cursor.execute(
             "INSERT INTO search_campaigns (name, status) VALUES (?, ?)",
-            (new_name, "active")
+            (custom_name, "active")
         )
         new_campaign_id = cursor.lastrowid
 
         # Copy all requests from original campaign
         cursor.execute("SELECT req_text FROM requests WHERE campaign_id = ?", (campaign_id,))
         requests = cursor.fetchall()
+        copied_requests = 0
 
-        for request in requests:
+        for req in requests:
             cursor.execute(
                 "INSERT INTO requests (campaign_id, req_text, status) VALUES (?, ?, ?)",
-                (new_campaign_id, request["req_text"], "pending")
+                (new_campaign_id, req["req_text"], "pending")
             )
+            copied_requests += 1
 
         # Copy contacts based on filters
         copied_contacts = 0
@@ -800,8 +789,8 @@ async def duplicate_campaign(campaign_id: int, request: Request):
         return {
             "status": "success", 
             "new_campaign_id": new_campaign_id,
-            "new_campaign_name": new_name,
-            "copied_requests": len(requests),
+            "new_campaign_name": custom_name,
+            "copied_requests": copied_requests,
             "copied_contacts": copied_contacts
         }
 
