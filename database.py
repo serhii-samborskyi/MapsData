@@ -1,11 +1,13 @@
 
-import sqlite3
+import psycopg2
+import psycopg2.extras
+import os
 from contextlib import contextmanager
 
 @contextmanager
 def get_db():
-    conn = sqlite3.connect('replit.db')
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(os.environ['DATABASE_URL'])
+    conn.cursor_factory = psycopg2.extras.RealDictCursor
     try:
         yield conn
     finally:
@@ -16,14 +18,14 @@ def init_db():
         cursor = conn.cursor()
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS search_campaigns (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 name TEXT NOT NULL,
                 status TEXT NOT NULL
             )
         ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS requests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 campaign_id INTEGER,
                 req_text TEXT NOT NULL,
                 status TEXT NOT NULL,
@@ -32,7 +34,7 @@ def init_db():
         ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS contacts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 address TEXT,
                 business_name TEXT NOT NULL,
                 campaign_id INTEGER,
@@ -49,7 +51,6 @@ def init_db():
                 twitter TEXT,
                 yelp TEXT,
                 status TEXT NOT NULL,
-                -- New ManyReach fields
                 full_name TEXT,
                 industry TEXT,
                 city TEXT,
@@ -97,7 +98,7 @@ def init_db():
         ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS export_templates (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
                 service TEXT NOT NULL,
                 field_mappings TEXT NOT NULL,
@@ -107,7 +108,7 @@ def init_db():
         ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS export_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 campaign_id INTEGER,
                 template_id INTEGER,
                 contacts_exported INTEGER,
@@ -120,7 +121,7 @@ def init_db():
         ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS email_verification_templates (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
                 service TEXT NOT NULL,
                 api_config TEXT NOT NULL,
@@ -130,7 +131,7 @@ def init_db():
         ''')
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS email_verification_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 campaign_id INTEGER,
                 template_id INTEGER,
                 emails_processed INTEGER,
@@ -148,8 +149,12 @@ def init_db():
         # Add new columns to existing contacts table if they don't exist
         try:
             # Get existing columns
-            cursor.execute("PRAGMA table_info(contacts)")
-            existing_columns = [row[1] for row in cursor.fetchall()]
+            cursor.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'contacts'
+            """)
+            existing_columns = [row['column_name'] for row in cursor.fetchall()]
             
             # List of new columns to add
             new_columns = [
@@ -193,7 +198,7 @@ def init_db():
                 ('custom_18', 'TEXT'),
                 ('custom_19', 'TEXT'),
                 ('custom_20', 'TEXT'),
-                ('email_status', 'TEXT DEFAULT \'unverified\'')
+                ('email_status', "TEXT DEFAULT 'unverified'")
             ]
             
             # Add missing columns
