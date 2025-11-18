@@ -1,5 +1,5 @@
 run = ["uvicorn", "main:app", "--host", "0.0.0.0", "--reload"]
-modules = ["python-3.11"]
+modules = ["python-3.11", "postgresql-16"]
 
 hidden = [".pythonlibs"]
 
@@ -14,8 +14,12 @@ deploymentTarget = "cloudrun"
 localPort = 8000
 externalPort = 80
 
+[[ports]]
+localPort = 5000
+externalPort = 80
+
 [workflows]
-runButton = "Run"
+runButton = "Project"
 
 [[workflows.workflow]]
 name = "Run"
@@ -25,6 +29,27 @@ mode = "sequential"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "uvicorn main:app --host 0.0.0.0 --reload"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "uvicorn main:app --host 0.0.0.0 --port 5000"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
 
 [agent]
 expertMode = true

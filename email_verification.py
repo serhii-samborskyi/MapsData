@@ -18,7 +18,7 @@ class EmailVerificationManager:
     def get_template(template_id: int):
         with get_db() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM email_verification_templates WHERE id = ?", (template_id,))
+            cursor.execute("SELECT * FROM email_verification_templates WHERE id = %s", (template_id,))
             row = cursor.fetchone()
             if row:
                 template = dict(row)
@@ -33,7 +33,7 @@ class EmailVerificationManager:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO email_verification_templates (name, service, api_config, status_mapping)
-                VALUES (?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s)
             """, (name, service, json.dumps(api_config), json.dumps(status_mapping)))
             conn.commit()
             return cursor.lastrowid
@@ -44,8 +44,8 @@ class EmailVerificationManager:
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE email_verification_templates 
-                SET name = ?, api_config = ?, status_mapping = ?
-                WHERE id = ?
+                SET name = %s, api_config = %s, status_mapping = %s
+                WHERE id = %s
             """, (name, json.dumps(api_config), json.dumps(status_mapping), template_id))
             conn.commit()
 
@@ -53,7 +53,7 @@ class EmailVerificationManager:
     def delete_template(template_id: int):
         with get_db() as conn:
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM email_verification_templates WHERE id = ?", (template_id,))
+            cursor.execute("DELETE FROM email_verification_templates WHERE id = %s", (template_id,))
             conn.commit()
 
 class MyEmailVerifierIntegration:

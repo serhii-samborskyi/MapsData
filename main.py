@@ -62,7 +62,7 @@ async def get_campaigns(request: Request, partial: bool = False):
                 cursor.execute("""
                     SELECT id, req_text, status
                     FROM requests 
-                    WHERE campaign_id = ? 
+                    WHERE campaign_id = %s 
                     ORDER BY id
                 """, (campaign['id'],))
                 campaign['requests'] = [dict(r) for r in cursor.fetchall()]
@@ -70,7 +70,7 @@ async def get_campaigns(request: Request, partial: bool = False):
                 # Get sample contacts (limit to first 100 for performance)
                 cursor.execute("""
                     SELECT * FROM contacts 
-                    WHERE campaign_id = ? 
+                    WHERE campaign_id = %s 
                     ORDER BY id 
                     LIMIT 100
                 """, (campaign['id'],))
@@ -89,9 +89,9 @@ async def get_campaigns(request: Request, partial: bool = False):
 async def delete_campaign(campaign_id: int):
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM contacts WHERE campaign_id = ?", (campaign_id,))
-        cursor.execute("DELETE FROM requests WHERE campaign_id = ?", (campaign_id,))
-        cursor.execute("DELETE FROM search_campaigns WHERE id = ?", (campaign_id,))
+        cursor.execute("DELETE FROM contacts WHERE campaign_id = %s", (campaign_id,))
+        cursor.execute("DELETE FROM requests WHERE campaign_id = %s", (campaign_id,))
+        cursor.execute("DELETE FROM search_campaigns WHERE id = %s", (campaign_id,))
         conn.commit()
     return {"status": "Campaign deleted successfully"}
 
@@ -103,7 +103,7 @@ async def update_campaign_status(campaign_id: int, status: str):
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "UPDATE search_campaigns SET status = ? WHERE id = ?",
+            "UPDATE search_campaigns SET status = %s WHERE id = %s",
             (status, campaign_id)
         )
         conn.commit()
@@ -113,12 +113,12 @@ async def update_campaign_status(campaign_id: int, status: str):
 async def complete_campaign(campaign_id: int):
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id FROM search_campaigns WHERE id = ?", (campaign_id,))
+        cursor.execute("SELECT id FROM search_campaigns WHERE id = %s", (campaign_id,))
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="Campaign not found")
 
         cursor.execute(
-            "UPDATE search_campaigns SET status = 'completed' WHERE id = ?",
+            "UPDATE search_campaigns SET status = 'completed' WHERE id = %s",
             (campaign_id,)
         )
         conn.commit()
@@ -130,13 +130,13 @@ async def create_campaign(name: str = Form(...), search_phrases: str = Form(...)
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO search_campaigns (name, status) VALUES (?, ?)",
+            "INSERT INTO search_campaigns (name, status) VALUES (%s, %s)",
             (name, "active")
         )
         campaign_id = cursor.lastrowid
         for phrase in phrases:
             cursor.execute(
-                "INSERT INTO requests (campaign_id, req_text, status) VALUES (?, ?, ?)",
+                "INSERT INTO requests (campaign_id, req_text, status) VALUES (%s, %s, %s)",
                 (campaign_id, phrase, "pending")
             )
         conn.commit()
@@ -147,7 +147,7 @@ async def reserve_phrase(campaign_id: int):
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT id, req_text FROM requests WHERE campaign_id = ? AND status = 'pending' LIMIT 1",
+            "SELECT id, req_text FROM requests WHERE campaign_id = %s AND status = 'pending' LIMIT 1",
             (campaign_id,)
         )
         row = cursor.fetchone()
@@ -155,7 +155,7 @@ async def reserve_phrase(campaign_id: int):
             raise HTTPException(status_code=404, detail="No pending phrases")
         phrase_id = row["id"]
         cursor.execute(
-            "UPDATE requests SET status = 'reserved' WHERE id = ?",
+            "UPDATE requests SET status = 'reserved' WHERE id = %s",
             (phrase_id,)
         )
         conn.commit()
@@ -179,7 +179,7 @@ async def store_contact(
             (campaign_id, business_name, review_count, phone, domain, email, "pending")
         )
         cursor.execute(
-            "UPDATE requests SET status = 'completed' WHERE id = ?",
+            "UPDATE requests SET status = 'completed' WHERE id = %s",
             (phrase_id,)
         )
         conn.commit()
@@ -229,7 +229,7 @@ async def get_campaign_requests(campaign_name: str):
             SELECT r.*, sc.name as campaign_name
             FROM requests r
             JOIN search_campaigns sc ON r.campaign_id = sc.id
-            WHERE sc.name = ? AND r.status = 'pending'
+            WHERE sc.name = %s AND r.status = 'pending'
         """, (campaign_name,))
         requests = [dict(row) for row in cursor.fetchall()]
         if not requests:
@@ -243,12 +243,12 @@ async def update_request_status(request_id: int, status: str):
 
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id FROM requests WHERE id = ?", (request_id,))
+        cursor.execute("SELECT id FROM requests WHERE id = %s", (request_id,))
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail="Request not found")
 
         cursor.execute(
-            "UPDATE requests SET status = ? WHERE id = ?",
+            "UPDATE requests SET status = %s WHERE id = %s",
             (status, request_id)
         )
         conn.commit()
@@ -268,7 +268,7 @@ async def save_contacts(request: Request):
             request_id = contact.get('request_id')
 
             # Verify campaign exists and is active
-            cursor.execute("SELECT status FROM search_campaigns WHERE id = ?", (campaign_id,))
+            cursor.execute("SELECT status FROM search_campaigns WHERE id = %s", (campaign_id,))
             campaign = cursor.fetchone()
             if not campaign:
                 raise HTTPException(status_code=404, detail=f"Campaign {campaign_id} not found")
@@ -276,7 +276,7 @@ async def save_contacts(request: Request):
                 raise HTTPException(status_code=400, detail=f"Campaign {campaign_id} is not active")
 
             # Verify request belongs to campaign
-            cursor.execute("SELECT id FROM requests WHERE id = ? AND campaign_id = ?", (request_id, campaign_id))
+            cursor.execute("SELECT id FROM requests WHERE id = %s AND campaign_id = %s", (request_id, campaign_id))
             if not cursor.fetchone():
                 raise HTTPException(status_code=400, detail=f"Invalid request ID {request_id} for campaign {campaign_id}")
 
@@ -394,8 +394,8 @@ async def update_email_verification_status(campaign_id: int, request: Request):
 
                 cursor.execute("""
                     UPDATE contacts 
-                    SET email_status = ? 
-                    WHERE id = ? AND campaign_id = ?
+                    SET email_status = %s 
+                    WHERE id = %s AND campaign_id = %s
                 """, (email_status, contact_id, campaign_id))
 
                 if cursor.rowcount > 0:
@@ -426,8 +426,8 @@ async def update_email_verification_status(campaign_id: int, request: Request):
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE contacts 
-                SET email_status = ? 
-                WHERE id = ? AND campaign_id = ?
+                SET email_status = %s 
+                WHERE id = %s AND campaign_id = %s
             """, (email_status, contact_id, campaign_id))
             conn.commit()
 
@@ -463,8 +463,8 @@ async def update_contact_email(campaign_id: int, request: Request):
 
                 cursor.execute("""
                     UPDATE contacts 
-                    SET email = ? 
-                    WHERE id = ? AND campaign_id = ?
+                    SET email = %s 
+                    WHERE id = %s AND campaign_id = %s
                 """, (email, contact_id, campaign_id))
 
                 if cursor.rowcount > 0:
@@ -492,8 +492,8 @@ async def update_contact_email(campaign_id: int, request: Request):
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE contacts 
-                SET email = ? 
-                WHERE id = ? AND campaign_id = ?
+                SET email = %s 
+                WHERE id = %s AND campaign_id = %s
             """, (email, contact_id, campaign_id))
             conn.commit()
 
@@ -511,7 +511,7 @@ async def get_random_contact_without_email(campaign_id: int, batch: int = 1):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT id, domain FROM contacts 
-            WHERE campaign_id = ? 
+            WHERE campaign_id = %s 
             AND (email IS NULL OR email = '')
             AND domain IS NOT NULL 
             AND domain != ''
@@ -556,12 +556,12 @@ async def remove_duplicate_contacts(campaign_id: int, request: Request = None):
             WHERE id NOT IN (
                 SELECT MIN(id)
                 FROM contacts
-                WHERE campaign_id = ? 
+                WHERE campaign_id = %s 
                 AND {field} IS NOT NULL
                 AND {field} != ''
                 GROUP BY {field}
             )
-            AND campaign_id = ?
+            AND campaign_id = %s
             AND {field} IS NOT NULL
             AND {field} != ''
         """, (campaign_id, campaign_id))
@@ -580,7 +580,7 @@ async def remove_empty_domains(campaign_id: int):
         cursor = conn.cursor()
         cursor.execute("""
             DELETE FROM contacts 
-            WHERE campaign_id = ?
+            WHERE campaign_id = %s
             AND (domain IS NULL OR domain = '')
         """, (campaign_id,))
         deleted_count = cursor.rowcount
@@ -613,7 +613,7 @@ async def remove_filtered_contacts(campaign_id: int, request: Request):
         query = f"""
             DELETE FROM contacts 
             WHERE ({' OR '.join(like_conditions)})
-            AND campaign_id = ?
+            AND campaign_id = %s
         """
 
         cursor.execute(query, params)
@@ -635,7 +635,7 @@ async def duplicate_campaign(campaign_id: int, request: Request):
         cursor = conn.cursor()
 
         # Get original campaign
-        cursor.execute("SELECT * FROM search_campaigns WHERE id = ?", (campaign_id,))
+        cursor.execute("SELECT * FROM search_campaigns WHERE id = %s", (campaign_id,))
         original_campaign = cursor.fetchone()
         if not original_campaign:
             raise HTTPException(status_code=404, detail="Campaign not found")
@@ -643,7 +643,7 @@ async def duplicate_campaign(campaign_id: int, request: Request):
         # Determine new campaign name
         if custom_name:
             # Check if custom name already exists
-            cursor.execute("SELECT id FROM search_campaigns WHERE name = ?", (custom_name,))
+            cursor.execute("SELECT id FROM search_campaigns WHERE name = %s", (custom_name,))
             if cursor.fetchone():
                 raise HTTPException(status_code=400, detail="Campaign name already exists")
             new_name = custom_name
@@ -654,7 +654,7 @@ async def duplicate_campaign(campaign_id: int, request: Request):
             new_name = f"{base_name} {counter}"
 
             while True:
-                cursor.execute("SELECT id FROM search_campaigns WHERE name = ?", (new_name,))
+                cursor.execute("SELECT id FROM search_campaigns WHERE name = %s", (new_name,))
                 if not cursor.fetchone():
                     break
                 counter += 1
@@ -662,18 +662,18 @@ async def duplicate_campaign(campaign_id: int, request: Request):
 
         # Create new campaign
         cursor.execute(
-            "INSERT INTO search_campaigns (name, status) VALUES (?, ?)",
+            "INSERT INTO search_campaigns (name, status) VALUES (%s, %s)",
             (new_name, "active")
         )
         new_campaign_id = cursor.lastrowid
 
         # Copy all requests from original campaign
-        cursor.execute("SELECT req_text FROM requests WHERE campaign_id = ?", (campaign_id,))
+        cursor.execute("SELECT req_text FROM requests WHERE campaign_id = %s", (campaign_id,))
         requests = cursor.fetchall()
 
         for request in requests:
             cursor.execute(
-                "INSERT INTO requests (campaign_id, req_text, status) VALUES (?, ?, ?)",
+                "INSERT INTO requests (campaign_id, req_text, status) VALUES (%s, %s, %s)",
                 (new_campaign_id, request["req_text"], "pending")
             )
 
@@ -686,7 +686,7 @@ async def duplicate_campaign(campaign_id: int, request: Request):
                     SELECT address, business_name, category, domain, email, facebook, 
                            instagram, phone, place_id, rating, review_count, twitter, yelp, status
                     FROM contacts 
-                    WHERE campaign_id = ?
+                    WHERE campaign_id = %s
                 """, (campaign_id,))
 
                 contacts_to_copy = cursor.fetchall()
@@ -760,7 +760,7 @@ async def duplicate_campaign(campaign_id: int, request: Request):
                     conditions.append(f"({' OR '.join(review_conditions)})")
 
                 if conditions:
-                    where_clause = f"campaign_id = ? AND ({' AND '.join(conditions)})"
+                    where_clause = f"campaign_id = %s AND ({' AND '.join(conditions)})"
                     cursor.execute(f"""
                         SELECT address, business_name, category, domain, email, facebook, 
                                instagram, phone, place_id, rating, review_count, twitter, yelp, status
@@ -826,11 +826,11 @@ async def exclude_contacts_from_campaigns(campaign_id: int, request: Request):
             # Remove contacts from current campaign that exist in ANY other campaign
             cursor.execute("""
                 DELETE FROM contacts 
-                WHERE campaign_id = ? 
+                WHERE campaign_id = %s 
                 AND id IN (
                     SELECT c1.id 
                     FROM contacts c1 
-                    WHERE c1.campaign_id = ? 
+                    WHERE c1.campaign_id = %s 
                     AND EXISTS (
                         SELECT 1 FROM contacts c2 
                         WHERE c2.campaign_id != ? 
@@ -851,11 +851,11 @@ async def exclude_contacts_from_campaigns(campaign_id: int, request: Request):
 
             cursor.execute(f"""
                 DELETE FROM contacts 
-                WHERE campaign_id = ? 
+                WHERE campaign_id = %s 
                 AND id IN (
                     SELECT c1.id 
                     FROM contacts c1 
-                    WHERE c1.campaign_id = ? 
+                    WHERE c1.campaign_id = %s 
                     AND EXISTS (
                         SELECT 1 FROM contacts c2 
                         WHERE c2.campaign_id IN ({campaign_placeholders}) 
@@ -882,13 +882,13 @@ async def exclude_contacts_from_campaigns(campaign_id: int, request: Request):
 async def get_campaign_status(campaign_id: int):
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM search_campaigns WHERE id = ?", (campaign_id,))
+        cursor.execute("SELECT * FROM search_campaigns WHERE id = %s", (campaign_id,))
         campaign = cursor.fetchone()
         if not campaign:
             raise HTTPException(status_code=404, detail="Campaign not found")
-        cursor.execute("SELECT * FROM requests WHERE campaign_id = ?", (campaign_id,))
+        cursor.execute("SELECT * FROM requests WHERE campaign_id = %s", (campaign_id,))
         requests = [dict(row) for row in cursor.fetchall()]
-        cursor.execute("SELECT * FROM contacts WHERE campaign_id = ?", (campaign_id,))
+        cursor.execute("SELECT * FROM contacts WHERE campaign_id = %s", (campaign_id,))
         contacts = [dict(row) for row in cursor.fetchall()]
         return {"campaign": dict(campaign), "requests": requests, "contacts": contacts}
 
@@ -966,7 +966,7 @@ async def preview_export(campaign_id: int, template_id: int):
         # For preview, always show regular contacts with email (not filtered by valid status)
         cursor.execute("""
             SELECT * FROM contacts 
-            WHERE campaign_id = ? 
+            WHERE campaign_id = %s 
             AND email IS NOT NULL 
             AND email != ''
             LIMIT 5
@@ -1033,7 +1033,7 @@ async def export_campaign(campaign_id: int, request: Request):
         if export_valid_only:
             cursor.execute("""
                 SELECT * FROM contacts 
-                WHERE campaign_id = ? 
+                WHERE campaign_id = %s 
                 AND email IS NOT NULL 
                 AND email != ''
                 AND email_status = 'Valid'
@@ -1043,7 +1043,7 @@ async def export_campaign(campaign_id: int, request: Request):
         else:
             cursor.execute("""
                 SELECT * FROM contacts 
-                WHERE campaign_id = ? 
+                WHERE campaign_id = %s 
                 AND email IS NOT NULL 
                 AND email != ''
                 ORDER BY id
@@ -1117,7 +1117,7 @@ async def get_export_history(campaign_id: int):
             SELECT el.*, et.name as template_name, et.service
             FROM export_logs el
             JOIN export_templates et ON el.template_id = et.id
-            WHERE el.campaign_id = ?
+            WHERE el.campaign_id = %s
             ORDER BY el.created_at DESC
         """, (campaign_id,))
         return {"history": [dict(row) for row in cursor.fetchall()]}
@@ -1196,8 +1196,8 @@ async def verify_single_email(campaign_id: int, request: Request):
                 # Update database with result
                 cursor.execute("""
                     UPDATE contacts 
-                    SET email_status = ? 
-                    WHERE id = ? AND campaign_id = ?
+                    SET email_status = %s 
+                    WHERE id = %s AND campaign_id = %s
                 """, (email_status, contact_id, campaign_id))
 
                 conn.commit()
@@ -1244,7 +1244,7 @@ async def verify_campaign_emails(campaign_id: int, request: Request):
         if verify_all:
             cursor.execute("""
                 SELECT id, email FROM contacts 
-                WHERE campaign_id = ? 
+                WHERE campaign_id = %s 
                 AND email IS NOT NULL 
                 AND email != ''
                 AND (email_status IS NULL OR email_status = 'unverified')
@@ -1252,7 +1252,7 @@ async def verify_campaign_emails(campaign_id: int, request: Request):
         else:
             cursor.execute("""
                 SELECT id, email FROM contacts 
-                WHERE campaign_id = ? 
+                WHERE campaign_id = %s 
                 AND email IS NOT NULL 
                 AND email != ''
                 AND (email_status IS NULL OR email_status = 'unverified')
@@ -1286,8 +1286,8 @@ async def verify_campaign_emails(campaign_id: int, request: Request):
 
                     cursor.execute("""
                         UPDATE contacts 
-                        SET email_status = ? 
-                        WHERE id = ? AND campaign_id = ?
+                        SET email_status = %s 
+                        WHERE id = %s AND campaign_id = %s
                     """, (email_status, contact_id, campaign_id))
 
                     if email_status == 'verified':
@@ -1331,7 +1331,7 @@ async def get_verification_history(campaign_id: int):
             SELECT vl.*, vt.name as template_name, vt.service
             FROM email_verification_logs vl
             JOIN email_verification_templates vt ON vl.template_id = vt.id
-            WHERE vl.campaign_id = ?
+            WHERE vl.campaign_id = %s
             ORDER BY vl.created_at DESC
         """, (campaign_id,))
         return {"history": [dict(row) for row in cursor.fetchall()]}
@@ -1342,7 +1342,7 @@ async def remove_contact(campaign_id: int, contact_id: int):
         cursor = conn.cursor()
         cursor.execute("""
             DELETE FROM contacts 
-            WHERE id = ? AND campaign_id = ?
+            WHERE id = %s AND campaign_id = %s
         """, (contact_id, campaign_id))
         
         if cursor.rowcount == 0:
@@ -1358,7 +1358,7 @@ async def get_email_statuses(campaign_id: int):
         cursor.execute("""
             SELECT email_status, COUNT(*) as count
             FROM contacts 
-            WHERE campaign_id = ? AND email IS NOT NULL AND email != ''
+            WHERE campaign_id = %s AND email IS NOT NULL AND email != ''
             GROUP BY email_status
         """, (campaign_id,))
         statuses = [dict(row) for row in cursor.fetchall()]
@@ -1366,7 +1366,7 @@ async def get_email_statuses(campaign_id: int):
         cursor.execute("""
             SELECT id, email, email_status
             FROM contacts 
-            WHERE campaign_id = ? AND email IS NOT NULL AND email != ''
+            WHERE campaign_id = %s AND email IS NOT NULL AND email != ''
             ORDER BY email_status, id
         """, (campaign_id,))
         details = [dict(row) for row in cursor.fetchall()]
@@ -1383,7 +1383,7 @@ async def export_campaign_csv(campaign_id: int, fields: str = None):
         cursor = conn.cursor()
         
         # Get campaign name
-        cursor.execute("SELECT name FROM search_campaigns WHERE id = ?", (campaign_id,))
+        cursor.execute("SELECT name FROM search_campaigns WHERE id = %s", (campaign_id,))
         campaign = cursor.fetchone()
         if not campaign:
             raise HTTPException(status_code=404, detail="Campaign not found")
@@ -1427,7 +1427,7 @@ async def export_campaign_csv(campaign_id: int, fields: str = None):
         
         # Build SQL query with selected fields
         field_columns = [available_fields[field] for field in selected_fields]
-        query = f"SELECT {', '.join(field_columns)} FROM contacts WHERE campaign_id = ? ORDER BY id"
+        query = f"SELECT {', '.join(field_columns)} FROM contacts WHERE campaign_id = %s ORDER BY id"
         
         cursor.execute(query, (campaign_id,))
         contacts = [dict(row) for row in cursor.fetchall()]

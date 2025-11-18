@@ -14,7 +14,7 @@ class TemplateManager:
     def get_template(template_id: int):
         with get_db() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM export_templates WHERE id = ?", (template_id,))
+            cursor.execute("SELECT * FROM export_templates WHERE id = %s", (template_id,))
             row = cursor.fetchone()
             if row:
                 template = dict(row)
@@ -29,7 +29,7 @@ class TemplateManager:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO export_templates (name, service, field_mappings, api_config)
-                VALUES (?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s)
             """, (name, service, json.dumps(field_mappings), json.dumps(api_config)))
             conn.commit()
             return cursor.lastrowid
@@ -41,14 +41,14 @@ class TemplateManager:
             if service:
                 cursor.execute("""
                     UPDATE export_templates 
-                    SET name = ?, service = ?, field_mappings = ?, api_config = ?
-                    WHERE id = ?
+                    SET name = %s, service = %s, field_mappings = %s, api_config = %s
+                    WHERE id = %s
                 """, (name, service, json.dumps(field_mappings), json.dumps(api_config), template_id))
             else:
                 cursor.execute("""
                     UPDATE export_templates 
-                    SET name = ?, field_mappings = ?, api_config = ?
-                    WHERE id = ?
+                    SET name = %s, field_mappings = %s, api_config = %s
+                    WHERE id = %s
                 """, (name, json.dumps(field_mappings), json.dumps(api_config), template_id))
             conn.commit()
 
@@ -56,7 +56,7 @@ class TemplateManager:
     def delete_template(template_id: int):
         with get_db() as conn:
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM export_templates WHERE id = ?", (template_id,))
+            cursor.execute("DELETE FROM export_templates WHERE id = %s", (template_id,))
             conn.commit()
 
 class ManyReachIntegration:
