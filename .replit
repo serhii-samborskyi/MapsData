@@ -7,15 +7,15 @@ hidden = [".pythonlibs"]
 channel = "stable-24_05"
 
 [deployment]
-run = ["uvicorn", "main:app", "--host", "0.0.0.0"]
-deploymentTarget = "cloudrun"
+run = ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5000"]
+deploymentTarget = "autoscale"
 
 [[ports]]
 localPort = 5000
 externalPort = 80
 
 [[ports]]
-localPort = 35719
+localPort = 37337
 externalPort = 3000
 
 [workflows]
