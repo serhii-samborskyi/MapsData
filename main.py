@@ -175,7 +175,7 @@ async def store_contact(
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO contacts (campaign_id, business_name, review_count, phone, domain, email, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
             (campaign_id, business_name, review_count, phone, domain, email, "pending")
         )
         cursor.execute(
@@ -516,7 +516,7 @@ async def get_random_contact_without_email(campaign_id: int, batch: int = 1):
             AND (email IS NULL OR email = '')
             AND domain IS NOT NULL 
             AND domain != ''
-            ORDER BY RANDOM() LIMIT ?
+            ORDER BY RANDOM() LIMIT %s
         """, (campaign_id, batch))
         contacts = cursor.fetchall()
         if not contacts:
@@ -833,7 +833,7 @@ async def exclude_contacts_from_campaigns(campaign_id: int, request: Request):
                     WHERE c1.campaign_id = %s 
                     AND EXISTS (
                         SELECT 1 FROM contacts c2 
-                        WHERE c2.campaign_id != ? 
+                        WHERE c2.campaign_id != %s 
                         AND (
                             (c1.domain IS NOT NULL AND c1.domain != '' AND c1.domain = c2.domain) OR
                             (c1.email IS NOT NULL AND c1.email != '' AND c1.email = c2.email) OR
@@ -846,7 +846,7 @@ async def exclude_contacts_from_campaigns(campaign_id: int, request: Request):
             excluded_count = cursor.rowcount
         else:
             # Remove contacts from current campaign that exist in specific campaigns
-            campaign_placeholders = ','.join(['?' for _ in exclude_campaigns])
+            campaign_placeholders = ','.join(['%s' for _ in exclude_campaigns])
             params = [campaign_id, campaign_id] + exclude_campaigns + [campaign_id]
 
             cursor.execute(f"""
@@ -859,7 +859,7 @@ async def exclude_contacts_from_campaigns(campaign_id: int, request: Request):
                     AND EXISTS (
                         SELECT 1 FROM contacts c2 
                         WHERE c2.campaign_id IN ({campaign_placeholders}) 
-                        AND c2.campaign_id != ?
+                        AND c2.campaign_id != %s
                         AND (
                             (c1.domain IS NOT NULL AND c1.domain != '' AND c1.domain = c2.domain) OR
                             (c1.email IS NOT NULL AND c1.email != '' AND c1.email = c2.email) OR
@@ -1015,7 +1015,7 @@ async def export_campaign(campaign_id: int, request: Request):
         cursor.execute("""
             SELECT COUNT(*) as recent_exports
             FROM export_logs 
-            WHERE created_at > ? AND template_id = ?
+            WHERE created_at > %s AND template_id = %s
         """, (rate_limit_window.isoformat(), template_id))
 
         recent_exports = cursor.fetchone()['recent_exports']
@@ -1038,7 +1038,7 @@ async def export_campaign(campaign_id: int, request: Request):
                 AND email != ''
                 AND email_status = 'Valid'
                 ORDER BY id
-                LIMIT ? OFFSET ?
+                LIMIT %s OFFSET %s
             """, (campaign_id, batch_size, offset))
         else:
             cursor.execute("""
@@ -1047,7 +1047,7 @@ async def export_campaign(campaign_id: int, request: Request):
                 AND email IS NOT NULL 
                 AND email != ''
                 ORDER BY id
-                LIMIT ? OFFSET ?
+                LIMIT %s OFFSET %s
             """, (campaign_id, batch_size, offset))
         contacts = [dict(row) for row in cursor.fetchall()]
 
@@ -1256,7 +1256,7 @@ async def verify_campaign_emails(campaign_id: int, request: Request):
                 AND email IS NOT NULL 
                 AND email != ''
                 AND (email_status IS NULL OR email_status = 'unverified')
-                LIMIT ?
+                LIMIT %s
             """, (campaign_id, batch_size))
 
         contacts = cursor.fetchall()
