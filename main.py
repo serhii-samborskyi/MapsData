@@ -1004,6 +1004,9 @@ async def export_campaign(campaign_id: int, request: Request):
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
 
+    # Use field_mappings from request if provided, otherwise use template's field_mappings
+    field_mappings = data.get('field_mappings', template['field_mappings'])
+
     # Rate limiting check
     now = datetime.now()
     rate_limit_window = now - timedelta(minutes=1)
@@ -1057,7 +1060,7 @@ async def export_campaign(campaign_id: int, request: Request):
         # Get newListName from request data
         new_list_name = data.get('newListName', '')
 
-        # Transform contacts
+        # Transform contacts using field_mappings from request (or template default)
         if template['service'] == 'manyreach':
             integration = ManyReachIntegration(template['api_config'].get('api_key', ''))
             manyreach_campaign_id = template['api_config'].get('manyreach_campaign_id', '')
@@ -1065,7 +1068,7 @@ async def export_campaign(campaign_id: int, request: Request):
 
             for contact in contacts:
                 if integration.validate_contact(contact):
-                    transformed = integration.transform_contact(contact, template['field_mappings'], manyreach_campaign_id, new_list_name)
+                    transformed = integration.transform_contact(contact, field_mappings, manyreach_campaign_id, new_list_name)
                     transformed_contacts.append(transformed)
 
             # Format for bulk API - wrap contacts in array for bulk endpoint
