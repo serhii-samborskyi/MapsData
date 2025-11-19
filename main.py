@@ -130,10 +130,10 @@ async def create_campaign(name: str = Form(...), search_phrases: str = Form(...)
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO search_campaigns (name, status) VALUES (%s, %s)",
+            "INSERT INTO search_campaigns (name, status) VALUES (%s, %s) RETURNING id",
             (name, "active")
         )
-        campaign_id = cursor.lastrowid
+        campaign_id = cursor.fetchone()['id']
         for phrase in phrases:
             cursor.execute(
                 "INSERT INTO requests (campaign_id, req_text, status) VALUES (%s, %s, %s)",
@@ -287,11 +287,11 @@ async def save_contacts(request: Request):
                     personal_user_social, screenshot, logo, state, icebreaker, time_zone_offset_min, notes, tags_import,
                     custom_1, custom_2, custom_3, custom_4, custom_5, custom_6, custom_7, custom_8, custom_9, custom_10,
                     custom_11, custom_12, custom_13, custom_14, custom_15, custom_16, custom_17, custom_18, custom_19, custom_20, email_status) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                           %s, %s, %s, %s, %s, %s, %s, %s,
+                           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
                 (
                     contact.get('address'),
                     contact.get('business_name', contact.get('title')),
@@ -353,8 +353,9 @@ async def save_contacts(request: Request):
                     contact.get('email_status', 'unverified')
                 )
             )
+            contact_id = cursor.fetchone()['id']
             saved_contacts.append({
-                "contact_id": cursor.lastrowid,
+                "contact_id": contact_id,
                 "campaign_id": campaign_id,
                 "request_id": request_id
             })
@@ -662,10 +663,10 @@ async def duplicate_campaign(campaign_id: int, request: Request):
 
         # Create new campaign
         cursor.execute(
-            "INSERT INTO search_campaigns (name, status) VALUES (%s, %s)",
+            "INSERT INTO search_campaigns (name, status) VALUES (%s, %s) RETURNING id",
             (new_name, "active")
         )
-        new_campaign_id = cursor.lastrowid
+        new_campaign_id = cursor.fetchone()['id']
 
         # Copy all requests from original campaign
         cursor.execute("SELECT req_text FROM requests WHERE campaign_id = %s", (campaign_id,))
@@ -696,7 +697,7 @@ async def duplicate_campaign(campaign_id: int, request: Request):
                         INSERT INTO contacts 
                         (address, business_name, campaign_id, category, domain, email, facebook, 
                          instagram, phone, place_id, rating, request_id, review_count, twitter, yelp, status) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         contact["address"],
                         contact["business_name"],
@@ -775,7 +776,7 @@ async def duplicate_campaign(campaign_id: int, request: Request):
                             INSERT INTO contacts 
                             (address, business_name, campaign_id, category, domain, email, facebook, 
                              instagram, phone, place_id, rating, request_id, review_count, twitter, yelp, status) 
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """, (
                             contact["address"],
                             contact["business_name"],
@@ -1086,7 +1087,7 @@ async def export_campaign(campaign_id: int, request: Request):
                 # Log the successful export
                 cursor.execute("""
                     INSERT INTO export_logs (campaign_id, template_id, contacts_exported, status)
-                    VALUES (?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s)
                 """, (campaign_id, template_id, len(transformed_contacts), "completed"))
                 conn.commit()
 
@@ -1101,7 +1102,7 @@ async def export_campaign(campaign_id: int, request: Request):
                 # Log the failed export
                 cursor.execute("""
                     INSERT INTO export_logs (campaign_id, template_id, contacts_exported, status)
-                    VALUES (?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s)
                 """, (campaign_id, template_id, 0, f"failed: {str(e)}"))
                 conn.commit()
 
@@ -1299,7 +1300,7 @@ async def verify_campaign_emails(campaign_id: int, request: Request):
             cursor.execute("""
                 INSERT INTO email_verification_logs 
                 (campaign_id, template_id, emails_processed, emails_verified, emails_invalid, status)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
             """, (campaign_id, template_id, len(emails), verified_count, invalid_count, "completed"))
 
             conn.commit()
@@ -1317,7 +1318,7 @@ async def verify_campaign_emails(campaign_id: int, request: Request):
             cursor.execute("""
                 INSERT INTO email_verification_logs 
                 (campaign_id, template_id, emails_processed, emails_verified, emails_invalid, status, error_message)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
             """, (campaign_id, template_id, 0, 0, 0, "failed", str(e)))
             conn.commit()
 

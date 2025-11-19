@@ -11,12 +11,12 @@ run = ["uvicorn", "main:app", "--host", "0.0.0.0"]
 deploymentTarget = "cloudrun"
 
 [[ports]]
-localPort = 8000
+localPort = 5000
 externalPort = 80
 
 [[ports]]
-localPort = 5000
-externalPort = 80
+localPort = 35719
+externalPort = 3000
 
 [workflows]
 runButton = "Project"

@@ -29,10 +29,11 @@ class TemplateManager:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO export_templates (name, service, field_mappings, api_config)
-                VALUES (%s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s) RETURNING id
             """, (name, service, json.dumps(field_mappings), json.dumps(api_config)))
+            template_id = cursor.fetchone()['id']
             conn.commit()
-            return cursor.lastrowid
+            return template_id
 
     @staticmethod
     def update_template(template_id: int, name: str, field_mappings: Dict, api_config: Dict, service: str = None):

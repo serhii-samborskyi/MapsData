@@ -33,10 +33,11 @@ class EmailVerificationManager:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO email_verification_templates (name, service, api_config, status_mapping)
-                VALUES (%s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s) RETURNING id
             """, (name, service, json.dumps(api_config), json.dumps(status_mapping)))
+            template_id = cursor.fetchone()['id']
             conn.commit()
-            return cursor.lastrowid
+            return template_id
 
     @staticmethod
     def update_template(template_id: int, name: str, api_config: Dict, status_mapping: Dict):
