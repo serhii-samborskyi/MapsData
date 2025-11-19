@@ -4,6 +4,20 @@
 
 ScrapIQ is a lead generation platform that scrapes Google Maps business data and manages outreach campaigns. The system allows users to create search campaigns, collect business contact information through a Chrome extension, verify email addresses, and export data to CRM systems. It's built with FastAPI and PostgreSQL, featuring a web-based management interface and API endpoints for both the Chrome extension and third-party integrations.
 
+## Recent Changes
+
+**November 19, 2025 - PostgreSQL Migration Completed:**
+- Migrated from SQLite to PostgreSQL for persistent data storage in Replit environment
+- Fixed all SQL parameter placeholders from SQLite syntax (`?`) to PostgreSQL syntax (`%s`)
+- Fixed all `LIKE` operators to use case-insensitive `ILIKE` for keyword filtering
+- Converted `cursor.lastrowid` usage to PostgreSQL's `RETURNING id` clause
+- Verified all campaign management functions working correctly:
+  - Campaign creation, duplication, deletion
+  - Contact management (add, remove, deduplicate, filter)
+  - Exclude contacts from other campaigns
+  - Email verification integration
+  - CRM export functionality
+
 ## User Preferences
 
 Preferred communication style: Simple, everyday language.
