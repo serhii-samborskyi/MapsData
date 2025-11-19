@@ -597,15 +597,14 @@ async def remove_filtered_contacts(campaign_id: int, request: Request):
 
     with get_db() as conn:
         cursor = conn.cursor()
-        placeholders = ','.join(['?' for _ in keywords])
         like_conditions = []
         params = []
 
         for keyword in keywords:
             like_conditions.extend([
-                "business_name LIKE ?",
-                "domain LIKE ?",
-                "email LIKE ?",
+                "business_name LIKE %s",
+                "domain LIKE %s",
+                "email LIKE %s",
             ])
             params.extend([f"%{keyword}%", f"%{keyword}%", f"%{keyword}%"])
 
@@ -617,7 +616,7 @@ async def remove_filtered_contacts(campaign_id: int, request: Request):
             AND campaign_id = %s
         """
 
-        cursor.execute(query, params)
+        cursor.execute(query, tuple(params))
         deleted_count = cursor.rowcount
         conn.commit()
         return {"status": "success", "removed_contacts": deleted_count}
