@@ -119,9 +119,24 @@ class ManyReachIntegration:
 
         for api_field, contact_field in field_mapping.items():
             if contact_field:
-                # Check if it's a database field or a custom value
-                if contact_field in contact:
-                    # Database field - use contact data
+                # Normalize the contact_field to match database format
+                # Convert "Review count" -> "review_count", "Business Name" -> "business_name", etc.
+                normalized_field = contact_field.lower().replace(' ', '_')
+                
+                # Check if it's a database field (try normalized version first, then exact match)
+                if normalized_field in contact:
+                    # Database field - use contact data with normalized field name
+                    value = contact[normalized_field]
+                    if value is not None and str(value).strip():
+                        cleaned_value = str(value).strip()
+
+                        # Clean domain fields (both 'domain' and 'www' API fields)
+                        if api_field in ['domain', 'www']:
+                            cleaned_value = self._clean_domain(cleaned_value)
+
+                        transformed[api_field] = cleaned_value
+                elif contact_field in contact:
+                    # Database field - use contact data with exact field name
                     value = contact[contact_field]
                     if value is not None and str(value).strip():
                         cleaned_value = str(value).strip()
