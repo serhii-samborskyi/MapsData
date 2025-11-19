@@ -602,9 +602,9 @@ async def remove_filtered_contacts(campaign_id: int, request: Request):
 
         for keyword in keywords:
             like_conditions.extend([
-                "business_name LIKE %s",
-                "domain LIKE %s",
-                "email LIKE %s",
+                "business_name ILIKE %s",
+                "domain ILIKE %s",
+                "email ILIKE %s",
             ])
             params.extend([f"%{keyword}%", f"%{keyword}%", f"%{keyword}%"])
 
