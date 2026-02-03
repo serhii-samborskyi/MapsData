@@ -511,14 +511,25 @@ async def get_random_contact_without_email(campaign_id: int, batch: int = 1):
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, domain FROM contacts 
-            WHERE campaign_id = %s 
-            AND (email IS NULL OR email = '')
-            AND domain IS NOT NULL 
-            AND domain != ''
-            ORDER BY RANDOM() LIMIT %s
+            WITH picked AS (
+                SELECT id, domain
+                FROM contacts
+                WHERE campaign_id = %s
+                AND (email IS NULL OR email = '')
+                AND domain IS NOT NULL
+                AND domain != ''
+                AND nomail_pulled_at IS NULL
+                ORDER BY RANDOM()
+                LIMIT %s
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE contacts
+            SET nomail_pulled_at = NOW()
+            WHERE id IN (SELECT id FROM picked)
+            RETURNING id, domain
         """, (campaign_id, batch))
         contacts = cursor.fetchall()
+        conn.commit()
         if not contacts:
             raise HTTPException(status_code=404, detail="No contacts found matching criteria")
 
