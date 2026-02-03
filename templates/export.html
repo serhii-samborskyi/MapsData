@@ -110,6 +110,13 @@
                     </label>
                     <div class="text-xs text-gray-500 mt-1">Only export contacts with email_status = 'Valid'</div>
                 </div>
+                <div class="mb-4">
+                    <label class="flex items-center">
+                        <input type="checkbox" id="exportCatchAllEmails" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500" disabled>
+                        <span class="ml-2 text-sm font-medium">Export catch-all emails</span>
+                    </label>
+                    <div class="text-xs text-gray-500 mt-1">Include email_status = 'Catch-all' when valid-only is enabled</div>
+                </div>
                 <div class="flex flex-col sm:flex-row gap-3">
                     <button id="previewExportBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
                         Preview Export
@@ -418,6 +425,24 @@
             }
         }
 
+        function syncExportFilterControls() {
+            const validOnlyCheckbox = document.getElementById('exportValidEmailsOnly');
+            const catchAllCheckbox = document.getElementById('exportCatchAllEmails');
+
+            if (!validOnlyCheckbox.checked) {
+                catchAllCheckbox.checked = false;
+                catchAllCheckbox.disabled = true;
+            } else {
+                catchAllCheckbox.disabled = false;
+            }
+        }
+
+        function getExportFilters() {
+            const exportValidOnly = document.getElementById('exportValidEmailsOnly').checked;
+            const exportCatchAll = exportValidOnly && document.getElementById('exportCatchAllEmails').checked;
+            return { exportValidOnly, exportCatchAll };
+        }
+
         async function previewExport() {
             if (!selectedCampaign || !selectedTemplate) {
                 alert('Please select both a campaign and template');
@@ -425,7 +450,8 @@
             }
 
             try {
-                const response = await fetch(`/api/campaign/${selectedCampaign}/export/preview?template_id=${selectedTemplate.id}`);
+                const { exportValidOnly, exportCatchAll } = getExportFilters();
+                const response = await fetch(`/api/campaign/${selectedCampaign}/export/preview?template_id=${selectedTemplate.id}&valid_only=${exportValidOnly}&include_catch_all=${exportCatchAll}`);
                 const data = await response.json();
 
                 const previewSection = document.getElementById('exportPreview');
@@ -462,7 +488,7 @@
             }
 
             const newListName = document.getElementById('newListName').value.trim();
-            const exportValidOnly = document.getElementById('exportValidEmailsOnly').checked;
+            const { exportValidOnly, exportCatchAll } = getExportFilters();
 
             try {
                 const response = await fetch(`/api/campaign/${selectedCampaign}/export`, {
@@ -475,7 +501,8 @@
                         batch_size: parseInt(batchSize),
                         field_mappings: currentFieldMappings,
                         newListName: newListName,
-                        export_valid_only: exportValidOnly
+                        export_valid_only: exportValidOnly,
+                        export_catch_all: exportCatchAll
                     })
                 });
 
@@ -601,12 +628,14 @@
             try {
                 const campaignResponse = await fetch(`/api/campaign/${selectedCampaign}`);
                 const campaignData = await campaignResponse.json();
-                const exportValidOnly = document.getElementById('exportValidEmailsOnly').checked;
+                const { exportValidOnly, exportCatchAll } = getExportFilters();
                 
                 let contactsWithEmail;
                 if (exportValidOnly) {
                     contactsWithEmail = campaignData.contacts.filter(c => 
-                        c.email && c.email.trim() !== '' && c.email_status === 'Valid'
+                        c.email && c.email.trim() !== '' && (
+                            c.email_status === 'Valid' || (exportCatchAll && c.email_status === 'Catch-all')
+                        )
                     );
                 } else {
                     contactsWithEmail = campaignData.contacts.filter(c => 
@@ -616,7 +645,7 @@
 
                 if (contactsWithEmail.length === 0) {
                     const message = exportValidOnly ? 
-                        'No contacts with valid emails found in this campaign' : 
+                        (exportCatchAll ? 'No contacts with valid or catch-all emails found in this campaign' : 'No contacts with valid emails found in this campaign') : 
                         'No contacts with email found in this campaign';
                     alert(message);
                     return;
@@ -685,7 +714,7 @@
 
                 try {
                     const newListName = document.getElementById('newListName').value.trim();
-                    const exportValidOnly = document.getElementById('exportValidEmailsOnly').checked;
+                    const { exportValidOnly, exportCatchAll } = getExportFilters();
                     
                     const response = await fetch(`/api/campaign/${selectedCampaign}/export`, {
                         method: 'POST',
@@ -698,7 +727,8 @@
                             offset: offset,
                             field_mappings: currentFieldMappings,
                             newListName: newListName,
-                            export_valid_only: exportValidOnly
+                            export_valid_only: exportValidOnly,
+                            export_catch_all: exportCatchAll
                         })
                     });
 
@@ -752,6 +782,8 @@
         document.getElementById('executeExportBtn').addEventListener('click', executeExport);
         document.getElementById('exportAllBtn').addEventListener('click', exportAll);
         document.getElementById('cancelBatchExport').addEventListener('click', closeBatchExportModal);
+        document.getElementById('exportValidEmailsOnly').addEventListener('change', syncExportFilterControls);
+        syncExportFilterControls();
 
         document.getElementById('createTemplateForm').addEventListener('submit', async (e) => {
             e.preventDefault();

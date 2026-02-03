@@ -966,7 +966,7 @@ async def delete_template(template_id: int):
 
 # Export functionality
 @app.get("/api/campaign/{campaign_id}/export/preview")
-async def preview_export(campaign_id: int, template_id: int):
+async def preview_export(campaign_id: int, template_id: int, valid_only: bool = False, include_catch_all: bool = False):
     """Preview what the export will look like"""
     template = TemplateManager.get_template(template_id)
     if not template:
@@ -974,14 +974,33 @@ async def preview_export(campaign_id: int, template_id: int):
 
     with get_db() as conn:
         cursor = conn.cursor()
-        # For preview, always show regular contacts with email (not filtered by valid status)
-        cursor.execute("""
-            SELECT * FROM contacts 
-            WHERE campaign_id = %s 
-            AND email IS NOT NULL 
-            AND email != ''
-            LIMIT 5
-        """, (campaign_id,))
+        if valid_only:
+            if include_catch_all:
+                cursor.execute("""
+                    SELECT * FROM contacts 
+                    WHERE campaign_id = %s 
+                    AND email IS NOT NULL 
+                    AND email != ''
+                    AND email_status IN ('Valid', 'Catch-all')
+                    LIMIT 5
+                """, (campaign_id,))
+            else:
+                cursor.execute("""
+                    SELECT * FROM contacts 
+                    WHERE campaign_id = %s 
+                    AND email IS NOT NULL 
+                    AND email != ''
+                    AND email_status = 'Valid'
+                    LIMIT 5
+                """, (campaign_id,))
+        else:
+            cursor.execute("""
+                SELECT * FROM contacts 
+                WHERE campaign_id = %s 
+                AND email IS NOT NULL 
+                AND email != ''
+                LIMIT 5
+            """, (campaign_id,))
         contacts = [dict(row) for row in cursor.fetchall()]
 
     if template['service'] == 'manyreach':
@@ -1042,18 +1061,30 @@ async def export_campaign(campaign_id: int, request: Request):
         # Get batch offset and valid emails only filter from request data
         offset = data.get('offset', 0)
         export_valid_only = data.get('export_valid_only', False)
+        export_catch_all = data.get('export_catch_all', False)
 
         # Get contacts to export with offset for batch processing
         if export_valid_only:
-            cursor.execute("""
-                SELECT * FROM contacts 
-                WHERE campaign_id = %s 
-                AND email IS NOT NULL 
-                AND email != ''
-                AND email_status = 'Valid'
-                ORDER BY id
-                LIMIT %s OFFSET %s
-            """, (campaign_id, batch_size, offset))
+            if export_catch_all:
+                cursor.execute("""
+                    SELECT * FROM contacts 
+                    WHERE campaign_id = %s 
+                    AND email IS NOT NULL 
+                    AND email != ''
+                    AND email_status IN ('Valid', 'Catch-all')
+                    ORDER BY id
+                    LIMIT %s OFFSET %s
+                """, (campaign_id, batch_size, offset))
+            else:
+                cursor.execute("""
+                    SELECT * FROM contacts 
+                    WHERE campaign_id = %s 
+                    AND email IS NOT NULL 
+                    AND email != ''
+                    AND email_status = 'Valid'
+                    ORDER BY id
+                    LIMIT %s OFFSET %s
+                """, (campaign_id, batch_size, offset))
         else:
             cursor.execute("""
                 SELECT * FROM contacts 
