@@ -5,15 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ScrapIQ - API Documentation</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
 </head>
-<body class="bg-gray-50">
-    <div class="container mx-auto px-4 py-8">
-        <h1 class="text-3xl font-bold mb-8">ScrapIQ API Documentation</h1>
+<body class="app-shell">
+    <div class="app-container">
+        <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-8">
+            <div>
+                <p class="app-chip">ScrapIQ</p>
+                <h1 class="section-title text-3xl font-semibold text-slate-900">API Documentation</h1>
+                <p class="text-sm text-slate-600">Endpoints for campaign data, contacts, and request status.</p>
+            </div>
+            <a href="/" class="app-chip hover:text-slate-900 w-fit">← Back to ScrapIQ</a>
+        </div>
 
         <div class="space-y-8">
             <!-- Get Active Campaigns -->
-            <div class="bg-white p-6 rounded-lg shadow">
+            <div class="app-card p-6">
                 <div class="flex items-center gap-4 mb-4">
                     <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">GET</span>
                     <h2 class="text-xl font-semibold">/api/campaigns/active</h2>
@@ -37,7 +45,7 @@
             </div>
 
             <!-- Get Random Contact Without Email -->
-            <div class="bg-white p-6 rounded-lg shadow">
+            <div class="app-card p-6">
                 <div class="flex items-center gap-4 mb-4">
                     <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">GET</span>
                     <h2 class="text-xl font-semibold">/api/campaign/{campaign_id}/nomail</h2>
@@ -89,7 +97,7 @@
             </div>
 
             <!-- Update Contact Email -->
-            <div class="bg-white p-6 rounded-lg shadow">
+            <div class="app-card p-6">
                 <div class="flex items-center gap-4 mb-4">
                     <span class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-medium">POST</span>
                     <h2 class="text-xl font-semibold">/api/campaign/{campaign_id}/email_update</h2>
@@ -141,7 +149,7 @@
             </div>
 
             <!-- Get Campaign Status -->
-            <div class="bg-white p-6 rounded-lg shadow">
+            <div class="app-card p-6">
                 <div class="flex items-center gap-4 mb-4">
                     <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">GET</span>
                     <h2 class="text-xl font-semibold">/api/campaign/{campaign_id}</h2>
@@ -167,7 +175,7 @@
             </div>
 
             <!-- Get Campaign Requests -->
-            <div class="bg-white p-6 rounded-lg shadow">
+            <div class="app-card p-6">
                 <div class="flex items-center gap-4 mb-4">
                     <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">GET</span>
                     <h2 class="text-xl font-semibold">/api/campaign/{campaign_name}/requests</h2>
@@ -194,7 +202,7 @@
             </div>
 
             <!-- Update Request Status -->
-            <div class="bg-white p-6 rounded-lg shadow">
+            <div class="app-card p-6">
                 <div class="flex items-center gap-4 mb-4">
                     <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">GET</span>
                     <h2 class="text-xl font-semibold">/api/request/{request_id}/status/{status}</h2>
@@ -217,7 +225,7 @@
             </div>
 
             <!-- Complete Campaign -->
-            <div class="bg-white p-6 rounded-lg shadow">
+            <div class="app-card p-6">
                 <div class="flex items-center gap-4 mb-4">
                     <span class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-sm font-medium">GET</span>
                     <h2 class="text-xl font-semibold">/api/campaign/{campaign_id}/complete</h2>
@@ -237,7 +245,7 @@
             </div>
 
             <!-- Save Contact -->
-            <div class="bg-white p-6 rounded-lg shadow">
+            <div class="app-card p-6">
                 <div class="flex items-center gap-4 mb-4">
                     <span class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-medium">POST</span>
                     <h2 class="text-xl font-semibold">/api/contacts</h2>
