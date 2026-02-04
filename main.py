@@ -518,8 +518,10 @@ async def get_random_contact_without_email(campaign_id: int, batch: int = 1):
                 AND (email IS NULL OR email = '')
                 AND domain IS NOT NULL
                 AND domain != ''
-                AND nomail_pulled_at IS NULL
-                ORDER BY RANDOM()
+                ORDER BY
+                    CASE WHEN nomail_pulled_at IS NULL THEN 0 ELSE 1 END,
+                    nomail_pulled_at ASC NULLS FIRST,
+                    id ASC
                 LIMIT %s
                 FOR UPDATE SKIP LOCKED
             )
