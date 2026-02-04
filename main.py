@@ -1396,6 +1396,23 @@ async def remove_contact(campaign_id: int, contact_id: int):
         conn.commit()
         return {"status": "Contact removed successfully"}
 
+@app.delete("/api/campaign/{campaign_id}/contact/{contact_id}/email")
+async def remove_contact_email(campaign_id: int, contact_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE contacts
+            SET email = NULL,
+                email_status = 'unverified'
+            WHERE id = %s AND campaign_id = %s
+        """, (contact_id, campaign_id))
+
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Contact not found")
+
+        conn.commit()
+        return {"status": "Email removed successfully"}
+
 @app.get("/api/campaign/{campaign_id}/email-statuses")
 async def get_email_statuses(campaign_id: int):
     with get_db() as conn:

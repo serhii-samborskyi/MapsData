@@ -78,7 +78,7 @@
                                 {% set completion = 100 %}
                             {% endif %}
                         {% endif %}
-                        <tr class="campaign-row hover:bg-slate-50/80 transition-all">
+                        <tr id="campaign-row-{{ campaign.id }}" class="campaign-row hover:bg-slate-50/80 transition-all">
                             <td data-label="ID" class="text-sm text-slate-700">{{ campaign.id }}</td>
                             <td data-label="Name" class="text-sm text-slate-700 font-medium">{{ campaign.name }}</td>
                             <td data-label="Status">
@@ -101,7 +101,7 @@
                             </td>
                             <td data-label="Total Requests" class="text-sm text-slate-700">{{ campaign.total_requests or 0 }}</td>
                             <td data-label="Contacts" class="text-sm text-slate-700">{{ campaign.total_contacts or 0 }}</td>
-                            <td data-label="Emails" class="text-sm text-slate-700">
+                            <td data-label="Emails" class="text-sm text-slate-700" data-email-count="{{ campaign.email_count or 0 }}" data-valid-email-count="{{ campaign.valid_email_count or 0 }}">
                                 {{ campaign.email_count or 0 }}
                                 {% if campaign.valid_email_count is defined %}
                                     <span class="text-green-600 font-medium">/ {{ campaign.valid_email_count or 0 }}</span>
@@ -187,8 +187,13 @@
                                             {% for contact in campaign.contacts %}
                                                 {% if contact.email and contact.email|trim != '' %}
                                                     {% set ns.has_email = true %}
-                                                    <tr class="hover:bg-white/50 transition-all">
-                                                        <td data-label="Email" class="px-3 py-2 text-sm text-gray-700">{{ contact.email.split(',')[0] }}</td>
+                                                    <tr class="hover:bg-white/50 transition-all" data-contact-id="{{ contact.id }}">
+                                                        <td data-label="Email" class="px-3 py-2 text-sm text-gray-700">
+                                                            <div class="flex items-center gap-2">
+                                                                <span>{{ contact.email.split(',')[0] }}</span>
+                                                                <button onclick="removeContactEmail({{ contact.id }}, {{ campaign.id }}, this)" class="email-remove-btn" title="Remove email">×</button>
+                                                            </div>
+                                                        </td>
                                                         <td data-label="Web Site" class="px-3 py-2 text-sm text-gray-700">
                                                             {% if contact.domain %}
                                                             {% set display_url = contact.domain.replace('https://', '').replace('http://', '').split('?')[0] %}
@@ -244,7 +249,7 @@
                                         </thead>
                                         <tbody class="divide-y divide-gray-200">
                                             {% for contact in campaign.contacts %}
-                                            <tr class="hover:bg-white/50 transition-all">
+                                            <tr class="hover:bg-white/50 transition-all" data-contact-id="{{ contact.id }}">
                                                 <td data-label="IDs" class="px-3 py-2">
                                                     <div class="space-y-1">
                                                         <div class="text-xs text-gray-500">Campaign: {{ contact.campaign_id }}</div>
@@ -1022,6 +1027,78 @@
             } catch (error) {
                 console.error('Error removing contact:', error);
                 alert('Error removing contact');
+            }
+        }
+
+        function updateCampaignEmailCounters(campaignId, removedStatus) {
+            const campaignRow = document.getElementById(`campaign-row-${campaignId}`);
+            if (!campaignRow) return;
+
+            const emailCell = campaignRow.querySelector('td[data-label="Emails"]');
+            if (!emailCell) return;
+
+            let totalCount = parseInt(emailCell.dataset.emailCount || '0', 10);
+            let validCount = parseInt(emailCell.dataset.validEmailCount || '0', 10);
+
+            totalCount = Math.max(0, totalCount - 1);
+            if (removedStatus === 'Valid') {
+                validCount = Math.max(0, validCount - 1);
+            }
+
+            emailCell.dataset.emailCount = String(totalCount);
+            emailCell.dataset.validEmailCount = String(validCount);
+            emailCell.innerHTML = `${totalCount} <span class="text-green-600 font-medium">/ ${validCount}</span>`;
+        }
+
+        function renderEmailsEmptyStateIfNeeded(campaignId) {
+            const emailsBody = document.querySelector(`#emails-${campaignId} tbody`);
+            if (!emailsBody) return;
+
+            const hasEmailRows = emailsBody.querySelector('tr[data-contact-id]');
+            if (hasEmailRows) return;
+
+            if (!emailsBody.querySelector('.email-empty-row')) {
+                const emptyRow = document.createElement('tr');
+                emptyRow.className = 'email-empty-row';
+                emptyRow.innerHTML = '<td colspan="4" class="px-3 py-3 text-sm text-slate-500">No contacts with email in this campaign.</td>';
+                emailsBody.appendChild(emptyRow);
+            }
+        }
+
+        async function removeContactEmail(contactId, campaignId, triggerButton) {
+            if (!confirm('Remove this email from the contact?')) {
+                return;
+            }
+
+            const emailRow = triggerButton?.closest('tr[data-contact-id]');
+            const removedStatus = emailRow?.querySelector('td[data-label="Email Status"] span')?.textContent?.trim() || '';
+
+            try {
+                const response = await fetch(`/api/campaign/${campaignId}/contact/${contactId}/email`, {
+                    method: 'DELETE'
+                });
+
+                if (!response.ok) {
+                    alert('Error removing email');
+                    return;
+                }
+
+                if (emailRow) {
+                    emailRow.remove();
+                }
+                renderEmailsEmptyStateIfNeeded(campaignId);
+                updateCampaignEmailCounters(campaignId, removedStatus);
+
+                const contactRow = document.querySelector(`#contacts-${campaignId} tr[data-contact-id="${contactId}"]`);
+                if (contactRow) {
+                    const emailCell = contactRow.querySelector('td[data-label="Contact"] div:nth-child(2)');
+                    if (emailCell) {
+                        emailCell.innerHTML = '<span>-</span>';
+                    }
+                }
+            } catch (error) {
+                console.error('Error removing email:', error);
+                alert('Error removing email');
             }
         }
 

@@ -155,6 +155,23 @@ body {
     border: none;
 }
 
+.email-remove-btn {
+    width: 18px;
+    height: 18px;
+    border: none;
+    border-radius: 999px;
+    background: rgba(239, 68, 68, 0.12);
+    color: #dc2626;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.email-remove-btn:hover {
+    background: rgba(239, 68, 68, 0.2);
+}
+
 .responsive-table tr.campaign-row td:first-child {
     border-top-left-radius: 16px;
     border-bottom-left-radius: 16px;

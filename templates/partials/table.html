@@ -22,7 +22,7 @@
                 {% set completion = 100 %}
             {% endif %}
         {% endif %}
-        <tr class="campaign-row hover:bg-slate-50/80 transition-all">
+        <tr id="campaign-row-{{ campaign.id }}" class="campaign-row hover:bg-slate-50/80 transition-all">
             <td data-label="ID" class="text-sm text-slate-700">{{ campaign.id }}</td>
             <td data-label="Name" class="text-sm text-slate-700 font-medium">{{ campaign.name }}</td>
             <td data-label="Status">
@@ -45,7 +45,7 @@
             </td>
             <td data-label="Total Requests" class="text-sm text-slate-700">{{ campaign.total_requests or 0 }}</td>
             <td data-label="Contacts" class="text-sm text-slate-700">{{ campaign.total_contacts or 0 }}</td>
-            <td data-label="Emails" class="text-sm text-slate-700">
+            <td data-label="Emails" class="text-sm text-slate-700" data-email-count="{{ campaign.email_count or 0 }}" data-valid-email-count="{{ campaign.valid_email_count or 0 }}">
                 {{ campaign.email_count or 0 }}
                 {% if campaign.valid_email_count is defined %}
                     <span class="text-green-600 font-medium">/ {{ campaign.valid_email_count or 0 }}</span>
@@ -131,8 +131,13 @@
                             {% for contact in campaign.contacts %}
                                 {% if contact.email and contact.email|trim != '' %}
                                     {% set ns.has_email = true %}
-                                    <tr class="hover:bg-white/50 transition-all">
-                                        <td data-label="Email" class="px-3 py-2 text-sm text-gray-700">{{ contact.email.split(',')[0] }}</td>
+                                    <tr class="hover:bg-white/50 transition-all" data-contact-id="{{ contact.id }}">
+                                        <td data-label="Email" class="px-3 py-2 text-sm text-gray-700">
+                                            <div class="flex items-center gap-2">
+                                                <span>{{ contact.email.split(',')[0] }}</span>
+                                                <button onclick="removeContactEmail({{ contact.id }}, {{ campaign.id }}, this)" class="email-remove-btn" title="Remove email">×</button>
+                                            </div>
+                                        </td>
                                         <td data-label="Web Site" class="px-3 py-2 text-sm text-gray-700">
                                             {% if contact.domain %}
                                             {% set display_url = contact.domain.replace('https://', '').replace('http://', '').split('?')[0] %}
@@ -188,7 +193,7 @@
                         </thead>
                         <tbody class="divide-y divide-gray-200">
                             {% for contact in campaign.contacts %}
-                            <tr class="hover:bg-white/50 transition-all">
+                            <tr class="hover:bg-white/50 transition-all" data-contact-id="{{ contact.id }}">
                                 <td data-label="IDs" class="px-3 py-2">
                                     <div class="space-y-1">
                                         <div class="text-xs text-gray-500">Campaign: {{ contact.campaign_id }}</div>
