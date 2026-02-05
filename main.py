@@ -1510,6 +1510,23 @@ async def get_verification_job_status(job_id: str):
             raise HTTPException(status_code=404, detail="Verification job not found")
         return _serialize_verification_job(job)
 
+@app.get("/api/campaign/{campaign_id}/verification-job/active")
+async def get_active_verification_job(campaign_id: int):
+    with verification_jobs_lock:
+        active_jobs = [
+            job for job in verification_jobs.values()
+            if job["campaign_id"] == campaign_id and job["status"] in ["queued", "running"]
+        ]
+        if not active_jobs:
+            return {"job": None}
+
+        active_job = sorted(
+            active_jobs,
+            key=lambda j: j["started_at"] or "",
+            reverse=True
+        )[0]
+        return {"job": _serialize_verification_job(active_job)}
+
 @app.post("/api/verification-jobs/{job_id}/stop")
 async def stop_verification_job(job_id: str):
     with verification_jobs_lock:

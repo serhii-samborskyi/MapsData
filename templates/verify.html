@@ -100,6 +100,19 @@
             </div>
         </div>
 
+        <div id="activeVerificationBar" class="app-card p-4 mb-6 hidden">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                    <div class="text-sm font-semibold text-slate-800">Verification Running In Background</div>
+                    <div id="activeVerificationText" class="text-xs text-slate-600">Tracking progress...</div>
+                </div>
+                <div class="flex gap-2">
+                    <button id="openVerificationProgress" class="px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50">Open Progress</button>
+                    <button id="stopVerificationInline" class="px-3 py-2 text-sm border border-red-300 text-red-700 rounded-lg hover:bg-red-50">Stop</button>
+                </div>
+            </div>
+        </div>
+
         <!-- Verification Progress Modal -->
         <div id="verificationModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
             <div class="flex items-center justify-center min-h-screen">
@@ -279,10 +292,14 @@
                     selectedCampaign = e.target.value;
                     if (selectedCampaign) {
                         await loadCampaignStats();
+                        await loadActiveVerificationJobForCampaign();
                         if (selectedTemplate) {
                             showVerificationSection();
                         }
                     } else {
+                        currentVerificationJobId = null;
+                        stopVerificationPolling();
+                        updateActiveVerificationBar(null);
                         hideVerificationSection();
                     }
                 });
@@ -382,6 +399,47 @@
 
         function hideVerificationSection() {
             document.getElementById('verificationSection').classList.add('hidden');
+        }
+
+        function updateActiveVerificationBar(jobData) {
+            const bar = document.getElementById('activeVerificationBar');
+            const text = document.getElementById('activeVerificationText');
+            const stopBtn = document.getElementById('stopVerificationInline');
+
+            if (!jobData || !["queued", "running"].includes(jobData.status)) {
+                bar.classList.add('hidden');
+                return;
+            }
+
+            const total = jobData.total_emails || 0;
+            const processed = jobData.processed_emails || 0;
+            text.textContent = `${processed}/${total} processed${jobData.current_email && jobData.current_email !== '-' ? ` • ${jobData.current_email}` : ''}`;
+            stopBtn.disabled = false;
+            bar.classList.remove('hidden');
+        }
+
+        async function loadActiveVerificationJobForCampaign() {
+            if (!selectedCampaign) return;
+            try {
+                const response = await fetch(`/api/campaign/${selectedCampaign}/verification-job/active`);
+                const data = await response.json();
+                if (!response.ok) return;
+
+                if (data.job) {
+                    currentVerificationJobId = data.job.job_id;
+                    updateActiveVerificationBar(data.job);
+                    startVerificationPolling();
+                } else {
+                    if (!document.getElementById('verificationModal').classList.contains('hidden')) {
+                        return;
+                    }
+                    stopVerificationPolling();
+                    currentVerificationJobId = null;
+                    updateActiveVerificationBar(null);
+                }
+            } catch (error) {
+                console.error('Error loading active verification job:', error);
+            }
         }
 
         function openCreateTemplateModal() {
@@ -515,9 +573,12 @@
 
             const stopButton = document.getElementById('stopVerification');
             stopButton.disabled = !["queued", "running"].includes(data.status);
+            updateActiveVerificationBar(data);
 
             if (["completed", "failed", "cancelled"].includes(data.status)) {
                 stopVerificationPolling();
+                updateActiveVerificationBar(null);
+                currentVerificationJobId = null;
                 if (forceRefreshStats || ["completed", "cancelled"].includes(data.status)) {
                     await loadCampaignStats();
                     await loadVerificationHistory();
@@ -545,11 +606,10 @@
         }
 
         function closeVerificationModal() {
-            stopVerificationPolling();
             document.getElementById('verificationModal').classList.add('hidden');
         }
 
-        async function stopVerificationModalJob() {
+        async function stopCurrentVerificationJob() {
             if (!currentVerificationJobId) return;
             if (!confirm('Stop the current verification job?')) return;
 
@@ -611,7 +671,14 @@
         // Event listeners
         document.getElementById('createTemplateBtn').addEventListener('click', openCreateTemplateModal);
         document.getElementById('verifyAllBtn').addEventListener('click', verifyAll);
-        document.getElementById('stopVerification').addEventListener('click', stopVerificationModalJob);
+        document.getElementById('stopVerification').addEventListener('click', stopCurrentVerificationJob);
+        document.getElementById('stopVerificationInline').addEventListener('click', stopCurrentVerificationJob);
+        document.getElementById('openVerificationProgress').addEventListener('click', () => {
+            showVerificationModal();
+            pollVerificationJobStatus().catch((error) => {
+                document.getElementById('verificationStatus').textContent = `Error: ${error.message}`;
+            });
+        });
         document.getElementById('closeVerification').addEventListener('click', closeVerificationModal);
 
         document.getElementById('createTemplateForm').addEventListener('submit', async (e) => {
