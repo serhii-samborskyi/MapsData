@@ -9,6 +9,8 @@ from typing import List, Union
 import json
 import time
 from datetime import datetime, timedelta
+import threading
+from uuid import uuid4
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -16,6 +18,185 @@ templates = Jinja2Templates(directory="templates")
 
 # Initialize database
 init_db()
+
+# In-memory verification job state (single-process runtime)
+verification_jobs = {}
+verification_jobs_lock = threading.Lock()
+MAX_VERIFICATION_LOGS = 200
+
+
+def _append_verification_log(job: dict, message: str):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    job["logs"].append(f"{timestamp} - {message}")
+    if len(job["logs"]) > MAX_VERIFICATION_LOGS:
+        job["logs"] = job["logs"][-MAX_VERIFICATION_LOGS:]
+
+
+def _serialize_verification_job(job: dict):
+    return {
+        "job_id": job["job_id"],
+        "campaign_id": job["campaign_id"],
+        "template_id": job["template_id"],
+        "status": job["status"],
+        "total_emails": job["total_emails"],
+        "processed_emails": job["processed_emails"],
+        "verified_emails": job["verified_emails"],
+        "invalid_emails": job["invalid_emails"],
+        "failed_emails": job["failed_emails"],
+        "current_email": job["current_email"],
+        "message": job["message"],
+        "started_at": job["started_at"],
+        "completed_at": job["completed_at"],
+        "logs": list(job["logs"]),
+    }
+
+
+def _run_verification_job(job_id: str):
+    with verification_jobs_lock:
+        job = verification_jobs.get(job_id)
+        if not job:
+            return
+        job["status"] = "running"
+        job["message"] = "Verification in progress"
+        job["started_at"] = datetime.now().isoformat()
+        _append_verification_log(job, "Verification started")
+
+    try:
+        template = EmailVerificationManager.get_template(job["template_id"])
+        if not template:
+            raise RuntimeError("Template not found")
+
+        verification_service = EmailVerificationService()
+
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, email
+                FROM contacts
+                WHERE campaign_id = %s
+                AND email IS NOT NULL
+                AND email != ''
+                AND (email_status IS NULL OR email_status = 'unverified')
+                ORDER BY id
+            """, (job["campaign_id"],))
+            contacts = cursor.fetchall()
+
+        with verification_jobs_lock:
+            job = verification_jobs.get(job_id)
+            if not job:
+                return
+            job["total_emails"] = len(contacts)
+            if len(contacts) == 0:
+                job["status"] = "completed"
+                job["message"] = "No unverified emails found"
+                job["completed_at"] = datetime.now().isoformat()
+                _append_verification_log(job, "No unverified emails found")
+                return
+
+        for index, contact in enumerate(contacts):
+            contact_id = contact["id"]
+            email = contact["email"]
+
+            with verification_jobs_lock:
+                job = verification_jobs.get(job_id)
+                if not job:
+                    return
+                job["current_email"] = email
+                _append_verification_log(job, f"Verifying: {email}")
+
+            result = verification_service.verify_batch([email], template, 0)[0]
+            mapped_status = result["mapped_status"] if result["success"] else "Unknown"
+
+            with get_db() as conn:
+                cursor = conn.cursor()
+                if result["success"]:
+                    cursor.execute("""
+                        UPDATE contacts
+                        SET email_status = %s
+                        WHERE id = %s AND campaign_id = %s
+                    """, (mapped_status, contact_id, job["campaign_id"]))
+                conn.commit()
+
+            with verification_jobs_lock:
+                job = verification_jobs.get(job_id)
+                if not job:
+                    return
+
+                job["processed_emails"] += 1
+                job["message"] = f"Processed {job['processed_emails']} of {job['total_emails']}"
+                status_lower = mapped_status.lower()
+                if status_lower in ["valid", "verified"]:
+                    job["verified_emails"] += 1
+                    _append_verification_log(job, f"✓ {email} - {mapped_status}")
+                elif status_lower in ["invalid", "bounced"]:
+                    job["invalid_emails"] += 1
+                    _append_verification_log(job, f"✗ {email} - {mapped_status}")
+                elif not result["success"]:
+                    job["failed_emails"] += 1
+                    _append_verification_log(job, f"! {email} - Failed: {result.get('error', 'Unknown error')}")
+                else:
+                    _append_verification_log(job, f"? {email} - {mapped_status}")
+
+            if index < len(contacts) - 1:
+                time.sleep(job["delay"])
+
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO email_verification_logs
+                (campaign_id, template_id, emails_processed, emails_verified, emails_invalid, status)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (
+                job["campaign_id"],
+                job["template_id"],
+                job["processed_emails"],
+                job["verified_emails"],
+                job["invalid_emails"],
+                "completed"
+            ))
+            conn.commit()
+
+        with verification_jobs_lock:
+            job = verification_jobs.get(job_id)
+            if not job:
+                return
+            job["status"] = "completed"
+            job["message"] = "Verification completed successfully"
+            job["current_email"] = "-"
+            job["completed_at"] = datetime.now().isoformat()
+            _append_verification_log(job, f"Completed: {job['processed_emails']} emails processed")
+
+    except Exception as e:
+        failed_campaign_id = None
+        failed_template_id = None
+        with verification_jobs_lock:
+            job = verification_jobs.get(job_id)
+            if job:
+                failed_campaign_id = job["campaign_id"]
+                failed_template_id = job["template_id"]
+                job["status"] = "failed"
+                job["message"] = str(e)
+                job["current_email"] = "-"
+                job["completed_at"] = datetime.now().isoformat()
+                _append_verification_log(job, f"Error: {str(e)}")
+
+        if failed_campaign_id and failed_template_id:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO email_verification_logs
+                    (campaign_id, template_id, emails_processed, emails_verified, emails_invalid, status, error_message)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    failed_campaign_id,
+                    failed_template_id,
+                    0,
+                    0,
+                    0,
+                    "failed",
+                    str(e)
+                ))
+                conn.commit()
 
 @app.get("/docs/api", response_class=HTMLResponse)
 async def get_api_docs(request: Request):
@@ -1207,6 +1388,63 @@ async def delete_verification_template(template_id: int):
 
     EmailVerificationManager.delete_template(template_id)
     return {"status": "Template deleted"}
+
+@app.post("/api/campaign/{campaign_id}/verify-emails/start")
+async def start_verification_job(campaign_id: int, request: Request):
+    data = await request.json()
+    template_id = data.get('template_id')
+    delay = float(data.get('delay', 2))
+
+    if not template_id:
+        raise HTTPException(status_code=400, detail="Template ID required")
+
+    if delay < 0:
+        raise HTTPException(status_code=400, detail="Delay must be zero or positive")
+
+    template = EmailVerificationManager.get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    with verification_jobs_lock:
+        for existing_job in verification_jobs.values():
+            if existing_job["campaign_id"] == campaign_id and existing_job["status"] in ["queued", "running"]:
+                response = _serialize_verification_job(existing_job)
+                response["already_running"] = True
+                return response
+
+        job_id = str(uuid4())
+        verification_jobs[job_id] = {
+            "job_id": job_id,
+            "campaign_id": campaign_id,
+            "template_id": template_id,
+            "delay": delay,
+            "status": "queued",
+            "total_emails": 0,
+            "processed_emails": 0,
+            "verified_emails": 0,
+            "invalid_emails": 0,
+            "failed_emails": 0,
+            "current_email": "-",
+            "message": "Queued",
+            "started_at": None,
+            "completed_at": None,
+            "logs": [],
+        }
+
+    thread = threading.Thread(target=_run_verification_job, args=(job_id,), daemon=True)
+    thread.start()
+
+    response = _serialize_verification_job(verification_jobs[job_id])
+    response["already_running"] = False
+    return response
+
+@app.get("/api/verification-jobs/{job_id}")
+async def get_verification_job_status(job_id: str):
+    with verification_jobs_lock:
+        job = verification_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Verification job not found")
+        return _serialize_verification_job(job)
 
 # Single Email Verification for real-time progress
 @app.post("/api/campaign/{campaign_id}/verify-single-email")

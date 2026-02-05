@@ -230,7 +230,8 @@
     <script>
         let selectedCampaign = null;
         let selectedTemplate = null;
-        let verificationCancelled = false;
+        let currentVerificationJobId = null;
+        let verificationPollingTimer = null;
 
         // Load campaigns and templates on page load
         document.addEventListener('DOMContentLoaded', async () => {
@@ -423,133 +424,121 @@
                 return;
             }
 
-            await executeVerification(delay);
+            await startServerVerification(delay);
         }
 
-        async function executeVerification(delay) {
+        async function startServerVerification(delay) {
             showVerificationModal();
 
             try {
-                // First get the list of unverified emails
-                const campaignResponse = await fetch(`/api/campaign/${selectedCampaign}`);
-                const campaignData = await campaignResponse.json();
-                
-                const unverifiedContacts = campaignData.contacts.filter(c => 
-                    c.email && c.email.trim() !== '' && 
-                    (!c.email_status || c.email_status === 'unverified')
-                );
+                const response = await fetch(`/api/campaign/${selectedCampaign}/verify-emails/start`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        template_id: selectedTemplate.id,
+                        delay: delay
+                    })
+                });
 
-                if (unverifiedContacts.length === 0) {
-                    addVerificationLog('No unverified emails found');
-                    document.getElementById('verificationStatus').textContent = 'No emails to verify';
-                    document.getElementById('cancelVerification').textContent = 'Close';
-                    return;
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Unable to start verification');
                 }
 
-                document.getElementById('totalEmails').textContent = unverifiedContacts.length;
-                
-                let processed = 0;
-                let verified = 0;
-                let invalid = 0;
-                let failed = 0;
-
-                // Process emails one by one with real-time updates
-                for (let i = 0; i < unverifiedContacts.length && !verificationCancelled; i++) {
-                    const contact = unverifiedContacts[i];
-                    document.getElementById('currentEmail').textContent = contact.email;
-                    addVerificationLog(`Verifying: ${contact.email}`);
-
-                    try {
-                        const response = await fetch(`/api/campaign/${selectedCampaign}/verify-single-email`, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json'
-                            },
-                            body: JSON.stringify({
-                                template_id: selectedTemplate.id,
-                                contact_id: contact.id,
-                                email: contact.email
-                            })
-                        });
-
-                        const result = await response.json();
-                        
-                        if (response.ok) {
-                            processed++;
-                            if (result.status === 'verified') {
-                                verified++;
-                                addVerificationLog(`✓ ${contact.email} - Verified`);
-                            } else if (result.status === 'invalid') {
-                                invalid++;
-                                addVerificationLog(`✗ ${contact.email} - Invalid`);
-                            } else {
-                                addVerificationLog(`? ${contact.email} - ${result.status}`);
-                            }
-                        } else {
-                            failed++;
-                            addVerificationLog(`! ${contact.email} - Failed: ${result.detail}`);
-                        }
-                    } catch (error) {
-                        failed++;
-                        addVerificationLog(`! ${contact.email} - Error: ${error.message}`);
-                    }
-
-                    // Update progress
-                    document.getElementById('processedEmails').textContent = processed + failed;
-                    document.getElementById('verifiedEmails').textContent = verified;
-                    document.getElementById('invalidEmails').textContent = invalid;
-                    document.getElementById('failedEmails').textContent = failed;
-                    
-                    const progress = ((processed + failed) / unverifiedContacts.length) * 100;
-                    document.getElementById('progressBar').style.width = progress + '%';
-
-                    // Add delay between requests (except for last one)
-                    if (i < unverifiedContacts.length - 1 && !verificationCancelled) {
-                        await new Promise(resolve => setTimeout(resolve, delay * 1000));
-                    }
-                }
-
-                if (verificationCancelled) {
-                    document.getElementById('verificationStatus').textContent = 'Verification cancelled';
-                    addVerificationLog('Verification cancelled by user');
+                currentVerificationJobId = data.job_id;
+                if (data.already_running) {
+                    document.getElementById('verificationStatus').textContent = 'A verification is already running. Showing live progress.';
                 } else {
-                    document.getElementById('verificationStatus').textContent = 'Verification completed successfully!';
-                    addVerificationLog(`Verification completed! ${processed} emails processed`);
-                    
-                    await loadCampaignStats();
-                    await loadVerificationHistory();
+                    document.getElementById('verificationStatus').textContent = 'Verification started on server.';
                 }
-                
-                document.getElementById('currentEmail').textContent = '-';
-                document.getElementById('cancelVerification').textContent = 'Close';
-                document.getElementById('cancelVerification').disabled = false;
 
+                await pollVerificationJobStatus(true);
+                startVerificationPolling();
             } catch (error) {
-                addVerificationLog(`Error: ${error.message}`);
+                document.getElementById('verificationLogs').innerHTML = '';
                 document.getElementById('verificationStatus').textContent = 'Verification failed';
                 alert('Error during verification: ' + error.message);
             }
         }
 
         function showVerificationModal() {
-            verificationCancelled = false;
             document.getElementById('verificationModal').classList.remove('hidden');
             document.getElementById('verificationStatus').textContent = 'Starting verification...';
             document.getElementById('verificationLogs').innerHTML = '';
             document.getElementById('cancelVerification').disabled = false;
-            document.getElementById('cancelVerification').textContent = 'Cancel';
+            document.getElementById('cancelVerification').textContent = 'Close';
+            document.getElementById('processedEmails').textContent = '0';
+            document.getElementById('totalEmails').textContent = '0';
+            document.getElementById('verifiedEmails').textContent = '0';
+            document.getElementById('invalidEmails').textContent = '0';
+            document.getElementById('failedEmails').textContent = '0';
+            document.getElementById('currentEmail').textContent = '-';
+            document.getElementById('progressBar').style.width = '0%';
         }
 
-        function addVerificationLog(message) {
+        async function pollVerificationJobStatus(forceRefreshStats = false) {
+            if (!currentVerificationJobId) return;
+
+            const response = await fetch(`/api/verification-jobs/${currentVerificationJobId}`);
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.detail || 'Unable to fetch verification job status');
+            }
+
+            const total = data.total_emails || 0;
+            const processed = data.processed_emails || 0;
+            const verified = data.verified_emails || 0;
+            const invalid = data.invalid_emails || 0;
+            const failed = data.failed_emails || 0;
+
+            document.getElementById('totalEmails').textContent = total;
+            document.getElementById('processedEmails').textContent = processed;
+            document.getElementById('verifiedEmails').textContent = verified;
+            document.getElementById('invalidEmails').textContent = invalid;
+            document.getElementById('failedEmails').textContent = failed;
+            document.getElementById('currentEmail').textContent = data.current_email || '-';
+            document.getElementById('verificationStatus').textContent = data.message || data.status;
+
+            const progress = total > 0 ? (processed / total) * 100 : 0;
+            document.getElementById('progressBar').style.width = `${Math.min(100, progress)}%`;
+
             const logsDiv = document.getElementById('verificationLogs');
-            const logEntry = document.createElement('div');
-            logEntry.textContent = `${new Date().toLocaleTimeString()}: ${message}`;
-            logsDiv.appendChild(logEntry);
+            logsDiv.innerHTML = (data.logs || []).map(log => `<div>${log}</div>`).join('');
             logsDiv.scrollTop = logsDiv.scrollHeight;
+
+            if (["completed", "failed"].includes(data.status)) {
+                stopVerificationPolling();
+                if (forceRefreshStats || data.status === "completed") {
+                    await loadCampaignStats();
+                    await loadVerificationHistory();
+                }
+            }
+        }
+
+        function startVerificationPolling() {
+            stopVerificationPolling();
+            verificationPollingTimer = setInterval(async () => {
+                try {
+                    await pollVerificationJobStatus();
+                } catch (error) {
+                    stopVerificationPolling();
+                    document.getElementById('verificationStatus').textContent = `Error: ${error.message}`;
+                }
+            }, 2000);
+        }
+
+        function stopVerificationPolling() {
+            if (verificationPollingTimer) {
+                clearInterval(verificationPollingTimer);
+                verificationPollingTimer = null;
+            }
         }
 
         function closeVerificationModal() {
-            verificationCancelled = true;
+            stopVerificationPolling();
             document.getElementById('verificationModal').classList.add('hidden');
         }
 
