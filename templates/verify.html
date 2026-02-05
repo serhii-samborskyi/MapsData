@@ -127,9 +127,14 @@
                     <div id="verificationLogs" class="bg-gray-50 rounded p-3 h-24 overflow-y-auto text-xs mb-4">
                         <!-- Logs will appear here -->
                     </div>
-                    <button id="cancelVerification" class="w-full px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50" disabled>
-                        Cancel Verification
-                    </button>
+                    <div class="flex flex-col sm:flex-row gap-2">
+                        <button id="stopVerification" class="w-full px-4 py-2 border border-red-300 text-red-700 rounded-lg hover:bg-red-50" disabled>
+                            Stop Verification
+                        </button>
+                        <button id="closeVerification" class="w-full px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
+                            Close
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -467,8 +472,7 @@
             document.getElementById('verificationModal').classList.remove('hidden');
             document.getElementById('verificationStatus').textContent = 'Starting verification...';
             document.getElementById('verificationLogs').innerHTML = '';
-            document.getElementById('cancelVerification').disabled = false;
-            document.getElementById('cancelVerification').textContent = 'Close';
+            document.getElementById('stopVerification').disabled = true;
             document.getElementById('processedEmails').textContent = '0';
             document.getElementById('totalEmails').textContent = '0';
             document.getElementById('verifiedEmails').textContent = '0';
@@ -509,9 +513,12 @@
             logsDiv.innerHTML = (data.logs || []).map(log => `<div>${log}</div>`).join('');
             logsDiv.scrollTop = logsDiv.scrollHeight;
 
-            if (["completed", "failed"].includes(data.status)) {
+            const stopButton = document.getElementById('stopVerification');
+            stopButton.disabled = !["queued", "running"].includes(data.status);
+
+            if (["completed", "failed", "cancelled"].includes(data.status)) {
                 stopVerificationPolling();
-                if (forceRefreshStats || data.status === "completed") {
+                if (forceRefreshStats || ["completed", "cancelled"].includes(data.status)) {
                     await loadCampaignStats();
                     await loadVerificationHistory();
                 }
@@ -540,6 +547,24 @@
         function closeVerificationModal() {
             stopVerificationPolling();
             document.getElementById('verificationModal').classList.add('hidden');
+        }
+
+        async function stopVerificationModalJob() {
+            if (!currentVerificationJobId) return;
+            if (!confirm('Stop the current verification job?')) return;
+
+            try {
+                const response = await fetch(`/api/verification-jobs/${currentVerificationJobId}/stop`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || 'Unable to stop verification');
+                }
+                await pollVerificationJobStatus(true);
+            } catch (error) {
+                alert('Error stopping verification: ' + error.message);
+            }
         }
 
         async function loadVerificationHistory() {
@@ -586,7 +611,8 @@
         // Event listeners
         document.getElementById('createTemplateBtn').addEventListener('click', openCreateTemplateModal);
         document.getElementById('verifyAllBtn').addEventListener('click', verifyAll);
-        document.getElementById('cancelVerification').addEventListener('click', closeVerificationModal);
+        document.getElementById('stopVerification').addEventListener('click', stopVerificationModalJob);
+        document.getElementById('closeVerification').addEventListener('click', closeVerificationModal);
 
         document.getElementById('createTemplateForm').addEventListener('submit', async (e) => {
             e.preventDefault();

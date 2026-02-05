@@ -45,16 +45,30 @@ def _serialize_verification_job(job: dict):
         "failed_emails": job["failed_emails"],
         "current_email": job["current_email"],
         "message": job["message"],
+        "cancel_requested": job.get("cancel_requested", False),
         "started_at": job["started_at"],
         "completed_at": job["completed_at"],
         "logs": list(job["logs"]),
     }
 
 
+def _mark_job_cancelled(job: dict):
+    if job.get("status") == "cancelled":
+        return
+    job["status"] = "cancelled"
+    job["message"] = "Verification stopped by user"
+    job["current_email"] = "-"
+    job["completed_at"] = datetime.now().isoformat()
+    _append_verification_log(job, "Verification stopped by user")
+
+
 def _run_verification_job(job_id: str):
     with verification_jobs_lock:
         job = verification_jobs.get(job_id)
         if not job:
+            return
+        if job.get("cancel_requested"):
+            _mark_job_cancelled(job)
             return
         job["status"] = "running"
         job["message"] = "Verification in progress"
@@ -93,6 +107,7 @@ def _run_verification_job(job_id: str):
                 _append_verification_log(job, "No unverified emails found")
                 return
 
+        cancelled = False
         for index, contact in enumerate(contacts):
             contact_id = contact["id"]
             email = contact["email"]
@@ -101,6 +116,10 @@ def _run_verification_job(job_id: str):
                 job = verification_jobs.get(job_id)
                 if not job:
                     return
+                if job.get("cancel_requested"):
+                    _mark_job_cancelled(job)
+                    cancelled = True
+                    break
                 job["current_email"] = email
                 _append_verification_log(job, f"Verifying: {email}")
 
@@ -138,7 +157,51 @@ def _run_verification_job(job_id: str):
                     _append_verification_log(job, f"? {email} - {mapped_status}")
 
             if index < len(contacts) - 1:
-                time.sleep(job["delay"])
+                remaining_delay = max(0.0, float(job["delay"]))
+                while remaining_delay > 0:
+                    sleep_step = min(0.2, remaining_delay)
+                    time.sleep(sleep_step)
+                    remaining_delay -= sleep_step
+
+                    with verification_jobs_lock:
+                        job = verification_jobs.get(job_id)
+                        if not job:
+                            return
+                        if job.get("cancel_requested"):
+                            _mark_job_cancelled(job)
+                            cancelled = True
+                            break
+                if cancelled:
+                    break
+
+        if cancelled:
+            with verification_jobs_lock:
+                job = verification_jobs.get(job_id)
+                if not job:
+                    return
+                processed = job["processed_emails"]
+                verified = job["verified_emails"]
+                invalid = job["invalid_emails"]
+                campaign_id = job["campaign_id"]
+                template_id = job["template_id"]
+
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO email_verification_logs
+                    (campaign_id, template_id, emails_processed, emails_verified, emails_invalid, status, error_message)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    campaign_id,
+                    template_id,
+                    processed,
+                    verified,
+                    invalid,
+                    "cancelled",
+                    "Stopped by user"
+                ))
+                conn.commit()
+            return
 
         with get_db() as conn:
             cursor = conn.cursor()
@@ -1418,6 +1481,7 @@ async def start_verification_job(campaign_id: int, request: Request):
             "campaign_id": campaign_id,
             "template_id": template_id,
             "delay": delay,
+            "cancel_requested": False,
             "status": "queued",
             "total_emails": 0,
             "processed_emails": 0,
@@ -1444,6 +1508,25 @@ async def get_verification_job_status(job_id: str):
         job = verification_jobs.get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Verification job not found")
+        return _serialize_verification_job(job)
+
+@app.post("/api/verification-jobs/{job_id}/stop")
+async def stop_verification_job(job_id: str):
+    with verification_jobs_lock:
+        job = verification_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Verification job not found")
+
+        if job["status"] in ["completed", "failed", "cancelled"]:
+            return _serialize_verification_job(job)
+
+        job["cancel_requested"] = True
+        if job["status"] == "queued":
+            _mark_job_cancelled(job)
+        else:
+            job["message"] = "Stopping verification..."
+            _append_verification_log(job, "Stop requested by user")
+
         return _serialize_verification_job(job)
 
 # Single Email Verification for real-time progress
