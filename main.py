@@ -16,6 +16,31 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
+PUBLIC_EMAIL_DOMAINS = [
+    'gmail.com',
+    'yahoo.com',
+    'outlook.com',
+    'hotmail.com',
+    'icloud.com',
+    'aol.com',
+    'mail.com',
+    'proton.me',
+    'protonmail.com',
+    'live.com',
+    'msn.com',
+    'gmx.com',
+    'zoho.com',
+    'yandex.com',
+    'yandex.ru',
+    'mail.ru',
+    'fastmail.com',
+    'tutanota.com',
+    'hushmail.com',
+    'qq.com',
+    '126.com',
+    '163.com'
+]
+
 # Initialize database
 init_db()
 
@@ -1212,7 +1237,13 @@ async def delete_template(template_id: int):
 
 # Export functionality
 @app.get("/api/campaign/{campaign_id}/export/preview")
-async def preview_export(campaign_id: int, template_id: int, valid_only: bool = False, include_catch_all: bool = False):
+async def preview_export(
+    campaign_id: int,
+    template_id: int,
+    valid_only: bool = False,
+    include_catch_all: bool = False,
+    exclude_public_emails: bool = False
+):
     """Preview what the export will look like"""
     template = TemplateManager.get_template(template_id)
     if not template:
@@ -1220,33 +1251,30 @@ async def preview_export(campaign_id: int, template_id: int, valid_only: bool = 
 
     with get_db() as conn:
         cursor = conn.cursor()
+        conditions = [
+            "campaign_id = %s",
+            "email IS NOT NULL",
+            "email != ''"
+        ]
+        params = [campaign_id]
+
         if valid_only:
             if include_catch_all:
-                cursor.execute("""
-                    SELECT * FROM contacts 
-                    WHERE campaign_id = %s 
-                    AND email IS NOT NULL 
-                    AND email != ''
-                    AND email_status IN ('Valid', 'Catch-all')
-                    LIMIT 5
-                """, (campaign_id,))
+                conditions.append("email_status IN ('Valid', 'Catch-all')")
             else:
-                cursor.execute("""
-                    SELECT * FROM contacts 
-                    WHERE campaign_id = %s 
-                    AND email IS NOT NULL 
-                    AND email != ''
-                    AND email_status = 'Valid'
-                    LIMIT 5
-                """, (campaign_id,))
-        else:
-            cursor.execute("""
-                SELECT * FROM contacts 
-                WHERE campaign_id = %s 
-                AND email IS NOT NULL 
-                AND email != ''
-                LIMIT 5
-            """, (campaign_id,))
+                conditions.append("email_status = 'Valid'")
+
+        if exclude_public_emails:
+            placeholders = ','.join(['%s' for _ in PUBLIC_EMAIL_DOMAINS])
+            conditions.append(f"lower(split_part(email, '@', 2)) NOT IN ({placeholders})")
+            params.extend(PUBLIC_EMAIL_DOMAINS)
+
+        query = f"""
+            SELECT * FROM contacts
+            WHERE {' AND '.join(conditions)}
+            LIMIT 5
+        """
+        cursor.execute(query, tuple(params))
         contacts = [dict(row) for row in cursor.fetchall()]
 
     if template['service'] == 'manyreach':
@@ -1304,42 +1332,39 @@ async def export_campaign(campaign_id: int, request: Request):
             if recent_exports >= integration.rate_limit:
                 raise HTTPException(status_code=429, detail=f"Rate limit exceeded. Max {integration.rate_limit} exports per minute.")
 
-        # Get batch offset and valid emails only filter from request data
+        # Get batch offset and export filters from request data
         offset = data.get('offset', 0)
         export_valid_only = data.get('export_valid_only', False)
         export_catch_all = data.get('export_catch_all', False)
+        exclude_public_emails = data.get('exclude_public_emails', False)
 
-        # Get contacts to export with offset for batch processing
+        conditions = [
+            "campaign_id = %s",
+            "email IS NOT NULL",
+            "email != ''"
+        ]
+        params = [campaign_id]
+
         if export_valid_only:
             if export_catch_all:
-                cursor.execute("""
-                    SELECT * FROM contacts 
-                    WHERE campaign_id = %s 
-                    AND email IS NOT NULL 
-                    AND email != ''
-                    AND email_status IN ('Valid', 'Catch-all')
-                    ORDER BY id
-                    LIMIT %s OFFSET %s
-                """, (campaign_id, batch_size, offset))
+                conditions.append("email_status IN ('Valid', 'Catch-all')")
             else:
-                cursor.execute("""
-                    SELECT * FROM contacts 
-                    WHERE campaign_id = %s 
-                    AND email IS NOT NULL 
-                    AND email != ''
-                    AND email_status = 'Valid'
-                    ORDER BY id
-                    LIMIT %s OFFSET %s
-                """, (campaign_id, batch_size, offset))
-        else:
-            cursor.execute("""
-                SELECT * FROM contacts 
-                WHERE campaign_id = %s 
-                AND email IS NOT NULL 
-                AND email != ''
-                ORDER BY id
-                LIMIT %s OFFSET %s
-            """, (campaign_id, batch_size, offset))
+                conditions.append("email_status = 'Valid'")
+
+        if exclude_public_emails:
+            placeholders = ','.join(['%s' for _ in PUBLIC_EMAIL_DOMAINS])
+            conditions.append(f"lower(split_part(email, '@', 2)) NOT IN ({placeholders})")
+            params.extend(PUBLIC_EMAIL_DOMAINS)
+
+        query = f"""
+            SELECT * FROM contacts
+            WHERE {' AND '.join(conditions)}
+            ORDER BY id
+            LIMIT %s OFFSET %s
+        """
+        params.extend([batch_size, offset])
+
+        cursor.execute(query, tuple(params))
         contacts = [dict(row) for row in cursor.fetchall()]
 
         if not contacts:

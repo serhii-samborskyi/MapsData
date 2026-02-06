@@ -117,6 +117,14 @@
                     </label>
                     <div class="text-xs text-gray-500 mt-1">Include email_status = 'Catch-all' when valid-only is enabled</div>
                 </div>
+                <div class="mb-4">
+                    <label class="flex items-center">
+                        <input type="checkbox" id="excludePublicEmails" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm font-medium">Don't export public emails</span>
+                        <span id="publicEmailCount" class="ml-2 text-xs text-slate-500">(0)</span>
+                    </label>
+                    <div class="text-xs text-gray-500 mt-1">Excludes gmail, yahoo, outlook, and other public providers</div>
+                </div>
                 <div class="flex flex-col sm:flex-row gap-3">
                     <button id="previewExportBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
                         Preview Export
@@ -268,6 +276,32 @@
         let selectedCampaign = null;
         let selectedTemplate = null;
         let currentFieldMappings = {};
+        let publicEmailCountCache = {};
+
+        const PUBLIC_EMAIL_DOMAINS = [
+            'gmail.com',
+            'yahoo.com',
+            'outlook.com',
+            'hotmail.com',
+            'icloud.com',
+            'aol.com',
+            'mail.com',
+            'proton.me',
+            'protonmail.com',
+            'live.com',
+            'msn.com',
+            'gmx.com',
+            'zoho.com',
+            'yandex.com',
+            'yandex.ru',
+            'mail.ru',
+            'fastmail.com',
+            'tutanota.com',
+            'hushmail.com',
+            'qq.com',
+            '126.com',
+            '163.com'
+        ];
 
         // Load campaigns and templates on page load
         document.addEventListener('DOMContentLoaded', async () => {
@@ -296,6 +330,7 @@
                     if (selectedCampaign && selectedTemplate) {
                         showFieldMapping();
                     }
+                    updatePublicEmailCount();
                 });
             } catch (error) {
                 console.error('Error loading campaigns:', error);
@@ -440,7 +475,47 @@
         function getExportFilters() {
             const exportValidOnly = document.getElementById('exportValidEmailsOnly').checked;
             const exportCatchAll = exportValidOnly && document.getElementById('exportCatchAllEmails').checked;
-            return { exportValidOnly, exportCatchAll };
+            const excludePublicEmails = document.getElementById('excludePublicEmails').checked;
+            return { exportValidOnly, exportCatchAll, excludePublicEmails };
+        }
+
+        function getEmailDomain(email) {
+            if (!email || typeof email !== 'string' || !email.includes('@')) {
+                return '';
+            }
+            return email.split('@').pop().trim().toLowerCase();
+        }
+
+        function isPublicEmail(email) {
+            const domain = getEmailDomain(email);
+            return PUBLIC_EMAIL_DOMAINS.includes(domain);
+        }
+
+        async function updatePublicEmailCount() {
+            const countEl = document.getElementById('publicEmailCount');
+            if (!countEl) return;
+
+            if (!selectedCampaign) {
+                countEl.textContent = '(0)';
+                return;
+            }
+
+            if (publicEmailCountCache[selectedCampaign] !== undefined) {
+                countEl.textContent = `(${publicEmailCountCache[selectedCampaign]})`;
+                return;
+            }
+
+            countEl.textContent = '(...)';
+            try {
+                const response = await fetch(`/api/campaign/${selectedCampaign}`);
+                const data = await response.json();
+                const count = data.contacts.filter(c => c.email && c.email.trim() !== '' && isPublicEmail(c.email)).length;
+                publicEmailCountCache[selectedCampaign] = count;
+                countEl.textContent = `(${count})`;
+            } catch (error) {
+                console.error('Error loading public email count:', error);
+                countEl.textContent = '(0)';
+            }
         }
 
         async function previewExport() {
@@ -450,8 +525,8 @@
             }
 
             try {
-                const { exportValidOnly, exportCatchAll } = getExportFilters();
-                const response = await fetch(`/api/campaign/${selectedCampaign}/export/preview?template_id=${selectedTemplate.id}&valid_only=${exportValidOnly}&include_catch_all=${exportCatchAll}`);
+                const { exportValidOnly, exportCatchAll, excludePublicEmails } = getExportFilters();
+                const response = await fetch(`/api/campaign/${selectedCampaign}/export/preview?template_id=${selectedTemplate.id}&valid_only=${exportValidOnly}&include_catch_all=${exportCatchAll}&exclude_public_emails=${excludePublicEmails}`);
                 const data = await response.json();
 
                 const previewSection = document.getElementById('exportPreview');
@@ -488,7 +563,7 @@
             }
 
             const newListName = document.getElementById('newListName').value.trim();
-            const { exportValidOnly, exportCatchAll } = getExportFilters();
+            const { exportValidOnly, exportCatchAll, excludePublicEmails } = getExportFilters();
 
             try {
                 const response = await fetch(`/api/campaign/${selectedCampaign}/export`, {
@@ -502,7 +577,8 @@
                         field_mappings: currentFieldMappings,
                         newListName: newListName,
                         export_valid_only: exportValidOnly,
-                        export_catch_all: exportCatchAll
+                        export_catch_all: exportCatchAll,
+                        exclude_public_emails: excludePublicEmails
                     })
                 });
 
@@ -628,18 +704,18 @@
             try {
                 const campaignResponse = await fetch(`/api/campaign/${selectedCampaign}`);
                 const campaignData = await campaignResponse.json();
-                const { exportValidOnly, exportCatchAll } = getExportFilters();
+                const { exportValidOnly, exportCatchAll, excludePublicEmails } = getExportFilters();
                 
                 let contactsWithEmail;
                 if (exportValidOnly) {
                     contactsWithEmail = campaignData.contacts.filter(c => 
                         c.email && c.email.trim() !== '' && (
                             c.email_status === 'Valid' || (exportCatchAll && c.email_status === 'Catch-all')
-                        )
+                        ) && (!excludePublicEmails || !isPublicEmail(c.email))
                     );
                 } else {
                     contactsWithEmail = campaignData.contacts.filter(c => 
-                        c.email && c.email.trim() !== ''
+                        c.email && c.email.trim() !== '' && (!excludePublicEmails || !isPublicEmail(c.email))
                     );
                 }
 
@@ -714,7 +790,7 @@
 
                 try {
                     const newListName = document.getElementById('newListName').value.trim();
-                    const { exportValidOnly, exportCatchAll } = getExportFilters();
+                    const { exportValidOnly, exportCatchAll, excludePublicEmails } = getExportFilters();
                     
                     const response = await fetch(`/api/campaign/${selectedCampaign}/export`, {
                         method: 'POST',
@@ -728,7 +804,8 @@
                             field_mappings: currentFieldMappings,
                             newListName: newListName,
                             export_valid_only: exportValidOnly,
-                            export_catch_all: exportCatchAll
+                            export_catch_all: exportCatchAll,
+                            exclude_public_emails: excludePublicEmails
                         })
                     });
 
@@ -783,7 +860,11 @@
         document.getElementById('exportAllBtn').addEventListener('click', exportAll);
         document.getElementById('cancelBatchExport').addEventListener('click', closeBatchExportModal);
         document.getElementById('exportValidEmailsOnly').addEventListener('change', syncExportFilterControls);
+        document.getElementById('excludePublicEmails').addEventListener('change', () => {
+            updatePublicEmailCount();
+        });
         syncExportFilterControls();
+        updatePublicEmailCount();
 
         document.getElementById('createTemplateForm').addEventListener('submit', async (e) => {
             e.preventDefault();
