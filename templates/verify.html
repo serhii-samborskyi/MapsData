@@ -83,10 +83,15 @@
 
             <div class="mt-6">
                 <div class="flex flex-col sm:flex-row gap-3">
+                    <label class="flex items-center text-sm text-gray-700">
+                        <input type="checkbox" id="skipPublicProviders" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2">Skip public providers</span>
+                    </label>
                     <button id="verifyAllBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
                         Verify Unverified Emails
                     </button>
                 </div>
+                <div class="text-xs text-gray-500 mt-2">Skips gmail, yahoo, outlook, hotmail, icloud, and other public providers.</div>
             </div>
         </div>
 
@@ -494,6 +499,7 @@
             showVerificationModal();
 
             try {
+                const skipPublicProviders = document.getElementById('skipPublicProviders').checked;
                 const response = await fetch(`/api/campaign/${selectedCampaign}/verify-emails/start`, {
                     method: 'POST',
                     headers: {
@@ -501,7 +507,8 @@
                     },
                     body: JSON.stringify({
                         template_id: selectedTemplate.id,
-                        delay: delay
+                        delay: delay,
+                        skip_public_providers: skipPublicProviders
                     })
                 });
 

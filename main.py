@@ -71,6 +71,7 @@ def _serialize_verification_job(job: dict):
         "current_email": job["current_email"],
         "message": job["message"],
         "cancel_requested": job.get("cancel_requested", False),
+        "skip_public_providers": job.get("skip_public_providers", False),
         "started_at": job["started_at"],
         "completed_at": job["completed_at"],
         "logs": list(job["logs"]),
@@ -99,6 +100,8 @@ def _run_verification_job(job_id: str):
         job["message"] = "Verification in progress"
         job["started_at"] = datetime.now().isoformat()
         _append_verification_log(job, "Verification started")
+        if job.get("skip_public_providers"):
+            _append_verification_log(job, "Skipping public email providers")
 
     try:
         template = EmailVerificationManager.get_template(job["template_id"])
@@ -109,15 +112,26 @@ def _run_verification_job(job_id: str):
 
         with get_db() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
+            conditions = [
+                "campaign_id = %s",
+                "email IS NOT NULL",
+                "email != ''",
+                "(email_status IS NULL OR email_status = 'unverified')"
+            ]
+            params = [job["campaign_id"]]
+
+            if job.get("skip_public_providers"):
+                placeholders = ','.join(['%s' for _ in PUBLIC_EMAIL_DOMAINS])
+                conditions.append(f"lower(split_part(email, '@', 2)) NOT IN ({placeholders})")
+                params.extend(PUBLIC_EMAIL_DOMAINS)
+
+            query = f"""
                 SELECT id, email
                 FROM contacts
-                WHERE campaign_id = %s
-                AND email IS NOT NULL
-                AND email != ''
-                AND (email_status IS NULL OR email_status = 'unverified')
+                WHERE {' AND '.join(conditions)}
                 ORDER BY id
-            """, (job["campaign_id"],))
+            """
+            cursor.execute(query, tuple(params))
             contacts = cursor.fetchall()
 
         with verification_jobs_lock:
@@ -1482,6 +1496,7 @@ async def start_verification_job(campaign_id: int, request: Request):
     data = await request.json()
     template_id = data.get('template_id')
     delay = float(data.get('delay', 2))
+    skip_public_providers = bool(data.get('skip_public_providers', False))
 
     if not template_id:
         raise HTTPException(status_code=400, detail="Template ID required")
@@ -1506,6 +1521,7 @@ async def start_verification_job(campaign_id: int, request: Request):
             "campaign_id": campaign_id,
             "template_id": template_id,
             "delay": delay,
+            "skip_public_providers": skip_public_providers,
             "cancel_requested": False,
             "status": "queued",
             "total_emails": 0,
