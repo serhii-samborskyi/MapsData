@@ -27,6 +27,9 @@
                 <a href="/docs/api" class="app-chip hover:text-slate-900">API Docs</a>
                 <a href="/export" class="app-chip hover:text-slate-900">Export Manager</a>
                 <a href="/verify" class="app-chip hover:text-slate-900">Email Verification</a>
+                <button onclick="openDeleteAllCampaignsModal()" class="w-full sm:w-auto rounded-full border border-red-200 bg-red-50 px-5 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100">
+                    Remove All Campaigns
+                </button>
                 <button onclick="toggleCampaignForm()" class="w-full sm:w-auto rounded-full bg-sky-600 px-5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-sky-700">
                     Create Campaign
                 </button>
@@ -561,6 +564,37 @@
         </div>
     </div>
 
+    <!-- Modal for removing all campaigns -->
+    <div id="deleteAllCampaignsModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+        <div class="flex items-center justify-center min-h-screen p-4">
+            <div class="app-card p-6 w-full max-w-lg">
+                <h3 class="text-lg font-semibold text-red-700 mb-3">Remove All Campaigns</h3>
+                <p class="text-sm text-gray-700 mb-4">
+                    This will permanently delete all campaigns, requests, contacts, logs, and templates from the database.
+                </p>
+                <div class="space-y-3">
+                    <label for="deleteAllCampaignsConfirmInput" class="block text-sm font-medium text-gray-700">
+                        Type <span class="font-semibold">DELETE ALL</span> to confirm:
+                    </label>
+                    <input
+                        id="deleteAllCampaignsConfirmInput"
+                        type="text"
+                        autocomplete="off"
+                        class="w-full px-4 py-2 border border-red-200 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 outline-none transition-all"
+                    >
+                </div>
+                <div class="flex gap-3 justify-end mt-6">
+                    <button onclick="closeDeleteAllCampaignsModal()" class="px-4 py-2 text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-all">
+                        Cancel
+                    </button>
+                    <button onclick="confirmDeleteAllCampaigns()" class="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-all">
+                        Delete Everything
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         let pendingDuplicateCampaignId = null;
         let pendingRemoveDuplicatesCampaignId = null;
@@ -655,6 +689,46 @@
                 });
             } catch (error) {
                 console.error('Error refreshing campaigns:', error);
+            }
+        }
+
+        function openDeleteAllCampaignsModal() {
+            document.getElementById('deleteAllCampaignsModal').classList.remove('hidden');
+            document.getElementById('deleteAllCampaignsConfirmInput').focus();
+        }
+
+        function closeDeleteAllCampaignsModal() {
+            document.getElementById('deleteAllCampaignsModal').classList.add('hidden');
+            document.getElementById('deleteAllCampaignsConfirmInput').value = '';
+        }
+
+        async function confirmDeleteAllCampaigns() {
+            const confirmationText = document.getElementById('deleteAllCampaignsConfirmInput').value.trim();
+            if (confirmationText !== 'DELETE ALL') {
+                alert('Please type DELETE ALL to confirm.');
+                return;
+            }
+
+            if (!confirm('Final confirmation: delete ALL campaigns and related data? This cannot be undone.')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/campaigns', {
+                    method: 'DELETE'
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const data = await response.json();
+                alert(`Deleted ${data.deleted.campaigns} campaigns, ${data.deleted.requests} requests, ${data.deleted.contacts} contacts, ${data.deleted.export_templates} export templates, and ${data.deleted.verification_templates} verification templates.`);
+                closeDeleteAllCampaignsModal();
+                await refreshCampaigns();
+            } catch (error) {
+                console.error('Error deleting all campaigns:', error);
+                alert('Error deleting all campaigns');
             }
         }
 
@@ -1006,6 +1080,10 @@
                 confirmCsvDownload();
             } else if (event.key === 'Escape' && !document.getElementById('csvFieldModal').classList.contains('hidden')) {
                 closeCsvFieldModal();
+            } else if (event.key === 'Enter' && !document.getElementById('deleteAllCampaignsModal').classList.contains('hidden')) {
+                confirmDeleteAllCampaigns();
+            } else if (event.key === 'Escape' && !document.getElementById('deleteAllCampaignsModal').classList.contains('hidden')) {
+                closeDeleteAllCampaignsModal();
             }
         });
 

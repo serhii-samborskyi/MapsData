@@ -379,6 +379,45 @@ async def delete_campaign(campaign_id: int):
         conn.commit()
     return {"status": "Campaign deleted successfully"}
 
+@app.delete("/api/campaigns")
+async def delete_all_campaigns():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) AS count FROM search_campaigns")
+        campaigns_count = cursor.fetchone()["count"]
+        cursor.execute("SELECT COUNT(*) AS count FROM requests")
+        requests_count = cursor.fetchone()["count"]
+        cursor.execute("SELECT COUNT(*) AS count FROM contacts")
+        contacts_count = cursor.fetchone()["count"]
+        cursor.execute("SELECT COUNT(*) AS count FROM export_templates")
+        export_templates_count = cursor.fetchone()["count"]
+        cursor.execute("SELECT COUNT(*) AS count FROM email_verification_templates")
+        verification_templates_count = cursor.fetchone()["count"]
+
+        # Delete campaign-related records in FK-safe order.
+        cursor.execute("DELETE FROM contacts")
+        cursor.execute("DELETE FROM requests")
+        cursor.execute("DELETE FROM export_logs")
+        cursor.execute("DELETE FROM email_verification_logs")
+        cursor.execute("DELETE FROM search_campaigns")
+        cursor.execute("DELETE FROM export_templates")
+        cursor.execute("DELETE FROM email_verification_templates")
+        conn.commit()
+
+    with verification_jobs_lock:
+        verification_jobs.clear()
+
+    return {
+        "status": "All campaigns and related data deleted successfully",
+        "deleted": {
+            "campaigns": campaigns_count,
+            "requests": requests_count,
+            "contacts": contacts_count,
+            "export_templates": export_templates_count,
+            "verification_templates": verification_templates_count
+        }
+    }
+
 @app.get("/update_campaign_status/{campaign_id}/{status}")
 async def update_campaign_status(campaign_id: int, status: str):
     if status not in ['active', 'inactive', 'completed']:
