@@ -219,6 +219,72 @@ class ManyReachIntegration:
         except requests.exceptions.RequestException as e:
             raise Exception(f"Network error: {str(e)}")
 
+    def get_campaigns(self) -> List[Dict]:
+        """Fetch campaigns available to the API key for template campaign selection."""
+        import requests
+
+        endpoints = [
+            "/api/campaigns",
+            "/api/campaigns/list"
+        ]
+        errors = []
+
+        for endpoint in endpoints:
+            url = f"{self.base_url}{endpoint}"
+            try:
+                response = requests.get(
+                    url,
+                    params={"apikey": self.api_key},
+                    headers={"Accept": "application/json"},
+                    timeout=30
+                )
+            except requests.exceptions.RequestException as e:
+                errors.append(f"{endpoint}: network error {str(e)}")
+                continue
+
+            if response.status_code != 200:
+                errors.append(f"{endpoint}: status {response.status_code}")
+                continue
+
+            try:
+                payload = response.json()
+            except ValueError:
+                errors.append(f"{endpoint}: non-JSON response")
+                continue
+
+            raw_campaigns = self._extract_campaign_list(payload)
+            if raw_campaigns is None:
+                errors.append(f"{endpoint}: unknown response format")
+                continue
+
+            campaigns = []
+            for item in raw_campaigns:
+                if not isinstance(item, dict):
+                    continue
+                campaign_id = item.get("id") or item.get("campaignid") or item.get("campaign_id")
+                if campaign_id is None:
+                    continue
+                name = item.get("name") or item.get("campaign_name") or f"Campaign {campaign_id}"
+                status = item.get("status") or item.get("state") or ""
+                campaigns.append({
+                    "id": str(campaign_id),
+                    "name": str(name),
+                    "status": str(status)
+                })
+
+            return campaigns
+
+        raise Exception("Unable to fetch ManyReach campaigns. " + "; ".join(errors))
+
+    def _extract_campaign_list(self, payload) -> Optional[List]:
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            for key in ["campaigns", "data", "items", "results"]:
+                if isinstance(payload.get(key), list):
+                    return payload.get(key)
+        return None
+
 
 class SmartLeadIntegration:
     def __init__(self, api_key: str):
@@ -306,6 +372,51 @@ class SmartLeadIntegration:
             return response.json()
         except requests.exceptions.RequestException as e:
             raise Exception(f"Smartlead campaign lookup network error: {str(e)}")
+
+    def get_campaigns(self, active_only: bool = False) -> List[Dict]:
+        """Fetch campaigns available to the Smartlead API key."""
+        import requests
+
+        url = f"{self.base_url}/campaigns"
+        try:
+            response = requests.get(url, params={"api_key": self.api_key}, timeout=30)
+            if response.status_code != 200:
+                raise Exception(f"Smartlead campaign list failed with status {response.status_code}: {response.text}")
+            payload = response.json()
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Smartlead campaign list network error: {str(e)}")
+
+        raw_campaigns = self._extract_campaign_list(payload)
+        if raw_campaigns is None:
+            raise Exception("Smartlead campaign list returned unknown response format")
+
+        campaigns = []
+        for item in raw_campaigns:
+            if not isinstance(item, dict):
+                continue
+            campaign_id = item.get("id") or item.get("campaign_id")
+            if campaign_id is None:
+                continue
+            status = str(item.get("status", ""))
+            if active_only and status.upper() not in ["ACTIVE", "RUNNING"]:
+                continue
+            name = item.get("name") or item.get("campaign_name") or f"Campaign {campaign_id}"
+            campaigns.append({
+                "id": str(campaign_id),
+                "name": str(name),
+                "status": status
+            })
+
+        return campaigns
+
+    def _extract_campaign_list(self, payload) -> Optional[List]:
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            for key in ["data", "campaigns", "items", "results"]:
+                if isinstance(payload.get(key), list):
+                    return payload.get(key)
+        return None
 
     def ensure_active_campaign(self, campaign_id: str):
         campaign = self.get_campaign(campaign_id)

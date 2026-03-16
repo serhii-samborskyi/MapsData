@@ -129,6 +129,9 @@
                     <button id="previewExportBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
                         Preview Export
                     </button>
+                    <button id="testLeadExportBtn" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">
+                        Test Lead Export
+                    </button>
                     <button id="executeExportBtn" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">
                         Execute Export
                     </button>
@@ -186,6 +189,15 @@
                     </div>
                     <div class="mb-4">
                         <label id="editTemplateCampaignIdLabel" class="block text-sm font-medium mb-2">Campaign ID</label>
+                        <div class="flex flex-col sm:flex-row gap-2 mb-2">
+                            <button type="button" id="loadEditTemplateCampaignsBtn" class="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
+                                Load Campaigns
+                            </button>
+                            <select id="editTemplateCampaignSelect" class="flex-1 p-2 border border-gray-300 rounded-lg">
+                                <option value="">Select a campaign from provider...</option>
+                            </select>
+                        </div>
+                        <div id="editTemplateCampaignLoadStatus" class="text-xs text-gray-500 mb-2">Load campaigns to pick campaign ID automatically.</div>
                         <input type="text" id="editTemplateCampaignId" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="Enter campaign ID" required>
                         <div id="editTemplateCampaignIdHelp" class="text-xs text-gray-500 mt-1">Campaign ID where leads will be added.</div>
                     </div>
@@ -258,6 +270,15 @@
                     </div>
                     <div class="mb-4">
                         <label id="templateCampaignIdLabel" class="block text-sm font-medium mb-2">Campaign ID</label>
+                        <div class="flex flex-col sm:flex-row gap-2 mb-2">
+                            <button type="button" id="loadTemplateCampaignsBtn" class="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
+                                Load Campaigns
+                            </button>
+                            <select id="templateCampaignSelect" class="flex-1 p-2 border border-gray-300 rounded-lg">
+                                <option value="">Select a campaign from provider...</option>
+                            </select>
+                        </div>
+                        <div id="templateCampaignLoadStatus" class="text-xs text-gray-500 mb-2">Load campaigns to pick campaign ID automatically.</div>
                         <input type="text" id="templateCampaignId" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="Enter campaign ID" required>
                         <div id="templateCampaignIdHelp" class="text-xs text-gray-500 mt-1">Campaign ID where leads will be added.</div>
                     </div>
@@ -274,11 +295,43 @@
         </div>
     </div>
 
+    <!-- Test Lead Export Modal -->
+    <div id="testLeadExportModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+        <div class="flex items-center justify-center min-h-screen p-4">
+            <div class="app-card p-6 w-full max-w-2xl">
+                <h3 class="text-lg font-semibold mb-4">Test Lead Export</h3>
+                <p class="text-sm text-gray-600 mb-3">Pick one lead from the selected campaign and send a test request with current field mapping.</p>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                    <input type="text" id="testLeadSearchInput" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="Search by business/email/domain/phone">
+                    <button id="testLeadSearchBtn" class="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">Search</button>
+                </div>
+                <div class="mb-4">
+                    <select id="testLeadSelect" class="w-full p-2 border border-gray-300 rounded-lg">
+                        <option value="">Select a lead...</option>
+                    </select>
+                </div>
+                <div class="mb-4">
+                    <div class="text-sm font-medium mb-2">Test Result</div>
+                    <pre id="testLeadResult" class="text-xs bg-gray-50 border border-gray-200 rounded-lg p-3 max-h-64 overflow-auto">No test executed yet.</pre>
+                </div>
+                <div class="flex flex-col sm:flex-row gap-3 justify-end">
+                    <button type="button" id="closeTestLeadExportModalBtn" class="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
+                        Close
+                    </button>
+                    <button type="button" id="runTestLeadExportBtn" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
+                        Run Test
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         let selectedCampaign = null;
         let selectedTemplate = null;
         let currentFieldMappings = {};
         let publicEmailCountCache = {};
+        let testLeadOptions = [];
         const SERVICE_LABELS = {
             manyreach: 'ManyReach',
             smartlead: 'Smartlead.ai'
@@ -465,6 +518,76 @@
             };
         }
 
+        function resetProviderCampaignSelector(selectId, statusId) {
+            const select = document.getElementById(selectId);
+            const status = document.getElementById(statusId);
+            if (select) {
+                select.innerHTML = '<option value="">Select a campaign from provider...</option>';
+            }
+            if (status) {
+                status.textContent = 'Load campaigns to pick campaign ID automatically.';
+            }
+        }
+
+        function renderProviderCampaignSelector(selectId, campaigns, selectedCampaignId = '') {
+            const select = document.getElementById(selectId);
+            if (!select) {
+                return;
+            }
+
+            select.innerHTML = '<option value="">Select a campaign from provider...</option>';
+            campaigns.forEach((campaign) => {
+                const option = document.createElement('option');
+                option.value = campaign.id;
+                const statusPart = campaign.status ? ` | ${campaign.status}` : '';
+                option.textContent = `${campaign.name} (#${campaign.id})${statusPart}`;
+                if (selectedCampaignId && String(selectedCampaignId) === String(campaign.id)) {
+                    option.selected = true;
+                }
+                select.appendChild(option);
+            });
+        }
+
+        async function loadProviderCampaigns(service, apiKey, selectId, statusId, selectedCampaignId = '') {
+            const status = document.getElementById(statusId);
+            if (!apiKey || !apiKey.trim()) {
+                if (status) {
+                    status.textContent = 'Enter API key first.';
+                }
+                return;
+            }
+
+            if (status) {
+                status.textContent = 'Loading campaigns...';
+            }
+
+            try {
+                const response = await fetch('/api/export/provider-campaigns', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        service: service,
+                        api_key: apiKey.trim(),
+                        active_only: service === 'smartlead'
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || `HTTP ${response.status}`);
+                }
+
+                const campaigns = Array.isArray(data.campaigns) ? data.campaigns : [];
+                renderProviderCampaignSelector(selectId, campaigns, selectedCampaignId);
+                if (status) {
+                    status.textContent = `Loaded ${campaigns.length} campaign(s).`;
+                }
+            } catch (error) {
+                if (status) {
+                    status.textContent = `Failed to load campaigns: ${error.message}`;
+                }
+            }
+        }
+
         function updateRateLimitStatus() {
             const rateLimitStatus = document.getElementById('rateLimitStatus');
             if (!selectedTemplate) {
@@ -489,6 +612,8 @@
                 input.placeholder = 'Enter your ManyReach campaign ID';
                 help.textContent = 'Campaign ID in ManyReach where prospects will be added.';
             }
+
+            resetProviderCampaignSelector('templateCampaignSelect', 'templateCampaignLoadStatus');
         }
 
         function updateEditServiceUi(service) {
@@ -505,6 +630,8 @@
                 input.placeholder = 'Enter your ManyReach campaign ID';
                 help.textContent = 'Campaign ID in ManyReach where prospects will be added.';
             }
+
+            resetProviderCampaignSelector('editTemplateCampaignSelect', 'editTemplateCampaignLoadStatus');
         }
 
         function escapeHtml(value) {
@@ -854,12 +981,15 @@
         }
 
         function openCreateTemplateModal() {
+            resetProviderCampaignSelector('templateCampaignSelect', 'templateCampaignLoadStatus');
+            updateCreateServiceUi();
             document.getElementById('createTemplateModal').classList.remove('hidden');
         }
 
         function closeCreateTemplateModal() {
             document.getElementById('createTemplateModal').classList.add('hidden');
             document.getElementById('createTemplateForm').reset();
+            resetProviderCampaignSelector('templateCampaignSelect', 'templateCampaignLoadStatus');
             updateCreateServiceUi();
         }
 
@@ -883,6 +1013,15 @@
                 updateEditServiceUi(template.service);
 
                 document.getElementById('editTemplateModal').classList.remove('hidden');
+                if ((template.api_config.api_key || '').trim()) {
+                    loadProviderCampaigns(
+                        template.service,
+                        template.api_config.api_key || '',
+                        'editTemplateCampaignSelect',
+                        'editTemplateCampaignLoadStatus',
+                        campaignId
+                    );
+                }
             } catch (error) {
                 alert('Error loading template: ' + error.message);
             }
@@ -891,8 +1030,112 @@
         function closeEditTemplateModal() {
             document.getElementById('editTemplateModal').classList.add('hidden');
             document.getElementById('editTemplateForm').reset();
+            resetProviderCampaignSelector('editTemplateCampaignSelect', 'editTemplateCampaignLoadStatus');
             editingTemplateId = null;
             editingTemplateFieldMappings = null;
+        }
+
+        function openTestLeadExportModal() {
+            if (!selectedCampaign || !selectedTemplate) {
+                alert('Please select both a campaign and template');
+                return;
+            }
+
+            document.getElementById('testLeadExportModal').classList.remove('hidden');
+            document.getElementById('testLeadResult').textContent = 'Loading leads...';
+            document.getElementById('testLeadSearchInput').value = '';
+            loadTestLeadOptions('');
+        }
+
+        function closeTestLeadExportModal() {
+            document.getElementById('testLeadExportModal').classList.add('hidden');
+            document.getElementById('testLeadSelect').innerHTML = '<option value="">Select a lead...</option>';
+            document.getElementById('testLeadResult').textContent = 'No test executed yet.';
+        }
+
+        function renderTestLeadOptions() {
+            const select = document.getElementById('testLeadSelect');
+            select.innerHTML = '<option value="">Select a lead...</option>';
+
+            testLeadOptions.forEach((lead) => {
+                const option = document.createElement('option');
+                option.value = lead.id;
+                const email = lead.email && lead.email.trim() ? lead.email.trim() : 'no-email';
+                const domain = lead.domain && lead.domain.trim() ? lead.domain.trim() : '-';
+                option.textContent = `#${lead.id} | ${lead.business_name || 'Unnamed'} | ${email} | ${domain}`;
+                select.appendChild(option);
+            });
+        }
+
+        async function loadTestLeadOptions(query) {
+            try {
+                const params = new URLSearchParams();
+                params.set('limit', '120');
+                if (query && query.trim()) {
+                    params.set('q', query.trim());
+                }
+
+                const response = await fetch(`/api/campaign/${selectedCampaign}/export/test-leads?${params.toString()}`);
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || `HTTP ${response.status}`);
+                }
+
+                testLeadOptions = data.leads || [];
+                renderTestLeadOptions();
+                document.getElementById('testLeadResult').textContent = `Loaded ${testLeadOptions.length} lead(s). Select one and run test.`;
+            } catch (error) {
+                document.getElementById('testLeadResult').textContent = `Failed to load leads: ${error.message}`;
+            }
+        }
+
+        async function runTestLeadExport() {
+            if (!selectedCampaign || !selectedTemplate) {
+                alert('Please select both a campaign and template');
+                return;
+            }
+
+            const selectedLeadId = document.getElementById('testLeadSelect').value;
+            if (!selectedLeadId) {
+                alert('Please select a lead first');
+                return;
+            }
+
+            const runButton = document.getElementById('runTestLeadExportBtn');
+            const resultBox = document.getElementById('testLeadResult');
+            runButton.disabled = true;
+            runButton.textContent = 'Running...';
+            resultBox.textContent = 'Sending test request...';
+
+            try {
+                const newListInput = document.getElementById('newListName');
+                const newListName = newListInput ? newListInput.value.trim() : '';
+
+                const response = await fetch(`/api/campaign/${selectedCampaign}/export/test`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        template_id: selectedTemplate.id,
+                        contact_id: parseInt(selectedLeadId, 10),
+                        field_mappings: currentFieldMappings,
+                        newListName: newListName
+                    })
+                });
+
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || `HTTP ${response.status}`);
+                }
+
+                resultBox.textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                resultBox.textContent = `Test export failed: ${error.message}`;
+            } finally {
+                runButton.disabled = false;
+                runButton.textContent = 'Run Test';
+            }
         }
 
         async function deleteTemplate(templateId) {
@@ -1081,9 +1324,56 @@
         // Event listeners
         document.getElementById('createTemplateBtn').addEventListener('click', openCreateTemplateModal);
         document.getElementById('previewExportBtn').addEventListener('click', previewExport);
+        document.getElementById('testLeadExportBtn').addEventListener('click', openTestLeadExportModal);
         document.getElementById('executeExportBtn').addEventListener('click', executeExport);
         document.getElementById('exportAllBtn').addEventListener('click', exportAll);
+        document.getElementById('loadTemplateCampaignsBtn').addEventListener('click', async () => {
+            await loadProviderCampaigns(
+                document.getElementById('templateService').value,
+                document.getElementById('templateApiKey').value,
+                'templateCampaignSelect',
+                'templateCampaignLoadStatus'
+            );
+        });
+        document.getElementById('templateCampaignSelect').addEventListener('change', (event) => {
+            const value = event.target.value || '';
+            if (value) {
+                document.getElementById('templateCampaignId').value = value;
+            }
+        });
+        document.getElementById('templateApiKey').addEventListener('input', () => {
+            resetProviderCampaignSelector('templateCampaignSelect', 'templateCampaignLoadStatus');
+        });
+        document.getElementById('loadEditTemplateCampaignsBtn').addEventListener('click', async () => {
+            await loadProviderCampaigns(
+                document.getElementById('editTemplateService').value,
+                document.getElementById('editTemplateApiKey').value,
+                'editTemplateCampaignSelect',
+                'editTemplateCampaignLoadStatus',
+                document.getElementById('editTemplateCampaignId').value
+            );
+        });
+        document.getElementById('editTemplateCampaignSelect').addEventListener('change', (event) => {
+            const value = event.target.value || '';
+            if (value) {
+                document.getElementById('editTemplateCampaignId').value = value;
+            }
+        });
+        document.getElementById('editTemplateApiKey').addEventListener('input', () => {
+            resetProviderCampaignSelector('editTemplateCampaignSelect', 'editTemplateCampaignLoadStatus');
+        });
         document.getElementById('cancelBatchExport').addEventListener('click', closeBatchExportModal);
+        document.getElementById('closeTestLeadExportModalBtn').addEventListener('click', closeTestLeadExportModal);
+        document.getElementById('runTestLeadExportBtn').addEventListener('click', runTestLeadExport);
+        document.getElementById('testLeadSearchBtn').addEventListener('click', () => {
+            loadTestLeadOptions(document.getElementById('testLeadSearchInput').value);
+        });
+        document.getElementById('testLeadSearchInput').addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                loadTestLeadOptions(document.getElementById('testLeadSearchInput').value);
+            }
+        });
         document.getElementById('templateService').addEventListener('change', updateCreateServiceUi);
         document.getElementById('exportValidEmailsOnly').addEventListener('change', syncExportFilterControls);
         document.getElementById('excludePublicEmails').addEventListener('change', () => {

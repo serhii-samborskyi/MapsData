@@ -1435,6 +1435,37 @@ async def delete_template(template_id: int):
     TemplateManager.delete_template(template_id)
     return {"status": "Template deleted"}
 
+@app.post("/api/export/provider-campaigns")
+async def get_provider_campaigns(request: Request):
+    data = await request.json()
+    service = str(data.get("service", "")).strip().lower()
+    api_key = str(data.get("api_key", "")).strip()
+    active_only_raw = data.get("active_only", True)
+    if isinstance(active_only_raw, bool):
+        active_only = active_only_raw
+    else:
+        active_only = str(active_only_raw).strip().lower() in ["1", "true", "yes", "y"]
+
+    if service not in ["manyreach", "smartlead"]:
+        raise HTTPException(status_code=400, detail="Unsupported service")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API key is required")
+
+    try:
+        if service == "manyreach":
+            integration = ManyReachIntegration(api_key)
+            campaigns = integration.get_campaigns()
+        else:
+            integration = SmartLeadIntegration(api_key)
+            campaigns = integration.get_campaigns(active_only=active_only)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch {service} campaigns: {str(e)}")
+
+    return {
+        "service": service,
+        "campaigns": campaigns
+    }
+
 # Export functionality
 @app.get("/api/campaign/{campaign_id}/export/preview")
 async def preview_export(
@@ -1710,6 +1741,131 @@ async def get_export_history(campaign_id: int):
             ORDER BY el.created_at DESC
         """, (campaign_id,))
         return {"history": [dict(row) for row in cursor.fetchall()]}
+
+@app.get("/api/campaign/{campaign_id}/export/test-leads")
+async def get_export_test_leads(campaign_id: int, q: str = "", limit: int = 100):
+    """Return campaign leads to pick from when testing export mapping."""
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit must be at least 1")
+    limit = min(limit, 200)
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        conditions = ["campaign_id = %s"]
+        params = [campaign_id]
+
+        if q and q.strip():
+            like_value = f"%{q.strip()}%"
+            conditions.append("(business_name ILIKE %s OR email ILIKE %s OR domain ILIKE %s OR phone ILIKE %s)")
+            params.extend([like_value, like_value, like_value, like_value])
+
+        query = f"""
+            SELECT id, business_name, email, domain, phone, email_status
+            FROM contacts
+            WHERE {' AND '.join(conditions)}
+            ORDER BY id DESC
+            LIMIT %s
+        """
+        params.append(limit)
+        cursor.execute(query, tuple(params))
+        leads = [dict(row) for row in cursor.fetchall()]
+
+    return {"leads": leads}
+
+@app.post("/api/campaign/{campaign_id}/export/test")
+async def test_export_lead(campaign_id: int, request: Request):
+    """Send one selected lead to provider API using current mapping/template."""
+    data = await request.json()
+    template_id = data.get("template_id")
+    contact_id = data.get("contact_id")
+    new_list_name = data.get("newListName", "")
+
+    if not template_id:
+        raise HTTPException(status_code=400, detail="Template ID required")
+    if not contact_id:
+        raise HTTPException(status_code=400, detail="contact_id required")
+
+    template = TemplateManager.get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    # Allow UI to test with currently edited mapping without persisting template changes.
+    field_mappings = data.get("field_mappings", template["field_mappings"])
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM contacts
+            WHERE id = %s AND campaign_id = %s
+        """, (contact_id, campaign_id))
+        contact = cursor.fetchone()
+
+        if not contact:
+            raise HTTPException(status_code=404, detail="Lead not found in selected campaign")
+
+        contact = dict(contact)
+
+    if template["service"] == "manyreach":
+        integration = ManyReachIntegration(template["api_config"].get("api_key", ""))
+        manyreach_campaign_id = str(template["api_config"].get("manyreach_campaign_id", "")).strip()
+        if not manyreach_campaign_id:
+            raise HTTPException(status_code=400, detail="ManyReach campaign ID is missing in template configuration")
+
+        if not integration.validate_contact(contact):
+            raise HTTPException(status_code=400, detail="Selected lead is missing email")
+
+        transformed = integration.transform_contact(contact, field_mappings, manyreach_campaign_id, new_list_name)
+        bulk_data = {
+            "apikey": template["api_config"].get("api_key", ""),
+            "campaignid": manyreach_campaign_id,
+            "prospects": [transformed]
+        }
+        if new_list_name:
+            bulk_data["newListName"] = new_list_name
+
+        try:
+            api_response = integration.export_to_manyreach_bulk(bulk_data)
+            return {
+                "status": "Test export completed successfully",
+                "service": "manyreach",
+                "contact_id": contact_id,
+                "transformed_contact": transformed,
+                "api_response": api_response
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Test export failed: {str(e)}")
+
+    if template["service"] == "smartlead":
+        integration = SmartLeadIntegration(template["api_config"].get("api_key", ""))
+        smartlead_campaign_id = str(template["api_config"].get("smartlead_campaign_id", "")).strip()
+
+        if not smartlead_campaign_id:
+            raise HTTPException(status_code=400, detail="Smartlead campaign ID is missing in template configuration")
+
+        transformed = integration.transform_contact(contact, field_mappings)
+        if not integration.validate_contact(transformed):
+            raise HTTPException(status_code=400, detail="Selected lead is missing email")
+
+        settings = template["api_config"].get("settings", {})
+
+        try:
+            integration.ensure_active_campaign(smartlead_campaign_id)
+            api_response = integration.export_to_smartlead_bulk(
+                smartlead_campaign_id,
+                [transformed],
+                settings=settings
+            )
+            return {
+                "status": "Test export completed successfully",
+                "service": "smartlead",
+                "contact_id": contact_id,
+                "transformed_contact": transformed,
+                "api_response": api_response
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Test export failed: {str(e)}")
+
+    raise HTTPException(status_code=400, detail=f"Unsupported service: {template['service']}")
 
 # Email Verification Template Management
 @app.get("/api/email-verification/templates")
