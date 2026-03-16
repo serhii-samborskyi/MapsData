@@ -5,7 +5,8 @@ from fastapi.templating import Jinja2Templates
 from database import init_db, get_db
 from templates import TemplateManager, ManyReachIntegration
 from email_verification import EmailVerificationManager, EmailVerificationService, MyEmailVerifierIntegration
-from typing import List, Union
+from typing import List, Union, Any, Optional
+from psycopg2 import DataError, IntegrityError
 import json
 import time
 from datetime import datetime, timedelta
@@ -540,15 +541,156 @@ async def update_request_status(request_id: int, status: str):
 @app.post("/api/contacts")
 async def save_contacts(request: Request):
     data = await request.json()
-    contacts = data if isinstance(data, list) else [data]
+    envelope_defaults = {}
+    if isinstance(data, dict) and isinstance(data.get("contacts"), list):
+        contacts = data.get("contacts", [])
+        envelope_defaults = {
+            "campaign_id": data.get("campaign_id", data.get("campaignId")),
+            "request_id": data.get("request_id", data.get("requestId"))
+        }
+    elif isinstance(data, list):
+        contacts = data
+    elif isinstance(data, dict):
+        contacts = [data]
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid payload. Expected a contact object, a list of contacts, or an object containing a contacts array."
+        )
+
+    if not contacts:
+        raise HTTPException(status_code=400, detail="No contacts provided")
+
+    def _first_present(*values: Any) -> Optional[Any]:
+        for value in values:
+            if value is None:
+                continue
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped == "":
+                    continue
+                return stripped
+            return value
+        return None
+
+    def _to_int(value: Any, field: str, contact_index: int, default: Optional[int] = None, allow_none: bool = False) -> Optional[int]:
+        candidate = _first_present(value)
+        if candidate is None:
+            if default is not None:
+                return default
+            if allow_none:
+                return None
+            raise HTTPException(status_code=400, detail=f"Contact {contact_index}: missing required field '{field}'")
+
+        if isinstance(candidate, bool):
+            raise HTTPException(status_code=400, detail=f"Contact {contact_index}: invalid '{field}' value")
+
+        if isinstance(candidate, int):
+            return candidate
+
+        if isinstance(candidate, float):
+            if candidate.is_integer():
+                return int(candidate)
+            raise HTTPException(status_code=400, detail=f"Contact {contact_index}: invalid '{field}' value")
+
+        if isinstance(candidate, str):
+            normalized = candidate.replace(",", "").strip().lower()
+            if normalized in {"none", "null", "n/a", "na"}:
+                if default is not None:
+                    return default
+                if allow_none:
+                    return None
+            try:
+                return int(normalized)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Contact {contact_index}: invalid '{field}' value")
+
+        raise HTTPException(status_code=400, detail=f"Contact {contact_index}: invalid '{field}' value")
+
+    def _to_float(value: Any, field: str, contact_index: int, allow_none: bool = True) -> Optional[float]:
+        candidate = _first_present(value)
+        if candidate is None:
+            if allow_none:
+                return None
+            raise HTTPException(status_code=400, detail=f"Contact {contact_index}: missing required field '{field}'")
+
+        if isinstance(candidate, bool):
+            raise HTTPException(status_code=400, detail=f"Contact {contact_index}: invalid '{field}' value")
+
+        if isinstance(candidate, (int, float)):
+            return float(candidate)
+
+        if isinstance(candidate, str):
+            normalized = candidate.replace(",", "").strip().lower()
+            if normalized in {"none", "null", "n/a", "na"} and allow_none:
+                return None
+            try:
+                return float(normalized)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Contact {contact_index}: invalid '{field}' value")
+
+        raise HTTPException(status_code=400, detail=f"Contact {contact_index}: invalid '{field}' value")
 
     saved_contacts = []
     with get_db() as conn:
         cursor = conn.cursor()
 
-        for contact in contacts:
-            campaign_id = contact.get('campaign_id')
-            request_id = contact.get('request_id')
+        for contact_index, contact in enumerate(contacts, start=1):
+            if not isinstance(contact, dict):
+                raise HTTPException(status_code=400, detail=f"Contact {contact_index}: each contact must be an object")
+
+            campaign_id = _to_int(
+                _first_present(contact.get("campaign_id"), contact.get("campaignId"), envelope_defaults.get("campaign_id")),
+                "campaign_id",
+                contact_index
+            )
+            request_id = _to_int(
+                _first_present(contact.get("request_id"), contact.get("requestId"), envelope_defaults.get("request_id")),
+                "request_id",
+                contact_index
+            )
+            business_name = _first_present(
+                contact.get("business_name"),
+                contact.get("businessName"),
+                contact.get("title"),
+                contact.get("name")
+            )
+            if business_name is None:
+                raise HTTPException(status_code=400, detail=f"Contact {contact_index}: missing required field 'business_name'")
+
+            review_count = _to_int(
+                _first_present(
+                    contact.get("review_count"),
+                    contact.get("reviewCount"),
+                    contact.get("reviewsCount"),
+                    contact.get("reviews")
+                ),
+                "review_count",
+                contact_index,
+                default=0
+            )
+            rating = _to_float(
+                _first_present(contact.get("rating"), contact.get("averageRating")),
+                "rating",
+                contact_index,
+                allow_none=True
+            )
+            time_zone_offset_min = _to_int(
+                _first_present(contact.get("time_zone_offset_min"), contact.get("timeZoneOffsetMin")),
+                "time_zone_offset_min",
+                contact_index,
+                allow_none=True
+            )
+            domain = _first_present(contact.get("domain"), contact.get("website"))
+            if isinstance(domain, str) and domain.lower() in {"none", "null", "n/a", "na"}:
+                domain = None
+            place_id = _first_present(contact.get("place_id"), contact.get("placeId"))
+            if place_id is None:
+                url = _first_present(contact.get("url"))
+                if url:
+                    place_id = str(url).split('/place/')[-1].split('/')[0]
+                else:
+                    place_id = ""
 
             # Verify campaign exists and is active
             cursor.execute("SELECT status FROM search_campaigns WHERE id = %s", (campaign_id,))
@@ -563,79 +705,84 @@ async def save_contacts(request: Request):
             if not cursor.fetchone():
                 raise HTTPException(status_code=400, detail=f"Invalid request ID {request_id} for campaign {campaign_id}")
 
-            cursor.execute(
-                """INSERT INTO contacts 
-                   (address, business_name, campaign_id, category, domain, email, facebook, instagram, phone, place_id, rating, request_id, review_count, twitter, yelp, status,
-                    full_name, industry, city, www, firstname, lastname, company, country, company_social, company_size, personal_job_position, personal_prospect_location,
-                    personal_user_social, screenshot, logo, state, icebreaker, time_zone_offset_min, notes, tags_import,
-                    custom_1, custom_2, custom_3, custom_4, custom_5, custom_6, custom_7, custom_8, custom_9, custom_10,
-                    custom_11, custom_12, custom_13, custom_14, custom_15, custom_16, custom_17, custom_18, custom_19, custom_20, email_status) 
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                           %s, %s, %s, %s, %s, %s, %s, %s,
-                           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-                (
-                    contact.get('address'),
-                    contact.get('business_name', contact.get('title')),
-                    campaign_id,
-                    contact.get('category'),
-                    contact.get('domain', contact.get('website')),
-                    contact.get('email'),
-                    contact.get('facebook'),
-                    contact.get('instagram'),
-                    contact.get('phone'),
-                    contact.get('place_id', contact.get('url', '').split('/place/')[-1].split('/')[0] if contact.get('url') else ''),
-                    contact.get('rating'),
-                    request_id,
-                    contact.get('review_count', contact.get('reviewsCount', 0)),
-                    contact.get('twitter'),
-                    contact.get('yelp'),
-                    "pending",
-                    # New fields
-                    contact.get('full_name'),
-                    contact.get('industry'),
-                    contact.get('city'),
-                    contact.get('www'),
-                    contact.get('firstname'),
-                    contact.get('lastname'),
-                    contact.get('company'),
-                    contact.get('country'),
-                    contact.get('company_social'),
-                    contact.get('company_size'),
-                    contact.get('personal_job_position'),
-                    contact.get('personal_prospect_location'),
-                    contact.get('personal_user_social'),
-                    contact.get('screenshot'),
-                    contact.get('logo'),
-                    contact.get('state'),
-                    contact.get('icebreaker'),
-                    contact.get('time_zone_offset_min'),
-                    contact.get('notes'),
-                    contact.get('tags_import'),
-                    contact.get('custom_1'),
-                    contact.get('custom_2'),
-                    contact.get('custom_3'),
-                    contact.get('custom_4'),
-                    contact.get('custom_5'),
-                    contact.get('custom_6'),
-                    contact.get('custom_7'),
-                    contact.get('custom_8'),
-                    contact.get('custom_9'),
-                    contact.get('custom_10'),
-                    contact.get('custom_11'),
-                    contact.get('custom_12'),
-                    contact.get('custom_13'),
-                    contact.get('custom_14'),
-                    contact.get('custom_15'),
-                    contact.get('custom_16'),
-                    contact.get('custom_17'),
-                    contact.get('custom_18'),
-                    contact.get('custom_19'),
-                    contact.get('custom_20'),
-                    contact.get('email_status', 'unverified')
+            try:
+                cursor.execute(
+                    """INSERT INTO contacts 
+                       (address, business_name, campaign_id, category, domain, email, facebook, instagram, phone, place_id, rating, request_id, review_count, twitter, yelp, status,
+                        full_name, industry, city, www, firstname, lastname, company, country, company_social, company_size, personal_job_position, personal_prospect_location,
+                        personal_user_social, screenshot, logo, state, icebreaker, time_zone_offset_min, notes, tags_import,
+                        custom_1, custom_2, custom_3, custom_4, custom_5, custom_6, custom_7, custom_8, custom_9, custom_10,
+                        custom_11, custom_12, custom_13, custom_14, custom_15, custom_16, custom_17, custom_18, custom_19, custom_20, email_status) 
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                               %s, %s, %s, %s, %s, %s, %s, %s,
+                               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                    (
+                        contact.get('address'),
+                        business_name,
+                        campaign_id,
+                        contact.get('category'),
+                        domain,
+                        contact.get('email'),
+                        contact.get('facebook'),
+                        contact.get('instagram'),
+                        contact.get('phone'),
+                        place_id,
+                        rating,
+                        request_id,
+                        review_count,
+                        contact.get('twitter'),
+                        contact.get('yelp'),
+                        "pending",
+                        # New fields
+                        contact.get('full_name', contact.get('fullName')),
+                        contact.get('industry'),
+                        contact.get('city'),
+                        contact.get('www'),
+                        contact.get('firstname', contact.get('firstName')),
+                        contact.get('lastname', contact.get('lastName')),
+                        contact.get('company'),
+                        contact.get('country'),
+                        contact.get('company_social', contact.get('companySocial')),
+                        contact.get('company_size', contact.get('companySize')),
+                        contact.get('personal_job_position', contact.get('personalJobPosition')),
+                        contact.get('personal_prospect_location', contact.get('personalProspectLocation')),
+                        contact.get('personal_user_social', contact.get('personalUserSocial')),
+                        contact.get('screenshot'),
+                        contact.get('logo'),
+                        contact.get('state'),
+                        contact.get('icebreaker'),
+                        time_zone_offset_min,
+                        contact.get('notes'),
+                        contact.get('tags_import', contact.get('tagsImport')),
+                        contact.get('custom_1'),
+                        contact.get('custom_2'),
+                        contact.get('custom_3'),
+                        contact.get('custom_4'),
+                        contact.get('custom_5'),
+                        contact.get('custom_6'),
+                        contact.get('custom_7'),
+                        contact.get('custom_8'),
+                        contact.get('custom_9'),
+                        contact.get('custom_10'),
+                        contact.get('custom_11'),
+                        contact.get('custom_12'),
+                        contact.get('custom_13'),
+                        contact.get('custom_14'),
+                        contact.get('custom_15'),
+                        contact.get('custom_16'),
+                        contact.get('custom_17'),
+                        contact.get('custom_18'),
+                        contact.get('custom_19'),
+                        contact.get('custom_20'),
+                        contact.get('email_status', contact.get('emailStatus', 'unverified'))
+                    )
                 )
-            )
+            except (DataError, IntegrityError) as e:
+                conn.rollback()
+                reason = str(e).splitlines()[0]
+                raise HTTPException(status_code=400, detail=f"Contact {contact_index}: invalid payload ({reason})")
             contact_id = cursor.fetchone()['id']
             saved_contacts.append({
                 "contact_id": contact_id,
