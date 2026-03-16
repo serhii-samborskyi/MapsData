@@ -2358,8 +2358,7 @@ async def create_default_templates():
                         "ignore_global_block_list": True,
                         "ignore_community_bounce_list": False,
                         "ignore_unsubscribe_list": True,
-                        "ignore_duplicate_leads_in_other_campaign": False,
-                        "ignore_duplicate_contacts_within_campaign": True
+                        "ignore_duplicate_leads_in_other_campaign": False
                     },
                     "endpoint": "/campaigns/{campaign_id}/leads",
                     "method": "POST"

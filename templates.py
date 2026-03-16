@@ -418,6 +418,61 @@ class SmartLeadIntegration:
                     return payload.get(key)
         return None
 
+    def _sanitize_settings(self, settings: Optional[Dict]) -> Dict:
+        """Drop legacy/unsupported settings keys before sending to Smartlead."""
+        if not isinstance(settings, dict):
+            return {}
+
+        sanitized = {}
+        for key, value in settings.items():
+            normalized_key = str(key).strip()
+            if not normalized_key:
+                continue
+            # Legacy key from older integration payloads; Smartlead rejects it.
+            if normalized_key == "ignore_duplicate_contacts_within_campaign":
+                continue
+            sanitized[normalized_key] = value
+        return sanitized
+
+    def _strip_disallowed_settings_from_payload(self, payload: Dict, response) -> Optional[Dict]:
+        """Parse Smartlead validation errors and remove rejected settings keys."""
+        if response.status_code != 400:
+            return None
+
+        try:
+            response_data = response.json()
+        except ValueError:
+            return None
+
+        validation = response_data.get("validation", {})
+        keys = validation.get("keys", [])
+        if not isinstance(keys, list):
+            return None
+
+        current_settings = payload.get("settings")
+        if not isinstance(current_settings, dict):
+            return None
+
+        cleaned_settings = dict(current_settings)
+        removed_any = False
+        for key_path in keys:
+            key_path = str(key_path)
+            if key_path.startswith("settings."):
+                setting_key = key_path.split(".", 1)[1]
+                if setting_key in cleaned_settings:
+                    cleaned_settings.pop(setting_key, None)
+                    removed_any = True
+
+        if not removed_any:
+            return None
+
+        retried_payload = {
+            "lead_list": payload.get("lead_list", [])
+        }
+        if cleaned_settings:
+            retried_payload["settings"] = cleaned_settings
+        return retried_payload
+
     def ensure_active_campaign(self, campaign_id: str):
         campaign = self.get_campaign(campaign_id)
         status = str(campaign.get("status", "")).upper()
@@ -433,8 +488,9 @@ class SmartLeadIntegration:
         payload = {
             "lead_list": leads
         }
-        if settings:
-            payload["settings"] = settings
+        sanitized_settings = self._sanitize_settings(settings)
+        if sanitized_settings:
+            payload["settings"] = sanitized_settings
 
         url = f"{self.base_url}/campaigns/{campaign_id}/leads"
 
@@ -448,6 +504,20 @@ class SmartLeadIntegration:
             )
             if response.status_code == 200:
                 return response.json()
+
+            retried_payload = self._strip_disallowed_settings_from_payload(payload, response)
+            if retried_payload is not None:
+                retry_response = requests.post(
+                    url,
+                    params={"api_key": self.api_key},
+                    json=retried_payload,
+                    headers={"Content-Type": "application/json", "Accept": "application/json"},
+                    timeout=30
+                )
+                if retry_response.status_code == 200:
+                    return retry_response.json()
+                raise Exception(f"Smartlead API returned status {retry_response.status_code}: {retry_response.text}")
+
             raise Exception(f"Smartlead API returned status {response.status_code}: {response.text}")
         except requests.exceptions.RequestException as e:
             raise Exception(f"Smartlead network error: {str(e)}")
