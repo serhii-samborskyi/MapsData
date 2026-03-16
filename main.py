@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from database import init_db, get_db
-from templates import TemplateManager, ManyReachIntegration
+from templates import TemplateManager, ManyReachIntegration, SmartLeadIntegration
 from email_verification import EmailVerificationManager, EmailVerificationService, MyEmailVerifierIntegration
 from typing import List, Union, Any, Optional
 from psycopg2 import DataError, IntegrityError
@@ -1493,6 +1493,21 @@ async def preview_export(
             "field_mappings": template['field_mappings']
         }
 
+    if template['service'] == 'smartlead':
+        integration = SmartLeadIntegration("")
+        preview_data = []
+        for contact in contacts:
+            transformed = integration.transform_contact(contact, template['field_mappings'])
+            preview_data.append(transformed)
+
+        return {
+            "template_name": template['name'],
+            "service": template['service'],
+            "total_contacts": len(contacts),
+            "preview_data": preview_data,
+            "field_mappings": template['field_mappings']
+        }
+
     return {"error": "Service not supported"}
 
 @app.post("/api/campaign/{campaign_id}/export")
@@ -1529,6 +1544,10 @@ async def export_campaign(campaign_id: int, request: Request):
 
         if template['service'] == 'manyreach':
             integration = ManyReachIntegration(template['api_config'].get('api_key', ''))
+            if recent_exports >= integration.rate_limit:
+                raise HTTPException(status_code=429, detail=f"Rate limit exceeded. Max {integration.rate_limit} exports per minute.")
+        elif template['service'] == 'smartlead':
+            integration = SmartLeadIntegration(template['api_config'].get('api_key', ''))
             if recent_exports >= integration.rate_limit:
                 raise HTTPException(status_code=429, detail=f"Rate limit exceeded. Max {integration.rate_limit} exports per minute.")
 
@@ -1621,6 +1640,60 @@ async def export_campaign(campaign_id: int, request: Request):
                 """, (campaign_id, template_id, 0, f"failed: {str(e)}"))
                 conn.commit()
 
+                raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+
+        if template['service'] == 'smartlead':
+            integration = SmartLeadIntegration(template['api_config'].get('api_key', ''))
+            smartlead_campaign_id = str(template['api_config'].get('smartlead_campaign_id', '')).strip()
+
+            if not smartlead_campaign_id:
+                raise HTTPException(status_code=400, detail="Smartlead campaign ID is missing in template configuration")
+
+            if batch_size > integration.max_leads_per_request:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Smartlead supports max {integration.max_leads_per_request} leads per request"
+                )
+
+            transformed_contacts = []
+            for contact in contacts:
+                transformed = integration.transform_contact(contact, field_mappings)
+                if integration.validate_contact(transformed):
+                    transformed_contacts.append(transformed)
+
+            if not transformed_contacts:
+                raise HTTPException(status_code=400, detail="No valid contacts to export (email is required)")
+
+            settings = template['api_config'].get('settings', {})
+
+            try:
+                # Requirement: only export to active/running Smartlead campaigns.
+                integration.ensure_active_campaign(smartlead_campaign_id)
+                api_response = integration.export_to_smartlead_bulk(
+                    smartlead_campaign_id,
+                    transformed_contacts,
+                    settings=settings
+                )
+
+                cursor.execute("""
+                    INSERT INTO export_logs (campaign_id, template_id, contacts_exported, status)
+                    VALUES (%s, %s, %s, %s)
+                """, (campaign_id, template_id, len(transformed_contacts), "completed"))
+                conn.commit()
+
+                return {
+                    "status": "Export completed successfully",
+                    "service": "smartlead",
+                    "contacts_exported": len(transformed_contacts),
+                    "api_response": api_response,
+                    "endpoint": "https://server.smartlead.ai/api/v1/campaigns/{id}/leads"
+                }
+            except Exception as e:
+                cursor.execute("""
+                    INSERT INTO export_logs (campaign_id, template_id, contacts_exported, status)
+                    VALUES (%s, %s, %s, %s)
+                """, (campaign_id, template_id, 0, f"failed: {str(e)}"))
+                conn.commit()
                 raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
     return {"error": "Service not supported"}
@@ -2091,7 +2164,7 @@ async def export_campaign_csv(campaign_id: int, fields: str = None):
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
 
-# Initialize default ManyReach template
+# Initialize default export templates
 @app.on_event("startup")
 async def create_default_templates():
     with get_db() as conn:
@@ -2111,6 +2184,31 @@ async def create_default_templates():
                     "api_key": "",
                     "manyreach_campaign_id": "",
                     "endpoint": "/api/campaigns/prospects/add/bulk",
+                    "method": "POST"
+                }
+            )
+
+        # Check if Smartlead template already exists
+        cursor.execute("SELECT id FROM export_templates WHERE service = 'smartlead'")
+        if not cursor.fetchone():
+            integration = SmartLeadIntegration("")
+            default_mapping = integration.get_default_field_mapping()
+
+            TemplateManager.create_template(
+                "Smartlead Default",
+                "smartlead",
+                default_mapping,
+                {
+                    "api_key": "",
+                    "smartlead_campaign_id": "",
+                    "settings": {
+                        "ignore_global_block_list": True,
+                        "ignore_community_bounce_list": False,
+                        "ignore_unsubscribe_list": True,
+                        "ignore_duplicate_leads_in_other_campaign": False,
+                        "ignore_duplicate_contacts_within_campaign": True
+                    },
+                    "endpoint": "/campaigns/{campaign_id}/leads",
                     "method": "POST"
                 }
             )

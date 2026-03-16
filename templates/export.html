@@ -14,7 +14,7 @@
             <div>
                 <p class="app-chip">ScrapIQ</p>
                 <h1 class="section-title text-3xl font-semibold text-slate-900">Export Management</h1>
-                <p class="text-sm text-slate-600">Build templates, map fields, and push to ManyReach.</p>
+                <p class="text-sm text-slate-600">Build templates, map fields, and push to ManyReach or Smartlead.</p>
             </div>
             <a href="/" class="app-chip hover:text-slate-900 w-fit">← Back to ScrapIQ</a>
         </div>
@@ -45,7 +45,7 @@
             <h2 class="text-xl font-semibold mb-4">Field Mapping</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
-                    <h3 class="font-medium mb-3 text-gray-700">API Fields (ManyReach)</h3>
+                    <h3 id="apiFieldsHeading" class="font-medium mb-3 text-gray-700">API Fields</h3>
                     <div id="apiFields" class="space-y-2">
                         <!-- API fields will be loaded here -->
                     </div>
@@ -98,7 +98,7 @@
             </div>
 
             <div class="mt-6">
-                <div class="mb-4">
+                <div class="mb-4" id="newListNameContainer">
                     <label class="block text-sm font-medium mb-2">List Name (optional)</label>
                     <input type="text" id="newListName" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="Enter list name for ManyReach (optional)">
                     <div class="text-xs text-gray-500 mt-1">If provided, this will create a new list in ManyReach with this name</div>
@@ -149,7 +149,7 @@
         <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
             <h3 class="font-medium text-yellow-800 mb-2">Rate Limiting</h3>
             <div class="text-sm text-yellow-700">
-                <div>ManyReach API: <span id="rateLimitStatus">60 requests per minute</span></div>
+                <div>Selected service: <span id="rateLimitStatus">Select a template to view limits</span></div>
                 <div>Last export: <span id="lastExportTime">Never</span></div>
             </div>
         </div>
@@ -177,6 +177,7 @@
                         <label class="block text-sm font-medium mb-2">Service</label>
                         <select id="editTemplateService" class="w-full p-2 border border-gray-300 rounded-lg" disabled>
                             <option value="manyreach">ManyReach</option>
+                            <option value="smartlead">Smartlead.ai</option>
                         </select>
                     </div>
                     <div class="mb-4">
@@ -184,9 +185,9 @@
                         <input type="password" id="editTemplateApiKey" class="w-full p-2 border border-gray-300 rounded-lg" required>
                     </div>
                     <div class="mb-4">
-                        <label class="block text-sm font-medium mb-2">ManyReach Campaign ID</label>
-                        <input type="text" id="editTemplateCampaignId" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="Enter your ManyReach campaign ID" required>
-                        <div class="text-xs text-gray-500 mt-1">This is the unique identifier of the campaign in ManyReach where prospects will be added</div>
+                        <label id="editTemplateCampaignIdLabel" class="block text-sm font-medium mb-2">Campaign ID</label>
+                        <input type="text" id="editTemplateCampaignId" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="Enter campaign ID" required>
+                        <div id="editTemplateCampaignIdHelp" class="text-xs text-gray-500 mt-1">Campaign ID where leads will be added.</div>
                     </div>
                     <div class="flex flex-col sm:flex-row gap-3">
                         <button type="button" onclick="closeEditTemplateModal()" class="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
@@ -248,6 +249,7 @@
                         <label class="block text-sm font-medium mb-2">Service</label>
                         <select id="templateService" class="w-full p-2 border border-gray-300 rounded-lg" required>
                             <option value="manyreach">ManyReach</option>
+                            <option value="smartlead">Smartlead.ai</option>
                         </select>
                     </div>
                     <div class="mb-4">
@@ -255,9 +257,9 @@
                         <input type="password" id="templateApiKey" class="w-full p-2 border border-gray-300 rounded-lg" required>
                     </div>
                     <div class="mb-4">
-                        <label class="block text-sm font-medium mb-2">ManyReach Campaign ID</label>
-                        <input type="text" id="templateCampaignId" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="Enter your ManyReach campaign ID" required>
-                        <div class="text-xs text-gray-500 mt-1">This is the unique identifier of the campaign in ManyReach where prospects will be added</div>
+                        <label id="templateCampaignIdLabel" class="block text-sm font-medium mb-2">Campaign ID</label>
+                        <input type="text" id="templateCampaignId" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="Enter campaign ID" required>
+                        <div id="templateCampaignIdHelp" class="text-xs text-gray-500 mt-1">Campaign ID where leads will be added.</div>
                     </div>
                     <div class="flex flex-col sm:flex-row gap-3">
                         <button type="button" onclick="closeCreateTemplateModal()" class="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
@@ -277,6 +279,133 @@
         let selectedTemplate = null;
         let currentFieldMappings = {};
         let publicEmailCountCache = {};
+        const SERVICE_LABELS = {
+            manyreach: 'ManyReach',
+            smartlead: 'Smartlead.ai'
+        };
+        const SERVICE_RATE_LIMIT_LABELS = {
+            manyreach: 'ManyReach: 60 requests per minute',
+            smartlead: 'Smartlead: 10 requests per 2 seconds (max 400 leads/request)'
+        };
+        const CONTACT_FIELD_OPTIONS = [
+            { value: 'business_name', label: 'Business Name' },
+            { value: 'email', label: 'Email' },
+            { value: 'phone', label: 'Phone' },
+            { value: 'domain', label: 'Domain' },
+            { value: 'address', label: 'Address' },
+            { value: 'category', label: 'Category' },
+            { value: 'rating', label: 'Rating' },
+            { value: 'review_count', label: 'Review Count' },
+            { value: 'facebook', label: 'Facebook' },
+            { value: 'instagram', label: 'Instagram' },
+            { value: 'twitter', label: 'Twitter' },
+            { value: 'yelp', label: 'Yelp' },
+            { value: 'full_name', label: 'Full Name' },
+            { value: 'firstname', label: 'First Name' },
+            { value: 'lastname', label: 'Last Name' },
+            { value: 'industry', label: 'Industry' },
+            { value: 'city', label: 'City' },
+            { value: 'state', label: 'State' },
+            { value: 'country', label: 'Country' },
+            { value: 'personal_job_position', label: 'Personal Job Position' },
+            { value: 'personal_prospect_location', label: 'Personal Prospect Location' },
+            { value: 'personal_user_social', label: 'Personal User Social' },
+            { value: 'company', label: 'Company' },
+            { value: 'company_social', label: 'Company Social' },
+            { value: 'company_size', label: 'Company Size' },
+            { value: 'www', label: 'WWW' },
+            { value: 'icebreaker', label: 'Icebreaker' },
+            { value: 'time_zone_offset_min', label: 'Time Zone Offset Min' },
+            { value: 'notes', label: 'Notes' },
+            { value: 'tags_import', label: 'Tags Import' },
+            { value: 'screenshot', label: 'Screenshot' },
+            { value: 'logo', label: 'Logo' },
+            { value: 'place_id', label: 'Place ID' },
+            { value: 'request_id', label: 'Request ID' },
+            { value: 'campaign_id', label: 'Campaign ID' }
+        ];
+        for (let i = 1; i <= 20; i++) {
+            CONTACT_FIELD_OPTIONS.push({ value: `custom_${i}`, label: `Custom ${i}` });
+        }
+        const CONTACT_FIELD_SET = new Set(CONTACT_FIELD_OPTIONS.map(field => field.value));
+        const SERVICE_DEFAULT_MAPPINGS = {
+            manyreach: {
+                "email": "email",
+                "fullName": "",
+                "industry": "category",
+                "city": "",
+                "www": "domain",
+                "phone": "phone",
+                "firstname": "",
+                "lastname": "",
+                "company": "business_name",
+                "country": "",
+                "domain": "domain",
+                "companySocial": "",
+                "companySize": "",
+                "personalJobPosition": "",
+                "personalProspectLocation": "",
+                "personalUserSocial": "",
+                "screenshot": "",
+                "logo": "",
+                "state": "",
+                "icebreaker": "",
+                "timeZoneOffsetMin": "",
+                "notes": "",
+                "tagsImport": "",
+                "custom_1": "",
+                "custom_2": "",
+                "custom_3": "",
+                "custom_4": "",
+                "custom_5": "",
+                "custom_6": "",
+                "custom_7": "",
+                "custom_8": "",
+                "custom_9": "",
+                "custom_10": "",
+                "custom_11": "",
+                "custom_12": "",
+                "custom_13": "",
+                "custom_14": "",
+                "custom_15": "",
+                "custom_16": "",
+                "custom_17": "",
+                "custom_18": "",
+                "custom_19": "",
+                "custom_20": ""
+            },
+            smartlead: {
+                "email": "email",
+                "first_name": "firstname",
+                "last_name": "lastname",
+                "phone_number": "phone",
+                "company_name": "business_name",
+                "website": "domain",
+                "location": "address",
+                "linkedin_profile": "",
+                "company_url": "domain",
+                "custom_1": "",
+                "custom_2": "",
+                "custom_3": "",
+                "custom_4": "",
+                "custom_5": "",
+                "custom_6": "",
+                "custom_7": "",
+                "custom_8": "",
+                "custom_9": "",
+                "custom_10": "",
+                "custom_11": "",
+                "custom_12": "",
+                "custom_13": "",
+                "custom_14": "",
+                "custom_15": "",
+                "custom_16": "",
+                "custom_17": "",
+                "custom_18": "",
+                "custom_19": "",
+                "custom_20": ""
+            }
+        };
 
         const PUBLIC_EMAIL_DOMAINS = [
             'gmail.com',
@@ -302,6 +431,100 @@
             '126.com',
             '163.com'
         ];
+
+        function getServiceLabel(service) {
+            return SERVICE_LABELS[service] || service;
+        }
+
+        function getDefaultMappingForService(service) {
+            return JSON.parse(JSON.stringify(SERVICE_DEFAULT_MAPPINGS[service] || {}));
+        }
+
+        function buildApiConfig(service, apiKey, campaignId) {
+            if (service === 'smartlead') {
+                return {
+                    api_key: apiKey,
+                    smartlead_campaign_id: campaignId,
+                    settings: {
+                        ignore_global_block_list: true,
+                        ignore_community_bounce_list: false,
+                        ignore_unsubscribe_list: true,
+                        ignore_duplicate_leads_in_other_campaign: false,
+                        ignore_duplicate_contacts_within_campaign: true
+                    },
+                    endpoint: "/campaigns/{campaign_id}/leads",
+                    method: "POST"
+                };
+            }
+
+            return {
+                api_key: apiKey,
+                manyreach_campaign_id: campaignId,
+                endpoint: "/api/campaigns/prospects/add/bulk",
+                method: "POST"
+            };
+        }
+
+        function updateRateLimitStatus() {
+            const rateLimitStatus = document.getElementById('rateLimitStatus');
+            if (!selectedTemplate) {
+                rateLimitStatus.textContent = 'Select a template to view limits';
+                return;
+            }
+            rateLimitStatus.textContent = SERVICE_RATE_LIMIT_LABELS[selectedTemplate.service] || 'No rate limit info';
+        }
+
+        function updateCreateServiceUi() {
+            const service = document.getElementById('templateService').value;
+            const label = document.getElementById('templateCampaignIdLabel');
+            const input = document.getElementById('templateCampaignId');
+            const help = document.getElementById('templateCampaignIdHelp');
+
+            if (service === 'smartlead') {
+                label.textContent = 'Smartlead Campaign ID';
+                input.placeholder = 'Enter your Smartlead campaign ID';
+                help.textContent = 'Active Smartlead campaign ID where leads will be added.';
+            } else {
+                label.textContent = 'ManyReach Campaign ID';
+                input.placeholder = 'Enter your ManyReach campaign ID';
+                help.textContent = 'Campaign ID in ManyReach where prospects will be added.';
+            }
+        }
+
+        function updateEditServiceUi(service) {
+            const label = document.getElementById('editTemplateCampaignIdLabel');
+            const input = document.getElementById('editTemplateCampaignId');
+            const help = document.getElementById('editTemplateCampaignIdHelp');
+
+            if (service === 'smartlead') {
+                label.textContent = 'Smartlead Campaign ID';
+                input.placeholder = 'Enter your Smartlead campaign ID';
+                help.textContent = 'Active Smartlead campaign ID where leads will be added.';
+            } else {
+                label.textContent = 'ManyReach Campaign ID';
+                input.placeholder = 'Enter your ManyReach campaign ID';
+                help.textContent = 'Campaign ID in ManyReach where prospects will be added.';
+            }
+        }
+
+        function escapeHtml(value) {
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function renderContactFieldOptions(selectedValue, isCustomValue) {
+            let optionsHtml = '<option value="">-- Select Field --</option>';
+            CONTACT_FIELD_OPTIONS.forEach(option => {
+                const selected = selectedValue === option.value ? 'selected' : '';
+                optionsHtml += `<option value="${option.value}" ${selected}>${option.label}</option>`;
+            });
+            optionsHtml += `<option value="_custom" ${isCustomValue ? 'selected' : ''}>Custom Value</option>`;
+            return optionsHtml;
+        }
 
         // Load campaigns and templates on page load
         document.addEventListener('DOMContentLoaded', async () => {
@@ -347,13 +570,13 @@
                 data.templates.forEach(template => {
                     const templateDiv = document.createElement('div');
                     templateDiv.className = 'border border-gray-200 rounded-lg p-4 cursor-pointer hover:bg-blue-50 transition-colors';
-                    templateDiv.onclick = () => selectTemplate(template);
+                    templateDiv.onclick = (clickEvent) => selectTemplate(template, clickEvent);
 
                     templateDiv.innerHTML = `
                         <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                             <div>
                                 <h3 class="font-medium">${template.name}</h3>
-                                <p class="text-sm text-gray-600">${template.service.toUpperCase()}</p>
+                                <p class="text-sm text-gray-600">${getServiceLabel(template.service)}</p>
                             </div>
                             <div class="flex items-center gap-2">
                                 <button onclick="editTemplate(${template.id})" class="text-blue-600 hover:text-blue-800 text-sm px-2 py-1 border border-blue-300 rounded">
@@ -376,9 +599,10 @@
             }
         }
 
-        function selectTemplate(template) {
+        function selectTemplate(template, clickEvent) {
             selectedTemplate = template;
             currentFieldMappings = JSON.parse(template.field_mappings);
+            updateRateLimitStatus();
 
             // Update UI to show selected template
             document.querySelectorAll('#templatesList > div').forEach(div => {
@@ -386,8 +610,10 @@
                 div.classList.add('border-gray-200');
             });
 
-            event.currentTarget.classList.remove('border-gray-200');
-            event.currentTarget.classList.add('bg-blue-100', 'border-blue-500');
+            if (clickEvent && clickEvent.currentTarget) {
+                clickEvent.currentTarget.classList.remove('border-gray-200');
+                clickEvent.currentTarget.classList.add('bg-blue-100', 'border-blue-500');
+            }
 
             if (selectedCampaign && selectedTemplate) {
                 showFieldMapping();
@@ -397,6 +623,9 @@
         function showFieldMapping() {
             const section = document.getElementById('fieldMappingSection');
             section.classList.remove('hidden');
+            document.getElementById('apiFieldsHeading').textContent = `API Fields (${getServiceLabel(selectedTemplate.service)})`;
+            const newListNameContainer = document.getElementById('newListNameContainer');
+            newListNameContainer.classList.toggle('hidden', selectedTemplate.service !== 'manyreach');
 
             const apiFields = document.getElementById('apiFields');
             apiFields.innerHTML = '';
@@ -406,32 +635,19 @@
                 const fieldDiv = document.createElement('div');
                 fieldDiv.className = 'flex items-center space-x-2';
 
-                const isCustomValue = contactField && !['business_name', 'email', 'phone', 'domain', 'address', 'category', 'rating', 'review_count', 'facebook', 'instagram', 'twitter', 'yelp'].includes(contactField);
+                const isCustomValue = contactField && !CONTACT_FIELD_SET.has(contactField);
 
                 fieldDiv.innerHTML = `
                     <label class="w-24 text-sm font-medium">${apiField}:</label>
                     <div class="flex-1 flex gap-2">
                         <select class="flex-1 p-2 border border-gray-300 rounded text-sm" onchange="handleFieldMappingChange('${apiField}', this.value)">
-                            <option value="">-- Select Field --</option>
-                            <option value="business_name" ${contactField === 'business_name' ? 'selected' : ''}>Business Name</option>
-                            <option value="email" ${contactField === 'email' ? 'selected' : ''}>Email</option>
-                            <option value="phone" ${contactField === 'phone' ? 'selected' : ''}>Phone</option>
-                            <option value="domain" ${contactField === 'domain' ? 'selected' : ''}>Domain</option>
-                            <option value="address" ${contactField === 'address' ? 'selected' : ''}>Address</option>
-                            <option value="category" ${contactField === 'category' ? 'selected' : ''}>Category</option>
-                            <option value="rating" ${contactField === 'rating' ? 'selected' : ''}>Rating</option>
-                            <option value="review_count" ${contactField === 'review_count' ? 'selected' : ''}>Review Count</option>
-                            <option value="facebook" ${contactField === 'facebook' ? 'selected' : ''}>Facebook</option>
-                            <option value="instagram" ${contactField === 'instagram' ? 'selected' : ''}>Instagram</option>
-                            <option value="twitter" ${contactField === 'twitter' ? 'selected' : ''}>Twitter</option>
-                            <option value="yelp" ${contactField === 'yelp' ? 'selected' : ''}>Yelp</option>
-                            <option value="_custom" ${isCustomValue ? 'selected' : ''}>Custom Value</option>
+                            ${renderContactFieldOptions(contactField, isCustomValue)}
                         </select>
                         <input type="text" 
                                id="custom_${apiField}" 
                                class="flex-1 p-2 border border-gray-300 rounded text-sm ${isCustomValue ? '' : 'hidden'}" 
                                placeholder="Enter custom value" 
-                               value="${isCustomValue ? contactField : ''}"
+                               value="${isCustomValue ? escapeHtml(contactField) : ''}"
                                onchange="updateFieldMapping('${apiField}', this.value)">
                     </div>
                 `;
@@ -535,7 +751,7 @@
                 previewContent.innerHTML = `
                     <div class="mb-4">
                         <h3 class="font-medium">Template: ${data.template_name}</h3>
-                        <p class="text-sm text-gray-600">Service: ${data.service.toUpperCase()}</p>
+                        <p class="text-sm text-gray-600">Service: ${getServiceLabel(data.service)}</p>
                         <p class="text-sm text-gray-600">Contacts to export: ${data.total_contacts}</p>
                     </div>
                     <div class="bg-gray-50 rounded-lg p-4">
@@ -556,8 +772,9 @@
                 return;
             }
 
-            const batchSize = prompt('Enter batch size (1-100):', '10');
-            if (!batchSize || isNaN(batchSize) || batchSize < 1 || batchSize > 100) {
+            const maxBatchSize = selectedTemplate.service === 'smartlead' ? 400 : 100;
+            const batchSize = prompt(`Enter batch size (1-${maxBatchSize}):`, '10');
+            if (!batchSize || isNaN(batchSize) || batchSize < 1 || batchSize > maxBatchSize) {
                 alert('Invalid batch size');
                 return;
             }
@@ -585,7 +802,7 @@
                 const data = await response.json();
 
                 if (response.ok) {
-                    alert(`Export completed! ${data.contacts_exported} contacts exported to ${data.service}`);
+                    alert(`Export completed! ${data.contacts_exported} contacts exported to ${getServiceLabel(data.service)}`);
                     await loadExportHistory();
                 } else {
                     alert('Export failed: ' + data.detail);
@@ -643,9 +860,11 @@
         function closeCreateTemplateModal() {
             document.getElementById('createTemplateModal').classList.add('hidden');
             document.getElementById('createTemplateForm').reset();
+            updateCreateServiceUi();
         }
 
         let editingTemplateId = null;
+        let editingTemplateFieldMappings = null;
 
         async function editTemplate(templateId) {
             try {
@@ -653,10 +872,15 @@
                 const template = await response.json();
 
                 editingTemplateId = templateId;
+                editingTemplateFieldMappings = template.field_mappings || null;
                 document.getElementById('editTemplateName').value = template.name;
                 document.getElementById('editTemplateService').value = template.service;
                 document.getElementById('editTemplateApiKey').value = template.api_config.api_key || '';
-                document.getElementById('editTemplateCampaignId').value = template.api_config.manyreach_campaign_id || '';
+                const campaignId = template.service === 'smartlead'
+                    ? (template.api_config.smartlead_campaign_id || '')
+                    : (template.api_config.manyreach_campaign_id || '');
+                document.getElementById('editTemplateCampaignId').value = campaignId;
+                updateEditServiceUi(template.service);
 
                 document.getElementById('editTemplateModal').classList.remove('hidden');
             } catch (error) {
@@ -668,6 +892,7 @@
             document.getElementById('editTemplateModal').classList.add('hidden');
             document.getElementById('editTemplateForm').reset();
             editingTemplateId = null;
+            editingTemplateFieldMappings = null;
         }
 
         async function deleteTemplate(templateId) {
@@ -859,11 +1084,14 @@
         document.getElementById('executeExportBtn').addEventListener('click', executeExport);
         document.getElementById('exportAllBtn').addEventListener('click', exportAll);
         document.getElementById('cancelBatchExport').addEventListener('click', closeBatchExportModal);
+        document.getElementById('templateService').addEventListener('change', updateCreateServiceUi);
         document.getElementById('exportValidEmailsOnly').addEventListener('change', syncExportFilterControls);
         document.getElementById('excludePublicEmails').addEventListener('change', () => {
             updatePublicEmailCount();
         });
         syncExportFilterControls();
+        updateCreateServiceUi();
+        updateRateLimitStatus();
         updatePublicEmailCount();
 
         document.getElementById('createTemplateForm').addEventListener('submit', async (e) => {
@@ -873,53 +1101,8 @@
             const service = document.getElementById('templateService').value;
             const apiKey = document.getElementById('templateApiKey').value;
             const campaignId = document.getElementById('templateCampaignId').value;
-
-            // Get default ManyReach mapping with all fields
-            const integration = {
-                "email": "email",
-                "fullName": "",
-                "industry": "category",
-                "city": "",
-                "www": "domain",
-                "phone": "phone",
-                "firstname": "",
-                "lastname": "",
-                "company": "business_name",
-                "country": "",
-                "domain": "domain",
-                "companySocial": "",
-                "companySize": "",
-                "personalJobPosition": "",
-                "personalProspectLocation": "",
-                "personalUserSocial": "",
-                "screenshot": "",
-                "logo": "",
-                "state": "",
-                "icebreaker": "",
-                "timeZoneOffsetMin": "",
-                "notes": "",
-                "tagsImport": "",
-                "custom_1": "",
-                "custom_2": "",
-                "custom_3": "",
-                "custom_4": "",
-                "custom_5": "",
-                "custom_6": "",
-                "custom_7": "",
-                "custom_8": "",
-                "custom_9": "",
-                "custom_10": "",
-                "custom_11": "",
-                "custom_12": "",
-                "custom_13": "",
-                "custom_14": "",
-                "custom_15": "",
-                "custom_16": "",
-                "custom_17": "",
-                "custom_18": "",
-                "custom_19": "",
-                "custom_20": ""
-            };
+            const integration = getDefaultMappingForService(service);
+            const apiConfig = buildApiConfig(service, apiKey, campaignId);
 
             try {
                 const response = await fetch('/api/templates', {
@@ -931,12 +1114,7 @@
                         name: name,
                         service: service,
                         field_mappings: integration,
-                        api_config: {
-                            api_key: apiKey,
-                            manyreach_campaign_id: campaignId,
-                            endpoint: "/api/campaigns/prospects/add/bulk",
-                            method: "POST"
-                        }
+                        api_config: apiConfig
                     })
                 });
 
@@ -973,53 +1151,8 @@
             const service = document.getElementById('editTemplateService').value;
             const apiKey = document.getElementById('editTemplateApiKey').value;
             const campaignId = document.getElementById('editTemplateCampaignId').value;
-
-            // Get default ManyReach mapping with all fields
-            const integration = {
-                "email": "email",
-                "fullName": "",
-                "industry": "category",
-                "city": "",
-                "www": "domain",
-                "phone": "phone",
-                "firstname": "",
-                "lastname": "",
-                "company": "business_name",
-                "country": "",
-                "domain": "domain",
-                "companySocial": "",
-                "companySize": "",
-                "personalJobPosition": "",
-                "personalProspectLocation": "",
-                "personalUserSocial": "",
-                "screenshot": "",
-                "logo": "",
-                "state": "",
-                "icebreaker": "",
-                "timeZoneOffsetMin": "",
-                "notes": "",
-                "tagsImport": "",
-                "custom_1": "",
-                "custom_2": "",
-                "custom_3": "",
-                "custom_4": "",
-                "custom_5": "",
-                "custom_6": "",
-                "custom_7": "",
-                "custom_8": "",
-                "custom_9": "",
-                "custom_10": "",
-                "custom_11": "",
-                "custom_12": "",
-                "custom_13": "",
-                "custom_14": "",
-                "custom_15": "",
-                "custom_16": "",
-                "custom_17": "",
-                "custom_18": "",
-                "custom_19": "",
-                "custom_20": ""
-            };
+            const integration = editingTemplateFieldMappings || getDefaultMappingForService(service);
+            const apiConfig = buildApiConfig(service, apiKey, campaignId);
 
             try {
                 const response = await fetch(`/api/templates/${editingTemplateId}`, {
@@ -1029,13 +1162,9 @@
                     },
                     body: JSON.stringify({
                         name: name,
+                        service: service,
                         field_mappings: integration,
-                        api_config: {
-                            api_key: apiKey,
-                            manyreach_campaign_id: campaignId,
-                            endpoint: "/api/campaigns/prospects/add/bulk",
-                            method: "POST"
-                        }
+                        api_config: apiConfig
                     })
                 });
 

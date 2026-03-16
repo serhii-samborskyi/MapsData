@@ -218,3 +218,125 @@ class ManyReachIntegration:
 
         except requests.exceptions.RequestException as e:
             raise Exception(f"Network error: {str(e)}")
+
+
+class SmartLeadIntegration:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://server.smartlead.ai/api/v1"
+        # Smartlead rate limit: 10 requests / 2 seconds (~300 per minute).
+        self.rate_limit = 300
+        self.max_leads_per_request = 400
+
+    def get_default_field_mapping(self):
+        mapping = {
+            "email": "email",
+            "first_name": "firstname",
+            "last_name": "lastname",
+            "phone_number": "phone",
+            "company_name": "business_name",
+            "website": "domain",
+            "location": "address",
+            "linkedin_profile": "",
+            "company_url": "domain"
+        }
+        for idx in range(1, 21):
+            mapping[f"custom_{idx}"] = ""
+        return mapping
+
+    def _resolve_mapping_value(self, contact: Dict, contact_field: str) -> Optional[str]:
+        if not contact_field:
+            return None
+
+        normalized_field = str(contact_field).lower().replace(' ', '_')
+        if normalized_field in contact:
+            value = contact[normalized_field]
+        elif contact_field in contact:
+            value = contact[contact_field]
+        else:
+            value = contact_field
+
+        if value is None:
+            return None
+
+        cleaned = str(value).strip()
+        return cleaned if cleaned else None
+
+    def _clean_domain(self, domain: str) -> str:
+        if not domain:
+            return domain
+        domain = domain.replace("https://", "").replace("http://", "")
+        if domain.startswith("www."):
+            domain = domain[4:]
+        return domain.split("/")[0]
+
+    def transform_contact(self, contact: Dict, field_mapping: Dict) -> Dict:
+        transformed = {}
+        custom_fields = {}
+
+        for api_field, contact_field in field_mapping.items():
+            value = self._resolve_mapping_value(contact, contact_field)
+            if value is None:
+                continue
+
+            if api_field in ["website", "company_url"]:
+                value = self._clean_domain(value)
+
+            if api_field.startswith("custom_"):
+                custom_fields[api_field] = value
+            else:
+                transformed[api_field] = value
+
+        if custom_fields:
+            transformed["custom_fields"] = custom_fields
+
+        return transformed
+
+    def validate_contact(self, transformed_contact: Dict) -> bool:
+        return bool(transformed_contact.get("email"))
+
+    def get_campaign(self, campaign_id: str) -> Dict:
+        import requests
+
+        url = f"{self.base_url}/campaigns/{campaign_id}"
+        try:
+            response = requests.get(url, params={"api_key": self.api_key}, timeout=30)
+            if response.status_code != 200:
+                raise Exception(f"Smartlead campaign lookup failed with status {response.status_code}: {response.text}")
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Smartlead campaign lookup network error: {str(e)}")
+
+    def ensure_active_campaign(self, campaign_id: str):
+        campaign = self.get_campaign(campaign_id)
+        status = str(campaign.get("status", "")).upper()
+        if status != "ACTIVE":
+            raise Exception(f"Smartlead campaign {campaign_id} is not active (status={status or 'UNKNOWN'})")
+
+    def export_to_smartlead_bulk(self, campaign_id: str, leads: List[Dict], settings: Optional[Dict] = None) -> Dict:
+        import requests
+
+        if len(leads) > self.max_leads_per_request:
+            raise Exception(f"Smartlead supports max {self.max_leads_per_request} leads per request")
+
+        payload = {
+            "lead_list": leads
+        }
+        if settings:
+            payload["settings"] = settings
+
+        url = f"{self.base_url}/campaigns/{campaign_id}/leads"
+
+        try:
+            response = requests.post(
+                url,
+                params={"api_key": self.api_key},
+                json=payload,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                timeout=30
+            )
+            if response.status_code == 200:
+                return response.json()
+            raise Exception(f"Smartlead API returned status {response.status_code}: {response.text}")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Smartlead network error: {str(e)}")
