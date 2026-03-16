@@ -1440,7 +1440,7 @@ async def get_provider_campaigns(request: Request):
     data = await request.json()
     service = str(data.get("service", "")).strip().lower()
     api_key = str(data.get("api_key", "")).strip()
-    active_only_raw = data.get("active_only", True)
+    active_only_raw = data.get("active_only", False)
     if isinstance(active_only_raw, bool):
         active_only = active_only_raw
     else:
@@ -1698,8 +1698,6 @@ async def export_campaign(campaign_id: int, request: Request):
             settings = template['api_config'].get('settings', {})
 
             try:
-                # Requirement: only export to active/running Smartlead campaigns.
-                integration.ensure_active_campaign(smartlead_campaign_id)
                 api_response = integration.export_to_smartlead_bulk(
                     smartlead_campaign_id,
                     transformed_contacts,
@@ -1849,7 +1847,6 @@ async def test_export_lead(campaign_id: int, request: Request):
         settings = template["api_config"].get("settings", {})
 
         try:
-            integration.ensure_active_campaign(smartlead_campaign_id)
             api_response = integration.export_to_smartlead_bulk(
                 smartlead_campaign_id,
                 [transformed],

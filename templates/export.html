@@ -568,7 +568,7 @@
                     body: JSON.stringify({
                         service: service,
                         api_key: apiKey.trim(),
-                        active_only: service === 'smartlead'
+                        active_only: false
                     })
                 });
                 const data = await response.json();
@@ -606,7 +606,7 @@
             if (service === 'smartlead') {
                 label.textContent = 'Smartlead Campaign ID';
                 input.placeholder = 'Enter your Smartlead campaign ID';
-                help.textContent = 'Active Smartlead campaign ID where leads will be added.';
+                help.textContent = 'Smartlead campaign ID where leads will be added.';
             } else {
                 label.textContent = 'ManyReach Campaign ID';
                 input.placeholder = 'Enter your ManyReach campaign ID';
@@ -624,7 +624,7 @@
             if (service === 'smartlead') {
                 label.textContent = 'Smartlead Campaign ID';
                 input.placeholder = 'Enter your Smartlead campaign ID';
-                help.textContent = 'Active Smartlead campaign ID where leads will be added.';
+                help.textContent = 'Smartlead campaign ID where leads will be added.';
             } else {
                 label.textContent = 'ManyReach Campaign ID';
                 input.placeholder = 'Enter your ManyReach campaign ID';
