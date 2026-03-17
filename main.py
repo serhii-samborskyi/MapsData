@@ -1485,7 +1485,7 @@ async def preview_export(
         conditions = [
             "campaign_id = %s",
             "email IS NOT NULL",
-            "email != ''"
+            "btrim(email) != ''"
         ]
         params = [campaign_id]
 
@@ -1591,7 +1591,7 @@ async def export_campaign(campaign_id: int, request: Request):
         conditions = [
             "campaign_id = %s",
             "email IS NOT NULL",
-            "email != ''"
+            "btrim(email) != ''"
         ]
         params = [campaign_id]
 
@@ -1618,7 +1618,44 @@ async def export_campaign(campaign_id: int, request: Request):
         contacts = [dict(row) for row in cursor.fetchall()]
 
         if not contacts:
-            raise HTTPException(status_code=404, detail="No contacts with email found")
+            cursor.execute(
+                """
+                    SELECT
+                        COUNT(*) AS total_contacts,
+                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '') AS contacts_with_email,
+                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND email_status = 'Valid') AS contacts_valid_email,
+                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND email_status IN ('Valid', 'Catch-all')) AS contacts_valid_or_catch
+                    FROM contacts
+                    WHERE campaign_id = %s
+                """,
+                (campaign_id,)
+            )
+            summary = dict(cursor.fetchone())
+
+            if summary["contacts_with_email"] == 0:
+                detail = f"No contacts with email found in campaign (total contacts: {summary['total_contacts']})"
+            elif export_valid_only and export_catch_all and summary["contacts_valid_or_catch"] == 0:
+                detail = (
+                    "No contacts with valid/catch-all email found for export filters "
+                    f"(contacts with email: {summary['contacts_with_email']}, valid/catch-all: {summary['contacts_valid_or_catch']})"
+                )
+            elif export_valid_only and summary["contacts_valid_email"] == 0:
+                detail = (
+                    "No contacts with valid email found for export filters "
+                    f"(contacts with email: {summary['contacts_with_email']}, valid: {summary['contacts_valid_email']})"
+                )
+            elif exclude_public_emails:
+                detail = (
+                    "No contacts left after excluding public email providers "
+                    f"(contacts with email before filter: {summary['contacts_with_email']})"
+                )
+            else:
+                detail = (
+                    "No contacts found for current export filters "
+                    f"(contacts with email: {summary['contacts_with_email']})"
+                )
+
+            raise HTTPException(status_code=404, detail=detail)
 
         # Get newListName from request data
         new_list_name = data.get('newListName', '')
