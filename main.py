@@ -55,9 +55,44 @@ def _status_match_sql(email_status_ref: str, legacy_status_ref: str):
     """
     email_norm = _normalized_status_sql(email_status_ref)
     legacy_norm = _normalized_status_sql(legacy_status_ref)
-    valid_sql = f"({email_norm} LIKE 'valid%%' OR {legacy_norm} LIKE 'valid%%')"
+    valid_sql = (
+        f"({email_norm} LIKE 'valid%%' OR {legacy_norm} LIKE 'valid%%' "
+        f"OR {email_norm} = 'verified' OR {legacy_norm} = 'verified')"
+    )
     catch_all_sql = f"(strpos({email_norm}, 'catchall') > 0 OR strpos({legacy_norm}, 'catchall') > 0)"
     return valid_sql, catch_all_sql
+
+def _normalize_status_value(value: Any) -> str:
+    return ''.join(ch for ch in str(value or '').lower() if ch.isalpha())
+
+def _resolve_contact_email_status(contact: dict) -> str:
+    email_status = contact.get("email_status")
+    if email_status is not None and str(email_status).strip():
+        return _normalize_status_value(email_status)
+    return _normalize_status_value(contact.get("status"))
+
+def _is_valid_email_status(normalized_status: str) -> bool:
+    return normalized_status.startswith("valid") or normalized_status == "verified"
+
+def _is_catch_all_email_status(normalized_status: str) -> bool:
+    return "catchall" in normalized_status
+
+def _matches_export_status_filter(contact: dict, valid_only: bool, include_catch_all: bool, catch_all_only: bool) -> bool:
+    normalized_status = _resolve_contact_email_status(contact)
+    is_valid = _is_valid_email_status(normalized_status)
+    is_catch_all = _is_catch_all_email_status(normalized_status)
+
+    if catch_all_only:
+        return is_catch_all
+    if valid_only:
+        return is_valid or (include_catch_all and is_catch_all)
+    return True
+
+def _is_public_email_address(email: str) -> bool:
+    if not email or "@" not in email:
+        return False
+    domain = email.rsplit("@", 1)[-1].strip().lower()
+    return domain in PUBLIC_EMAIL_DOMAINS
 
 # Initialize database
 init_db()
@@ -1500,8 +1535,6 @@ async def preview_export(
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
 
-    valid_status_match_sql, catch_all_status_match_sql = _status_match_sql("email_status", "status")
-
     with get_db() as conn:
         cursor = conn.cursor()
         conditions = [
@@ -1511,14 +1544,6 @@ async def preview_export(
         ]
         params = [campaign_id]
 
-        if catch_all_only:
-            conditions.append(catch_all_status_match_sql)
-        elif valid_only:
-            if include_catch_all:
-                conditions.append(f"({valid_status_match_sql} OR {catch_all_status_match_sql})")
-            else:
-                conditions.append(valid_status_match_sql)
-
         if exclude_public_emails:
             placeholders = ','.join(['%s' for _ in PUBLIC_EMAIL_DOMAINS])
             conditions.append(f"lower(split_part(email, '@', 2)) NOT IN ({placeholders})")
@@ -1527,23 +1552,29 @@ async def preview_export(
         query = f"""
             SELECT * FROM contacts
             WHERE {' AND '.join(conditions)}
-            LIMIT 5
+            ORDER BY id
         """
         cursor.execute(query, tuple(params))
         contacts = [dict(row) for row in cursor.fetchall()]
+
+    filtered_contacts = [
+        contact for contact in contacts
+        if _matches_export_status_filter(contact, valid_only, include_catch_all, catch_all_only)
+    ]
+    preview_contacts = filtered_contacts[:5]
 
     if template['service'] == 'manyreach':
         integration = ManyReachIntegration("")
         manyreach_campaign_id = template['api_config'].get('manyreach_campaign_id', '')
         preview_data = []
-        for contact in contacts:
+        for contact in preview_contacts:
             transformed = integration.transform_contact(contact, template['field_mappings'], manyreach_campaign_id)
             preview_data.append(transformed)
 
         return {
             "template_name": template['name'],
             "service": template['service'],
-            "total_contacts": len(contacts),
+            "total_contacts": len(filtered_contacts),
             "preview_data": preview_data,
             "field_mappings": template['field_mappings']
         }
@@ -1551,14 +1582,14 @@ async def preview_export(
     if template['service'] == 'smartlead':
         integration = SmartLeadIntegration("")
         preview_data = []
-        for contact in contacts:
+        for contact in preview_contacts:
             transformed = integration.transform_contact(contact, template['field_mappings'])
             preview_data.append(transformed)
 
         return {
             "template_name": template['name'],
             "service": template['service'],
-            "total_contacts": len(contacts),
+            "total_contacts": len(filtered_contacts),
             "preview_data": preview_data,
             "field_mappings": template['field_mappings']
         }
@@ -1580,7 +1611,6 @@ async def export_campaign(campaign_id: int, request: Request):
 
     # Use field_mappings from request if provided, otherwise use template's field_mappings
     field_mappings = data.get('field_mappings', template['field_mappings'])
-    valid_status_match_sql, catch_all_status_match_sql = _status_match_sql("email_status", "status")
 
     # Rate limiting check
     now = datetime.now()
@@ -1621,14 +1651,6 @@ async def export_campaign(campaign_id: int, request: Request):
         ]
         params = [campaign_id]
 
-        if export_catch_all_only:
-            conditions.append(catch_all_status_match_sql)
-        elif export_valid_only:
-            if export_catch_all:
-                conditions.append(f"({valid_status_match_sql} OR {catch_all_status_match_sql})")
-            else:
-                conditions.append(valid_status_match_sql)
-
         if exclude_public_emails:
             placeholders = ','.join(['%s' for _ in PUBLIC_EMAIL_DOMAINS])
             conditions.append(f"lower(split_part(email, '@', 2)) NOT IN ({placeholders})")
@@ -1638,28 +1660,57 @@ async def export_campaign(campaign_id: int, request: Request):
             SELECT * FROM contacts
             WHERE {' AND '.join(conditions)}
             ORDER BY id
-            LIMIT %s OFFSET %s
         """
-        params.extend([batch_size, offset])
 
         cursor.execute(query, tuple(params))
-        contacts = [dict(row) for row in cursor.fetchall()]
+        all_candidates = [dict(row) for row in cursor.fetchall()]
+        eligible_contacts = [
+            contact for contact in all_candidates
+            if _matches_export_status_filter(contact, export_valid_only, export_catch_all, export_catch_all_only)
+        ]
+        contacts = eligible_contacts[offset:offset + batch_size]
 
         if not contacts:
-            cursor.execute(
-                f"""
-                    SELECT
-                        COUNT(*) AS total_contacts,
-                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '') AS contacts_with_email,
-                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND {valid_status_match_sql}) AS contacts_valid_email,
-                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND {catch_all_status_match_sql}) AS contacts_catch_all_email,
-                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND ({valid_status_match_sql} OR {catch_all_status_match_sql})) AS contacts_valid_or_catch
-                    FROM contacts
-                    WHERE campaign_id = %s
-                """,
-                (campaign_id,)
+            cursor.execute("""
+                SELECT * FROM contacts
+                WHERE campaign_id = %s
+                  AND email IS NOT NULL
+                  AND btrim(email) != ''
+            """, (campaign_id,))
+            all_email_contacts = [dict(row) for row in cursor.fetchall()]
+
+            contacts_with_email = len(all_email_contacts)
+            contacts_valid_email = 0
+            contacts_catch_all_email = 0
+            contacts_valid_or_catch = 0
+            for contact in all_email_contacts:
+                normalized_status = _resolve_contact_email_status(contact)
+                is_valid = _is_valid_email_status(normalized_status)
+                is_catch_all = _is_catch_all_email_status(normalized_status)
+                if is_valid:
+                    contacts_valid_email += 1
+                if is_catch_all:
+                    contacts_catch_all_email += 1
+                if is_valid or is_catch_all:
+                    contacts_valid_or_catch += 1
+
+            summary = {
+                "total_contacts": len(all_email_contacts),
+                "contacts_with_email": contacts_with_email,
+                "contacts_valid_email": contacts_valid_email,
+                "contacts_catch_all_email": contacts_catch_all_email,
+                "contacts_valid_or_catch": contacts_valid_or_catch
+            }
+
+            has_status_match_before_public = any(
+                _matches_export_status_filter(contact, export_valid_only, export_catch_all, export_catch_all_only)
+                for contact in all_email_contacts
             )
-            summary = dict(cursor.fetchone())
+            has_status_match_after_public = any(
+                _matches_export_status_filter(contact, export_valid_only, export_catch_all, export_catch_all_only)
+                and not _is_public_email_address(contact.get("email", ""))
+                for contact in all_email_contacts
+            )
 
             if summary["contacts_with_email"] == 0:
                 detail = f"No contacts with email found in campaign (total contacts: {summary['total_contacts']})"
@@ -1678,7 +1729,7 @@ async def export_campaign(campaign_id: int, request: Request):
                     "No contacts with valid email found for export filters "
                     f"(contacts with email: {summary['contacts_with_email']}, valid: {summary['contacts_valid_email']})"
                 )
-            elif exclude_public_emails:
+            elif exclude_public_emails and has_status_match_before_public and not has_status_match_after_public:
                 detail = (
                     "No contacts left after excluding public email providers "
                     f"(contacts with email before filter: {summary['contacts_with_email']})"

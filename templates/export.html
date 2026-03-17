@@ -857,6 +857,15 @@
                 .replace(/[^a-z]/g, '');
         }
 
+        function isValidStatus(status) {
+            const normalized = normalizeEmailStatus(status);
+            return normalized.startsWith('valid') || normalized === 'verified';
+        }
+
+        function isCatchAllStatus(status) {
+            return normalizeEmailStatus(status).includes('catchall');
+        }
+
         async function parseApiResponse(response) {
             const rawText = await response.text();
             if (!rawText) {
@@ -1214,14 +1223,14 @@
                 if (exportCatchAllOnly) {
                     contactsWithEmail = campaignData.contacts.filter(c =>
                         c.email && c.email.trim() !== '' &&
-                        normalizeEmailStatus(c.email_status || c.status).includes('catchall') &&
+                        isCatchAllStatus(c.email_status || c.status) &&
                         (!excludePublicEmails || !isPublicEmail(c.email))
                     );
                 } else if (exportValidOnly) {
                     contactsWithEmail = campaignData.contacts.filter(c => 
                         c.email && c.email.trim() !== '' && (
-                            normalizeEmailStatus(c.email_status || c.status).startsWith('valid') ||
-                            (exportCatchAll && normalizeEmailStatus(c.email_status || c.status).includes('catchall'))
+                            isValidStatus(c.email_status || c.status) ||
+                            (exportCatchAll && isCatchAllStatus(c.email_status || c.status))
                         ) && (!excludePublicEmails || !isPublicEmail(c.email))
                     );
                 } else {
