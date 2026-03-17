@@ -438,10 +438,23 @@ async def get_campaigns(request: Request, partial: bool = False):
 async def delete_campaign(campaign_id: int):
     with get_db() as conn:
         cursor = conn.cursor()
+        cursor.execute("SELECT id FROM search_campaigns WHERE id = %s", (campaign_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Campaign not found")
+
+        # Delete child rows first to satisfy FK constraints.
+        cursor.execute("DELETE FROM export_logs WHERE campaign_id = %s", (campaign_id,))
+        cursor.execute("DELETE FROM email_verification_logs WHERE campaign_id = %s", (campaign_id,))
         cursor.execute("DELETE FROM contacts WHERE campaign_id = %s", (campaign_id,))
         cursor.execute("DELETE FROM requests WHERE campaign_id = %s", (campaign_id,))
         cursor.execute("DELETE FROM search_campaigns WHERE id = %s", (campaign_id,))
         conn.commit()
+
+    with verification_jobs_lock:
+        for job_id, job in list(verification_jobs.items()):
+            if job.get("campaign_id") == campaign_id:
+                verification_jobs.pop(job_id, None)
+
     return {"status": "Campaign deleted successfully"}
 
 @app.delete("/api/campaigns")
