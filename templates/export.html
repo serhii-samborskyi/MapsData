@@ -851,6 +851,12 @@
             return PUBLIC_EMAIL_DOMAINS.includes(domain);
         }
 
+        function normalizeEmailStatus(status) {
+            return String(status || '')
+                .toLowerCase()
+                .replace(/[^a-z]/g, '');
+        }
+
         async function updatePublicEmailCount() {
             const countEl = document.getElementById('publicEmailCount');
             if (!countEl) return;
@@ -1196,13 +1202,14 @@
                 if (exportCatchAllOnly) {
                     contactsWithEmail = campaignData.contacts.filter(c =>
                         c.email && c.email.trim() !== '' &&
-                        c.email_status === 'Catch-all' &&
+                        normalizeEmailStatus(c.email_status) === 'catchall' &&
                         (!excludePublicEmails || !isPublicEmail(c.email))
                     );
                 } else if (exportValidOnly) {
                     contactsWithEmail = campaignData.contacts.filter(c => 
                         c.email && c.email.trim() !== '' && (
-                            c.email_status === 'Valid' || (exportCatchAll && c.email_status === 'Catch-all')
+                            normalizeEmailStatus(c.email_status) === 'valid' ||
+                            (exportCatchAll && normalizeEmailStatus(c.email_status) === 'catchall')
                         ) && (!excludePublicEmails || !isPublicEmail(c.email))
                     );
                 } else {

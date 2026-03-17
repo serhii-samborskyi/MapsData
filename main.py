@@ -1481,6 +1481,8 @@ async def preview_export(
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
 
+    normalized_email_status_sql = "lower(regexp_replace(coalesce(email_status, ''), '[^a-z]', '', 'g'))"
+
     with get_db() as conn:
         cursor = conn.cursor()
         conditions = [
@@ -1491,12 +1493,12 @@ async def preview_export(
         params = [campaign_id]
 
         if catch_all_only:
-            conditions.append("email_status = 'Catch-all'")
+            conditions.append(f"{normalized_email_status_sql} = 'catchall'")
         elif valid_only:
             if include_catch_all:
-                conditions.append("email_status IN ('Valid', 'Catch-all')")
+                conditions.append(f"{normalized_email_status_sql} IN ('valid', 'catchall')")
             else:
-                conditions.append("email_status = 'Valid'")
+                conditions.append(f"{normalized_email_status_sql} = 'valid'")
 
         if exclude_public_emails:
             placeholders = ','.join(['%s' for _ in PUBLIC_EMAIL_DOMAINS])
@@ -1559,6 +1561,7 @@ async def export_campaign(campaign_id: int, request: Request):
 
     # Use field_mappings from request if provided, otherwise use template's field_mappings
     field_mappings = data.get('field_mappings', template['field_mappings'])
+    normalized_email_status_sql = "lower(regexp_replace(coalesce(email_status, ''), '[^a-z]', '', 'g'))"
 
     # Rate limiting check
     now = datetime.now()
@@ -1600,12 +1603,12 @@ async def export_campaign(campaign_id: int, request: Request):
         params = [campaign_id]
 
         if export_catch_all_only:
-            conditions.append("email_status = 'Catch-all'")
+            conditions.append(f"{normalized_email_status_sql} = 'catchall'")
         elif export_valid_only:
             if export_catch_all:
-                conditions.append("email_status IN ('Valid', 'Catch-all')")
+                conditions.append(f"{normalized_email_status_sql} IN ('valid', 'catchall')")
             else:
-                conditions.append("email_status = 'Valid'")
+                conditions.append(f"{normalized_email_status_sql} = 'valid'")
 
         if exclude_public_emails:
             placeholders = ','.join(['%s' for _ in PUBLIC_EMAIL_DOMAINS])
@@ -1629,9 +1632,9 @@ async def export_campaign(campaign_id: int, request: Request):
                     SELECT
                         COUNT(*) AS total_contacts,
                         COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '') AS contacts_with_email,
-                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND email_status = 'Valid') AS contacts_valid_email,
-                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND email_status = 'Catch-all') AS contacts_catch_all_email,
-                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND email_status IN ('Valid', 'Catch-all')) AS contacts_valid_or_catch
+                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND lower(regexp_replace(coalesce(email_status, ''), '[^a-z]', '', 'g')) = 'valid') AS contacts_valid_email,
+                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND lower(regexp_replace(coalesce(email_status, ''), '[^a-z]', '', 'g')) = 'catchall') AS contacts_catch_all_email,
+                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND lower(regexp_replace(coalesce(email_status, ''), '[^a-z]', '', 'g')) IN ('valid', 'catchall')) AS contacts_valid_or_catch
                     FROM contacts
                     WHERE campaign_id = %s
                 """,
