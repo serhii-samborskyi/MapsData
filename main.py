@@ -396,9 +396,10 @@ async def get_campaigns(request: Request, partial: bool = False):
             ORDER BY sc.id DESC
         """)
 
+        campaign_rows = cursor.fetchall()
         campaigns = []
         email_metrics = _compute_campaign_email_metrics(cursor)
-        for row in cursor.fetchall():
+        for row in campaign_rows:
             campaign = dict(row)
             metrics = email_metrics.get(campaign["id"], {"email_count": 0, "valid_email_count": 0})
             campaign["email_count"] = metrics["email_count"]
