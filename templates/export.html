@@ -119,6 +119,13 @@
                 </div>
                 <div class="mb-4">
                     <label class="flex items-center">
+                        <input type="checkbox" id="exportCatchAllOnly" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="ml-2 text-sm font-medium">Export catch-all emails only</span>
+                    </label>
+                    <div class="text-xs text-gray-500 mt-1">Only export contacts with email_status = 'Catch-all'</div>
+                </div>
+                <div class="mb-4">
+                    <label class="flex items-center">
                         <input type="checkbox" id="excludePublicEmails" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
                         <span class="ml-2 text-sm font-medium">Don't export public emails</span>
                         <span id="publicEmailCount" class="ml-2 text-xs text-slate-500">(0)</span>
@@ -805,7 +812,17 @@
         function syncExportFilterControls() {
             const validOnlyCheckbox = document.getElementById('exportValidEmailsOnly');
             const catchAllCheckbox = document.getElementById('exportCatchAllEmails');
+            const catchAllOnlyCheckbox = document.getElementById('exportCatchAllOnly');
 
+            if (catchAllOnlyCheckbox.checked) {
+                validOnlyCheckbox.checked = false;
+                validOnlyCheckbox.disabled = true;
+                catchAllCheckbox.checked = false;
+                catchAllCheckbox.disabled = true;
+                return;
+            }
+
+            validOnlyCheckbox.disabled = false;
             if (!validOnlyCheckbox.checked) {
                 catchAllCheckbox.checked = false;
                 catchAllCheckbox.disabled = true;
@@ -817,8 +834,9 @@
         function getExportFilters() {
             const exportValidOnly = document.getElementById('exportValidEmailsOnly').checked;
             const exportCatchAll = exportValidOnly && document.getElementById('exportCatchAllEmails').checked;
+            const exportCatchAllOnly = document.getElementById('exportCatchAllOnly').checked;
             const excludePublicEmails = document.getElementById('excludePublicEmails').checked;
-            return { exportValidOnly, exportCatchAll, excludePublicEmails };
+            return { exportValidOnly, exportCatchAll, exportCatchAllOnly, excludePublicEmails };
         }
 
         function getEmailDomain(email) {
@@ -867,8 +885,8 @@
             }
 
             try {
-                const { exportValidOnly, exportCatchAll, excludePublicEmails } = getExportFilters();
-                const response = await fetch(`/api/campaign/${selectedCampaign}/export/preview?template_id=${selectedTemplate.id}&valid_only=${exportValidOnly}&include_catch_all=${exportCatchAll}&exclude_public_emails=${excludePublicEmails}`);
+                const { exportValidOnly, exportCatchAll, exportCatchAllOnly, excludePublicEmails } = getExportFilters();
+                const response = await fetch(`/api/campaign/${selectedCampaign}/export/preview?template_id=${selectedTemplate.id}&valid_only=${exportValidOnly}&include_catch_all=${exportCatchAll}&catch_all_only=${exportCatchAllOnly}&exclude_public_emails=${excludePublicEmails}`);
                 const data = await response.json();
 
                 const previewSection = document.getElementById('exportPreview');
@@ -906,7 +924,7 @@
             }
 
             const newListName = document.getElementById('newListName').value.trim();
-            const { exportValidOnly, exportCatchAll, excludePublicEmails } = getExportFilters();
+            const { exportValidOnly, exportCatchAll, exportCatchAllOnly, excludePublicEmails } = getExportFilters();
 
             try {
                 const response = await fetch(`/api/campaign/${selectedCampaign}/export`, {
@@ -921,6 +939,7 @@
                         newListName: newListName,
                         export_valid_only: exportValidOnly,
                         export_catch_all: exportCatchAll,
+                        export_catch_all_only: exportCatchAllOnly,
                         exclude_public_emails: excludePublicEmails
                     })
                 });
@@ -1171,10 +1190,16 @@
             try {
                 const campaignResponse = await fetch(`/api/campaign/${selectedCampaign}`);
                 const campaignData = await campaignResponse.json();
-                const { exportValidOnly, exportCatchAll, excludePublicEmails } = getExportFilters();
+                const { exportValidOnly, exportCatchAll, exportCatchAllOnly, excludePublicEmails } = getExportFilters();
                 
                 let contactsWithEmail;
-                if (exportValidOnly) {
+                if (exportCatchAllOnly) {
+                    contactsWithEmail = campaignData.contacts.filter(c =>
+                        c.email && c.email.trim() !== '' &&
+                        c.email_status === 'Catch-all' &&
+                        (!excludePublicEmails || !isPublicEmail(c.email))
+                    );
+                } else if (exportValidOnly) {
                     contactsWithEmail = campaignData.contacts.filter(c => 
                         c.email && c.email.trim() !== '' && (
                             c.email_status === 'Valid' || (exportCatchAll && c.email_status === 'Catch-all')
@@ -1187,9 +1212,14 @@
                 }
 
                 if (contactsWithEmail.length === 0) {
-                    const message = exportValidOnly ? 
-                        (exportCatchAll ? 'No contacts with valid or catch-all emails found in this campaign' : 'No contacts with valid emails found in this campaign') : 
-                        'No contacts with email found in this campaign';
+                    let message = 'No contacts with email found in this campaign';
+                    if (exportCatchAllOnly) {
+                        message = 'No contacts with catch-all emails found in this campaign';
+                    } else if (exportValidOnly) {
+                        message = exportCatchAll
+                            ? 'No contacts with valid or catch-all emails found in this campaign'
+                            : 'No contacts with valid emails found in this campaign';
+                    }
                     alert(message);
                     return;
                 }
@@ -1257,7 +1287,7 @@
 
                 try {
                     const newListName = document.getElementById('newListName').value.trim();
-                    const { exportValidOnly, exportCatchAll, excludePublicEmails } = getExportFilters();
+                    const { exportValidOnly, exportCatchAll, exportCatchAllOnly, excludePublicEmails } = getExportFilters();
                     
                     const response = await fetch(`/api/campaign/${selectedCampaign}/export`, {
                         method: 'POST',
@@ -1272,6 +1302,7 @@
                             newListName: newListName,
                             export_valid_only: exportValidOnly,
                             export_catch_all: exportCatchAll,
+                            export_catch_all_only: exportCatchAllOnly,
                             exclude_public_emails: excludePublicEmails
                         })
                     });
@@ -1375,6 +1406,7 @@
         });
         document.getElementById('templateService').addEventListener('change', updateCreateServiceUi);
         document.getElementById('exportValidEmailsOnly').addEventListener('change', syncExportFilterControls);
+        document.getElementById('exportCatchAllOnly').addEventListener('change', syncExportFilterControls);
         document.getElementById('excludePublicEmails').addEventListener('change', () => {
             updatePublicEmailCount();
         });

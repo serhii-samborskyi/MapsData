@@ -1473,6 +1473,7 @@ async def preview_export(
     template_id: int,
     valid_only: bool = False,
     include_catch_all: bool = False,
+    catch_all_only: bool = False,
     exclude_public_emails: bool = False
 ):
     """Preview what the export will look like"""
@@ -1489,7 +1490,9 @@ async def preview_export(
         ]
         params = [campaign_id]
 
-        if valid_only:
+        if catch_all_only:
+            conditions.append("email_status = 'Catch-all'")
+        elif valid_only:
             if include_catch_all:
                 conditions.append("email_status IN ('Valid', 'Catch-all')")
             else:
@@ -1586,6 +1589,7 @@ async def export_campaign(campaign_id: int, request: Request):
         offset = data.get('offset', 0)
         export_valid_only = data.get('export_valid_only', False)
         export_catch_all = data.get('export_catch_all', False)
+        export_catch_all_only = data.get('export_catch_all_only', False)
         exclude_public_emails = data.get('exclude_public_emails', False)
 
         conditions = [
@@ -1595,7 +1599,9 @@ async def export_campaign(campaign_id: int, request: Request):
         ]
         params = [campaign_id]
 
-        if export_valid_only:
+        if export_catch_all_only:
+            conditions.append("email_status = 'Catch-all'")
+        elif export_valid_only:
             if export_catch_all:
                 conditions.append("email_status IN ('Valid', 'Catch-all')")
             else:
@@ -1624,6 +1630,7 @@ async def export_campaign(campaign_id: int, request: Request):
                         COUNT(*) AS total_contacts,
                         COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '') AS contacts_with_email,
                         COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND email_status = 'Valid') AS contacts_valid_email,
+                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND email_status = 'Catch-all') AS contacts_catch_all_email,
                         COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND email_status IN ('Valid', 'Catch-all')) AS contacts_valid_or_catch
                     FROM contacts
                     WHERE campaign_id = %s
@@ -1634,6 +1641,11 @@ async def export_campaign(campaign_id: int, request: Request):
 
             if summary["contacts_with_email"] == 0:
                 detail = f"No contacts with email found in campaign (total contacts: {summary['total_contacts']})"
+            elif export_catch_all_only and summary["contacts_catch_all_email"] == 0:
+                detail = (
+                    "No contacts with catch-all email found for export filters "
+                    f"(contacts with email: {summary['contacts_with_email']}, catch-all: {summary['contacts_catch_all_email']})"
+                )
             elif export_valid_only and export_catch_all and summary["contacts_valid_or_catch"] == 0:
                 detail = (
                     "No contacts with valid/catch-all email found for export filters "
