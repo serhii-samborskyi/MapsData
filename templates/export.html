@@ -1202,14 +1202,14 @@
                 if (exportCatchAllOnly) {
                     contactsWithEmail = campaignData.contacts.filter(c =>
                         c.email && c.email.trim() !== '' &&
-                        normalizeEmailStatus(c.email_status) === 'catchall' &&
+                        normalizeEmailStatus(c.email_status).includes('catchall') &&
                         (!excludePublicEmails || !isPublicEmail(c.email))
                     );
                 } else if (exportValidOnly) {
                     contactsWithEmail = campaignData.contacts.filter(c => 
                         c.email && c.email.trim() !== '' && (
-                            normalizeEmailStatus(c.email_status) === 'valid' ||
-                            (exportCatchAll && normalizeEmailStatus(c.email_status) === 'catchall')
+                            normalizeEmailStatus(c.email_status).startsWith('valid') ||
+                            (exportCatchAll && normalizeEmailStatus(c.email_status).includes('catchall'))
                         ) && (!excludePublicEmails || !isPublicEmail(c.email))
                     );
                 } else {
