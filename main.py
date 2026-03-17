@@ -42,26 +42,6 @@ PUBLIC_EMAIL_DOMAINS = [
     '163.com'
 ]
 
-def _normalized_status_sql(column_ref: str) -> str:
-    """Normalize status text for robust comparisons (case/punctuation-insensitive)."""
-    return f"lower(regexp_replace(coalesce(nullif(btrim({column_ref}), ''), ''), '[^a-z]', '', 'g'))"
-
-def _status_match_sql(email_status_ref: str, legacy_status_ref: str):
-    """
-    Build SQL snippets for status matching.
-    A contact is considered:
-    - valid: email_status OR legacy status starts with 'valid'
-    - catch-all: email_status OR legacy status contains 'catchall'
-    """
-    email_norm = _normalized_status_sql(email_status_ref)
-    legacy_norm = _normalized_status_sql(legacy_status_ref)
-    valid_sql = (
-        f"({email_norm} LIKE 'valid%%' OR {legacy_norm} LIKE 'valid%%' "
-        f"OR {email_norm} = 'verified' OR {legacy_norm} = 'verified')"
-    )
-    catch_all_sql = f"(strpos({email_norm}, 'catchall') > 0 OR strpos({legacy_norm}, 'catchall') > 0)"
-    return valid_sql, catch_all_sql
-
 def _normalize_status_value(value: Any) -> str:
     return ''.join(ch for ch in str(value or '').lower() if ch.isalpha())
 
@@ -93,6 +73,34 @@ def _is_public_email_address(email: str) -> bool:
         return False
     domain = email.rsplit("@", 1)[-1].strip().lower()
     return domain in PUBLIC_EMAIL_DOMAINS
+
+def _compute_campaign_email_metrics(cursor) -> dict:
+    """
+    Return per-campaign email metrics using the same normalization rules as export logic.
+    This avoids inconsistencies from join-heavy aggregate queries.
+    """
+    cursor.execute("""
+        SELECT campaign_id, email_status, status
+        FROM contacts
+        WHERE campaign_id IS NOT NULL
+          AND email IS NOT NULL
+          AND btrim(email) != ''
+    """)
+
+    metrics = {}
+    for row in cursor.fetchall():
+        campaign_id = row.get("campaign_id")
+        if campaign_id is None:
+            continue
+
+        campaign_metrics = metrics.setdefault(campaign_id, {"email_count": 0, "valid_email_count": 0})
+        campaign_metrics["email_count"] += 1
+
+        normalized_status = _resolve_contact_email_status(row)
+        if _is_valid_email_status(normalized_status):
+            campaign_metrics["valid_email_count"] += 1
+
+    return metrics
 
 # Initialize database
 init_db()
@@ -367,8 +375,6 @@ async def get_verify_page(request: Request):
 
 @app.get("/", response_class=HTMLResponse)
 async def get_campaigns(request: Request, partial: bool = False):
-    valid_status_match_sql, _ = _status_match_sql("c.email_status", "c.status")
-
     with get_db() as conn:
         cursor = conn.cursor()
         
@@ -382,17 +388,21 @@ async def get_campaigns(request: Request, partial: bool = False):
                 COUNT(DISTINCT c.id) as total_contacts,
                 COUNT(DISTINCT CASE WHEN r.status = 'completed' THEN r.id END) as completed_requests,
                 COUNT(DISTINCT CASE WHEN c.email IS NOT NULL AND btrim(c.email) != '' THEN c.id END) as email_count,
-                COUNT(DISTINCT CASE WHEN c.email IS NOT NULL AND btrim(c.email) != '' AND {valid_status_match_sql} THEN c.id END) as valid_email_count
+                0 as valid_email_count
             FROM search_campaigns sc
             LEFT JOIN requests r ON sc.id = r.campaign_id
             LEFT JOIN contacts c ON sc.id = c.campaign_id
             GROUP BY sc.id, sc.name, sc.status
             ORDER BY sc.id DESC
         """)
-        
+
         campaigns = []
+        email_metrics = _compute_campaign_email_metrics(cursor)
         for row in cursor.fetchall():
             campaign = dict(row)
+            metrics = email_metrics.get(campaign["id"], {"email_count": 0, "valid_email_count": 0})
+            campaign["email_count"] = metrics["email_count"]
+            campaign["valid_email_count"] = metrics["valid_email_count"]
             
             # Only load detailed data if specifically requested (not for main list view)
             if not partial:
@@ -596,6 +606,11 @@ async def get_all_campaigns():
             ORDER BY sc.status = 'active' DESC, sc.name ASC
         """)
         campaigns = [dict(row) for row in cursor.fetchall()]
+        email_metrics = _compute_campaign_email_metrics(cursor)
+        for campaign in campaigns:
+            metrics = email_metrics.get(campaign["id"], {"email_count": 0, "valid_email_count": 0})
+            campaign["email_count"] = metrics["email_count"]
+            campaign["valid_email_count"] = metrics["valid_email_count"]
         return {"campaigns": campaigns}
 
 @app.get("/api/campaign/{campaign_name}/requests")
