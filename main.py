@@ -338,7 +338,7 @@ async def get_campaigns(request: Request, partial: bool = False):
         cursor = conn.cursor()
         
         # Single optimized query to get all campaign data at once
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT 
                 sc.id,
                 sc.name,
@@ -1647,7 +1647,7 @@ async def export_campaign(campaign_id: int, request: Request):
 
         if not contacts:
             cursor.execute(
-                """
+                f"""
                     SELECT
                         COUNT(*) AS total_contacts,
                         COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '') AS contacts_with_email,
