@@ -42,8 +42,22 @@ PUBLIC_EMAIL_DOMAINS = [
     '163.com'
 ]
 
-# Prefer email_status for verification/export state; fallback to status for legacy rows.
-NORMALIZED_EMAIL_STATUS_SQL = "lower(regexp_replace(coalesce(nullif(btrim(email_status), ''), nullif(btrim(status), ''), ''), '[^a-z]', '', 'g'))"
+def _normalized_status_sql(column_ref: str) -> str:
+    """Normalize status text for robust comparisons (case/punctuation-insensitive)."""
+    return f"lower(regexp_replace(coalesce(nullif(btrim({column_ref}), ''), ''), '[^a-z]', '', 'g'))"
+
+def _status_match_sql(email_status_ref: str, legacy_status_ref: str):
+    """
+    Build SQL snippets for status matching.
+    A contact is considered:
+    - valid: email_status OR legacy status starts with 'valid'
+    - catch-all: email_status OR legacy status contains 'catchall'
+    """
+    email_norm = _normalized_status_sql(email_status_ref)
+    legacy_norm = _normalized_status_sql(legacy_status_ref)
+    valid_sql = f"({email_norm} LIKE 'valid%%' OR {legacy_norm} LIKE 'valid%%')"
+    catch_all_sql = f"(strpos({email_norm}, 'catchall') > 0 OR strpos({legacy_norm}, 'catchall') > 0)"
+    return valid_sql, catch_all_sql
 
 # Initialize database
 init_db()
@@ -318,6 +332,8 @@ async def get_verify_page(request: Request):
 
 @app.get("/", response_class=HTMLResponse)
 async def get_campaigns(request: Request, partial: bool = False):
+    valid_status_match_sql, _ = _status_match_sql("c.email_status", "c.status")
+
     with get_db() as conn:
         cursor = conn.cursor()
         
@@ -331,7 +347,7 @@ async def get_campaigns(request: Request, partial: bool = False):
                 COUNT(DISTINCT c.id) as total_contacts,
                 COUNT(DISTINCT CASE WHEN r.status = 'completed' THEN r.id END) as completed_requests,
                 COUNT(DISTINCT CASE WHEN c.email IS NOT NULL AND btrim(c.email) != '' THEN c.id END) as email_count,
-                COUNT(DISTINCT CASE WHEN c.email IS NOT NULL AND btrim(c.email) != '' AND lower(regexp_replace(coalesce(nullif(btrim(c.email_status), ''), nullif(btrim(c.status), ''), ''), '[^a-z]', '', 'g')) LIKE 'valid%%' THEN c.id END) as valid_email_count
+                COUNT(DISTINCT CASE WHEN c.email IS NOT NULL AND btrim(c.email) != '' AND {valid_status_match_sql} THEN c.id END) as valid_email_count
             FROM search_campaigns sc
             LEFT JOIN requests r ON sc.id = r.campaign_id
             LEFT JOIN contacts c ON sc.id = c.campaign_id
@@ -1484,7 +1500,7 @@ async def preview_export(
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
 
-    normalized_email_status_sql = NORMALIZED_EMAIL_STATUS_SQL
+    valid_status_match_sql, catch_all_status_match_sql = _status_match_sql("email_status", "status")
 
     with get_db() as conn:
         cursor = conn.cursor()
@@ -1496,14 +1512,12 @@ async def preview_export(
         params = [campaign_id]
 
         if catch_all_only:
-            conditions.append(f"strpos({normalized_email_status_sql}, 'catchall') > 0")
+            conditions.append(catch_all_status_match_sql)
         elif valid_only:
             if include_catch_all:
-                conditions.append(
-                    f"({normalized_email_status_sql} LIKE 'valid%%' OR strpos({normalized_email_status_sql}, 'catchall') > 0)"
-                )
+                conditions.append(f"({valid_status_match_sql} OR {catch_all_status_match_sql})")
             else:
-                conditions.append(f"{normalized_email_status_sql} LIKE 'valid%%'")
+                conditions.append(valid_status_match_sql)
 
         if exclude_public_emails:
             placeholders = ','.join(['%s' for _ in PUBLIC_EMAIL_DOMAINS])
@@ -1566,7 +1580,7 @@ async def export_campaign(campaign_id: int, request: Request):
 
     # Use field_mappings from request if provided, otherwise use template's field_mappings
     field_mappings = data.get('field_mappings', template['field_mappings'])
-    normalized_email_status_sql = NORMALIZED_EMAIL_STATUS_SQL
+    valid_status_match_sql, catch_all_status_match_sql = _status_match_sql("email_status", "status")
 
     # Rate limiting check
     now = datetime.now()
@@ -1608,14 +1622,12 @@ async def export_campaign(campaign_id: int, request: Request):
         params = [campaign_id]
 
         if export_catch_all_only:
-            conditions.append(f"strpos({normalized_email_status_sql}, 'catchall') > 0")
+            conditions.append(catch_all_status_match_sql)
         elif export_valid_only:
             if export_catch_all:
-                conditions.append(
-                    f"({normalized_email_status_sql} LIKE 'valid%%' OR strpos({normalized_email_status_sql}, 'catchall') > 0)"
-                )
+                conditions.append(f"({valid_status_match_sql} OR {catch_all_status_match_sql})")
             else:
-                conditions.append(f"{normalized_email_status_sql} LIKE 'valid%%'")
+                conditions.append(valid_status_match_sql)
 
         if exclude_public_emails:
             placeholders = ','.join(['%s' for _ in PUBLIC_EMAIL_DOMAINS])
@@ -1639,9 +1651,9 @@ async def export_campaign(campaign_id: int, request: Request):
                     SELECT
                         COUNT(*) AS total_contacts,
                         COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '') AS contacts_with_email,
-                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND lower(regexp_replace(coalesce(nullif(btrim(email_status), ''), nullif(btrim(status), ''), ''), '[^a-z]', '', 'g')) LIKE 'valid%%') AS contacts_valid_email,
-                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND strpos(lower(regexp_replace(coalesce(nullif(btrim(email_status), ''), nullif(btrim(status), ''), ''), '[^a-z]', '', 'g')), 'catchall') > 0) AS contacts_catch_all_email,
-                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND (lower(regexp_replace(coalesce(nullif(btrim(email_status), ''), nullif(btrim(status), ''), ''), '[^a-z]', '', 'g')) LIKE 'valid%%' OR strpos(lower(regexp_replace(coalesce(nullif(btrim(email_status), ''), nullif(btrim(status), ''), ''), '[^a-z]', '', 'g')), 'catchall') > 0)) AS contacts_valid_or_catch
+                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND {valid_status_match_sql}) AS contacts_valid_email,
+                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND {catch_all_status_match_sql}) AS contacts_catch_all_email,
+                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND ({valid_status_match_sql} OR {catch_all_status_match_sql})) AS contacts_valid_or_catch
                     FROM contacts
                     WHERE campaign_id = %s
                 """,
