@@ -256,6 +256,12 @@
         let currentVerificationJobId = null;
         let verificationPollingTimer = null;
 
+        function normalizeEmailStatus(status) {
+            return String(status || '')
+                .toLowerCase()
+                .replace(/[^a-z]/g, '');
+        }
+
         // Load campaigns and templates on page load
         document.addEventListener('DOMContentLoaded', async () => {
             await loadCampaigns();
@@ -322,10 +328,20 @@
                 
                 const contacts = data.contacts;
                 const withEmail = contacts.filter(c => c.email && c.email.trim() !== '');
-                const verified = withEmail.filter(c => c.email_status === 'verified' || c.email_status === 'Valid');
-                const invalid = withEmail.filter(c => c.email_status === 'invalid' || c.email_status === 'Invalid' || c.email_status === 'bounced');
-                const catchall = withEmail.filter(c => c.email_status === 'catch-all' || c.email_status === 'Catch-all');
-                const otherStatus = withEmail.filter(c => c.email_status && !['verified', 'Valid', 'invalid', 'Invalid', 'bounced', 'catch-all', 'Catch-all'].includes(c.email_status));
+                const statusOf = (contact) => normalizeEmailStatus(contact.email_status || contact.status);
+                const verified = withEmail.filter(c => statusOf(c).startsWith('valid') || statusOf(c) === 'verified');
+                const invalid = withEmail.filter(c => statusOf(c).startsWith('invalid') || statusOf(c) === 'bounced');
+                const catchall = withEmail.filter(c => statusOf(c).includes('catchall'));
+                const otherStatus = withEmail.filter(c => {
+                    const status = statusOf(c);
+                    return status && !(
+                        status.startsWith('valid') ||
+                        status === 'verified' ||
+                        status.startsWith('invalid') ||
+                        status === 'bounced' ||
+                        status.includes('catchall')
+                    );
+                });
 
                 document.getElementById('withEmail').textContent = withEmail.length;
                 document.getElementById('verified').textContent = verified.length;

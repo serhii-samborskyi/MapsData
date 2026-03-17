@@ -42,6 +42,9 @@ PUBLIC_EMAIL_DOMAINS = [
     '163.com'
 ]
 
+# Prefer email_status for verification/export state; fallback to status for legacy rows.
+NORMALIZED_EMAIL_STATUS_SQL = "lower(regexp_replace(coalesce(nullif(btrim(email_status), ''), nullif(btrim(status), ''), ''), '[^a-z]', '', 'g'))"
+
 # Initialize database
 init_db()
 
@@ -327,8 +330,8 @@ async def get_campaigns(request: Request, partial: bool = False):
                 COUNT(DISTINCT r.id) as total_requests,
                 COUNT(DISTINCT c.id) as total_contacts,
                 COUNT(DISTINCT CASE WHEN r.status = 'completed' THEN r.id END) as completed_requests,
-                COUNT(DISTINCT CASE WHEN c.email IS NOT NULL AND c.email != '' THEN c.id END) as email_count,
-                COUNT(DISTINCT CASE WHEN c.email IS NOT NULL AND c.email != '' AND c.email_status = 'Valid' THEN c.id END) as valid_email_count
+                COUNT(DISTINCT CASE WHEN c.email IS NOT NULL AND btrim(c.email) != '' THEN c.id END) as email_count,
+                COUNT(DISTINCT CASE WHEN c.email IS NOT NULL AND btrim(c.email) != '' AND lower(regexp_replace(coalesce(nullif(btrim(c.email_status), ''), nullif(btrim(c.status), ''), ''), '[^a-z]', '', 'g')) LIKE 'valid%%' THEN c.id END) as valid_email_count
             FROM search_campaigns sc
             LEFT JOIN requests r ON sc.id = r.campaign_id
             LEFT JOIN contacts c ON sc.id = c.campaign_id
@@ -1481,7 +1484,7 @@ async def preview_export(
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
 
-    normalized_email_status_sql = "lower(regexp_replace(coalesce(email_status, ''), '[^a-z]', '', 'g'))"
+    normalized_email_status_sql = NORMALIZED_EMAIL_STATUS_SQL
 
     with get_db() as conn:
         cursor = conn.cursor()
@@ -1563,7 +1566,7 @@ async def export_campaign(campaign_id: int, request: Request):
 
     # Use field_mappings from request if provided, otherwise use template's field_mappings
     field_mappings = data.get('field_mappings', template['field_mappings'])
-    normalized_email_status_sql = "lower(regexp_replace(coalesce(email_status, ''), '[^a-z]', '', 'g'))"
+    normalized_email_status_sql = NORMALIZED_EMAIL_STATUS_SQL
 
     # Rate limiting check
     now = datetime.now()
@@ -1636,9 +1639,9 @@ async def export_campaign(campaign_id: int, request: Request):
                     SELECT
                         COUNT(*) AS total_contacts,
                         COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '') AS contacts_with_email,
-                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND lower(regexp_replace(coalesce(email_status, ''), '[^a-z]', '', 'g')) LIKE 'valid%%') AS contacts_valid_email,
-                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND strpos(lower(regexp_replace(coalesce(email_status, ''), '[^a-z]', '', 'g')), 'catchall') > 0) AS contacts_catch_all_email,
-                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND (lower(regexp_replace(coalesce(email_status, ''), '[^a-z]', '', 'g')) LIKE 'valid%%' OR strpos(lower(regexp_replace(coalesce(email_status, ''), '[^a-z]', '', 'g')), 'catchall') > 0)) AS contacts_valid_or_catch
+                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND lower(regexp_replace(coalesce(nullif(btrim(email_status), ''), nullif(btrim(status), ''), ''), '[^a-z]', '', 'g')) LIKE 'valid%%') AS contacts_valid_email,
+                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND strpos(lower(regexp_replace(coalesce(nullif(btrim(email_status), ''), nullif(btrim(status), ''), ''), '[^a-z]', '', 'g')), 'catchall') > 0) AS contacts_catch_all_email,
+                        COUNT(*) FILTER (WHERE email IS NOT NULL AND btrim(email) != '' AND (lower(regexp_replace(coalesce(nullif(btrim(email_status), ''), nullif(btrim(status), ''), ''), '[^a-z]', '', 'g')) LIKE 'valid%%' OR strpos(lower(regexp_replace(coalesce(nullif(btrim(email_status), ''), nullif(btrim(status), ''), ''), '[^a-z]', '', 'g')), 'catchall') > 0)) AS contacts_valid_or_catch
                     FROM contacts
                     WHERE campaign_id = %s
                 """,
@@ -2267,17 +2270,23 @@ async def get_email_statuses(campaign_id: int):
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT email_status, COUNT(*) as count
+            SELECT
+                coalesce(nullif(btrim(email_status), ''), nullif(btrim(status), ''), 'unknown') AS email_status,
+                COUNT(*) as count
             FROM contacts 
-            WHERE campaign_id = %s AND email IS NOT NULL AND email != ''
+            WHERE campaign_id = %s AND email IS NOT NULL AND btrim(email) != ''
             GROUP BY email_status
         """, (campaign_id,))
         statuses = [dict(row) for row in cursor.fetchall()]
         
         cursor.execute("""
-            SELECT id, email, email_status
+            SELECT
+                id,
+                email,
+                coalesce(nullif(btrim(email_status), ''), nullif(btrim(status), ''), 'unknown') AS email_status,
+                status AS raw_status
             FROM contacts 
-            WHERE campaign_id = %s AND email IS NOT NULL AND email != ''
+            WHERE campaign_id = %s AND email IS NOT NULL AND btrim(email) != ''
             ORDER BY email_status, id
         """, (campaign_id,))
         details = [dict(row) for row in cursor.fetchall()]

@@ -1214,14 +1214,14 @@
                 if (exportCatchAllOnly) {
                     contactsWithEmail = campaignData.contacts.filter(c =>
                         c.email && c.email.trim() !== '' &&
-                        normalizeEmailStatus(c.email_status).includes('catchall') &&
+                        normalizeEmailStatus(c.email_status || c.status).includes('catchall') &&
                         (!excludePublicEmails || !isPublicEmail(c.email))
                     );
                 } else if (exportValidOnly) {
                     contactsWithEmail = campaignData.contacts.filter(c => 
                         c.email && c.email.trim() !== '' && (
-                            normalizeEmailStatus(c.email_status).startsWith('valid') ||
-                            (exportCatchAll && normalizeEmailStatus(c.email_status).includes('catchall'))
+                            normalizeEmailStatus(c.email_status || c.status).startsWith('valid') ||
+                            (exportCatchAll && normalizeEmailStatus(c.email_status || c.status).includes('catchall'))
                         ) && (!excludePublicEmails || !isPublicEmail(c.email))
                     );
                 } else {
