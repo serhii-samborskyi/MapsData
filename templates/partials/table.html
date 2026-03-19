@@ -42,6 +42,11 @@
                         <div class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-sky-500 to-blue-600" style="width: {{ completion }}%"></div>
                     </div>
                 </div>
+                <div class="mt-3">
+                    <span id="pipeline-badge-{{ campaign.id }}" class="inline-flex items-center rounded-full bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-600">
+                        Pipeline: pending
+                    </span>
+                </div>
             </td>
             <td data-label="Total Requests" class="text-sm text-slate-700">{{ campaign.total_requests or 0 }}</td>
             <td data-label="Contacts" class="text-sm text-slate-700">{{ campaign.total_contacts or 0 }}</td>
@@ -53,6 +58,8 @@
             </td>
             <td data-label="Actions" class="actions space-y-2">
                 <div class="hidden md:flex flex-wrap gap-2">
+                    <button id="pipeline-start-btn-{{ campaign.id }}" onclick="startPipeline({{ campaign.id }})" class="bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-emerald-200 transition-all">Start Pipeline</button>
+                    <button onclick="togglePipeline({{ campaign.id }})" class="bg-slate-100 text-slate-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-slate-200 transition-all">Pipeline</button>
                     <button onclick="toggleRequests({{ campaign.id }})" class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-blue-200 transition-all">Requests</button>
                     <button onclick="toggleContacts({{ campaign.id }})" class="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-purple-200 transition-all">Contacts</button>
                     <button onclick="toggleEmails({{ campaign.id }})" class="bg-cyan-100 text-cyan-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-cyan-200 transition-all">Emails</button>
@@ -69,6 +76,8 @@
                         <span class="action-menu__chevron">▾</span>
                     </summary>
                     <div class="action-menu__panel">
+                        <button id="pipeline-start-btn-mobile-{{ campaign.id }}" onclick="startPipeline({{ campaign.id }})" class="action-menu__item bg-emerald-100 text-emerald-700">Start Pipeline</button>
+                        <button onclick="togglePipeline({{ campaign.id }})" class="action-menu__item bg-slate-100 text-slate-700">Pipeline</button>
                         <button onclick="toggleRequests({{ campaign.id }})" class="action-menu__item bg-blue-100 text-blue-700">Requests</button>
                         <button onclick="toggleContacts({{ campaign.id }})" class="action-menu__item bg-purple-100 text-purple-700">Contacts</button>
                         <button onclick="toggleEmails({{ campaign.id }})" class="action-menu__item bg-cyan-100 text-cyan-700">Emails</button>
@@ -89,6 +98,23 @@
                         <div class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-sky-500 to-blue-600" style="width: {{ completion }}%"></div>
                     </div>
                     <div class="absolute w-full text-center text-xs text-slate-500 mt-1">{{ completion }}% complete</div>
+                </div>
+            </td>
+        </tr>
+        <tr id="pipeline-{{ campaign.id }}" class="hidden details-row">
+            <td colspan="7" class="no-label px-4 py-2">
+                <div class="bg-slate-50 rounded-lg p-4 space-y-3 border border-slate-200/70">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <div class="text-sm font-semibold text-slate-700">Pipeline Automation</div>
+                        <div id="pipeline-run-meta-{{ campaign.id }}" class="text-xs text-slate-500">Run: not started</div>
+                    </div>
+                    <div id="pipeline-timeline-{{ campaign.id }}" class="flex flex-wrap gap-2">
+                        {% for stage in ['maps_scrape','cleanup_contacts','email_fast','email_fallback','finalize'] %}
+                        <span class="inline-flex items-center rounded-full bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-600">{{ stage }}</span>
+                        {% endfor %}
+                    </div>
+                    <div id="pipeline-stats-{{ campaign.id }}" class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-slate-700"></div>
+                    <div id="pipeline-error-{{ campaign.id }}" class="hidden rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"></div>
                 </div>
             </td>
         </tr>

@@ -7,7 +7,9 @@ from templates import TemplateManager, ManyReachIntegration, SmartLeadIntegratio
 from email_verification import EmailVerificationManager, EmailVerificationService, MyEmailVerifierIntegration
 from typing import List, Union, Any, Optional
 from psycopg2 import DataError, IntegrityError
+from psycopg2.extras import Json
 import json
+import re
 import time
 from datetime import datetime, timedelta
 import threading
@@ -41,6 +43,245 @@ PUBLIC_EMAIL_DOMAINS = [
     '126.com',
     '163.com'
 ]
+
+PIPELINE_STATUSES = ("pending", "running", "completed", "failed", "canceled")
+PIPELINE_ACTIVE_STATUSES = {"pending", "running"}
+PIPELINE_TERMINAL_STATUSES = {"completed", "failed", "canceled"}
+PIPELINE_STAGES = (
+    "maps_scrape",
+    "cleanup_contacts",
+    "email_fast",
+    "email_fallback",
+    "finalize",
+)
+PIPELINE_STAGE_INDEX = {stage: index for index, stage in enumerate(PIPELINE_STAGES)}
+PIPELINE_DEFAULT_LEASE_SECONDS = 120
+PIPELINE_MIN_LEASE_SECONDS = 30
+PIPELINE_MAX_LEASE_SECONDS = 900
+
+
+def _now_utc() -> datetime:
+    return datetime.utcnow()
+
+
+def _iso(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def _normalize_domain(value: Any) -> str:
+    if value is None:
+        return ""
+    domain = str(value).strip().lower()
+    if not domain:
+        return ""
+
+    domain = re.sub(r"^\s*https?://", "", domain)
+    domain = re.sub(r"^www\.", "", domain)
+    domain = domain.split("/")[0].split("?")[0].split("#")[0].strip(".")
+    return domain.strip()
+
+
+def _is_valid_domain(domain: str) -> bool:
+    if not domain:
+        return False
+    if len(domain) > 253 or "_" in domain or " " in domain:
+        return False
+    if "." not in domain:
+        return False
+    if not re.fullmatch(r"[a-z0-9.-]+", domain):
+        return False
+
+    labels = domain.split(".")
+    if any(not label for label in labels):
+        return False
+    if any(label.startswith("-") or label.endswith("-") for label in labels):
+        return False
+    tld = labels[-1]
+    if len(tld) < 2 or not tld.isalpha():
+        return False
+    return True
+
+
+def _normalized_contact_key(contact: dict) -> str:
+    email = str(contact.get("email") or "").strip().lower()
+    if email:
+        return f"email:{email}"
+
+    normalized_domain = _normalize_domain(contact.get("domain"))
+    if _is_valid_domain(normalized_domain):
+        return f"domain:{normalized_domain}"
+
+    phone = re.sub(r"\D+", "", str(contact.get("phone") or ""))
+    if phone:
+        return f"phone:{phone}"
+
+    place_id = str(contact.get("place_id") or "").strip().lower()
+    if place_id:
+        return f"place:{place_id}"
+
+    business_name = str(contact.get("business_name") or "").strip().lower()
+    if business_name:
+        return f"name:{business_name}"
+
+    return f"id:{contact.get('id')}"
+
+
+def _compute_campaign_stats_from_contacts(contacts: List[dict], last_updated_at: Optional[str] = None) -> dict:
+    total_contacts = len(contacts)
+    unique_keys = {_normalized_contact_key(contact) for contact in contacts}
+    unique_contacts = len(unique_keys)
+    duplicates_removed = max(0, total_contacts - unique_contacts)
+
+    contacts_with_domain = 0
+    contacts_without_domain = 0
+    contacts_with_email = 0
+    contacts_without_email = 0
+
+    for contact in contacts:
+        normalized_domain = _normalize_domain(contact.get("domain"))
+        if _is_valid_domain(normalized_domain):
+            contacts_with_domain += 1
+        else:
+            contacts_without_domain += 1
+
+        email = str(contact.get("email") or "").strip()
+        if email:
+            contacts_with_email += 1
+        else:
+            contacts_without_email += 1
+
+    return {
+        "total_contacts": total_contacts,
+        "unique_contacts": unique_contacts,
+        "contacts_with_domain": contacts_with_domain,
+        "contacts_without_domain": contacts_without_domain,
+        "contacts_with_email": contacts_with_email,
+        "contacts_without_email": contacts_without_email,
+        "duplicates_removed": duplicates_removed,
+        "last_updated_at": last_updated_at,
+    }
+
+
+def _next_pipeline_stage(stage: str) -> Optional[str]:
+    if stage not in PIPELINE_STAGE_INDEX:
+        return None
+    next_index = PIPELINE_STAGE_INDEX[stage] + 1
+    if next_index >= len(PIPELINE_STAGES):
+        return None
+    return PIPELINE_STAGES[next_index]
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_lease_seconds(value: Any) -> int:
+    lease_seconds = _safe_int(value, PIPELINE_DEFAULT_LEASE_SECONDS)
+    if lease_seconds < PIPELINE_MIN_LEASE_SECONDS:
+        return PIPELINE_MIN_LEASE_SECONDS
+    if lease_seconds > PIPELINE_MAX_LEASE_SECONDS:
+        return PIPELINE_MAX_LEASE_SECONDS
+    return lease_seconds
+
+
+async def _read_json_body(request: Request) -> dict:
+    try:
+        payload = await request.json()
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _serialize_pipeline_stage(stage_row: dict) -> dict:
+    return {
+        "stage": stage_row["stage"],
+        "stage_order": stage_row["stage_order"],
+        "status": stage_row["status"],
+        "retries": stage_row.get("retries", 0),
+        "actor": stage_row.get("actor"),
+        "worker_id": stage_row.get("worker_id"),
+        "worker_metadata": stage_row.get("worker_metadata"),
+        "started_at": _iso(stage_row.get("started_at")),
+        "completed_at": _iso(stage_row.get("completed_at")),
+        "failed_at": _iso(stage_row.get("failed_at")),
+        "canceled_at": _iso(stage_row.get("canceled_at")),
+        "last_heartbeat_at": _iso(stage_row.get("last_heartbeat_at")),
+        "error_message": stage_row.get("error_message"),
+        "error_payload": stage_row.get("error_payload"),
+        "updated_at": _iso(stage_row.get("updated_at")),
+    }
+
+
+def _serialize_pipeline_status(campaign_id: int, run: Optional[dict], stages: List[dict]) -> dict:
+    if not run:
+        return {
+            "campaign_id": campaign_id,
+            "run_id": None,
+            "status": "pending",
+            "current_stage": None,
+            "stages": [],
+            "counts": {
+                "total_stages": len(PIPELINE_STAGES),
+                "pending": len(PIPELINE_STAGES),
+                "running": 0,
+                "completed": 0,
+                "failed": 0,
+                "canceled": 0,
+                "completed_stages": 0,
+            },
+            "retries": 0,
+            "timestamps": {},
+            "latest_error": None,
+            "worker": None,
+            "lease_expires_at": None,
+            "last_heartbeat_at": None,
+        }
+
+    stage_rows = [_serialize_pipeline_stage(stage) for stage in stages]
+    stage_status_counts = {status: 0 for status in PIPELINE_STATUSES}
+    for stage in stage_rows:
+        stage_status_counts[stage["status"]] = stage_status_counts.get(stage["status"], 0) + 1
+
+    return {
+        "campaign_id": campaign_id,
+        "run_id": run["id"],
+        "status": run["status"],
+        "current_stage": run.get("current_stage"),
+        "stages": stage_rows,
+        "counts": {
+            "total_stages": len(PIPELINE_STAGES),
+            "pending": stage_status_counts.get("pending", 0),
+            "running": stage_status_counts.get("running", 0),
+            "completed": stage_status_counts.get("completed", 0),
+            "failed": stage_status_counts.get("failed", 0),
+            "canceled": stage_status_counts.get("canceled", 0),
+            "completed_stages": stage_status_counts.get("completed", 0),
+        },
+        "retries": run.get("retries", 0),
+        "timestamps": {
+            "created_at": _iso(run.get("created_at")),
+            "updated_at": _iso(run.get("updated_at")),
+            "started_at": _iso(run.get("started_at")),
+            "completed_at": _iso(run.get("completed_at")),
+            "failed_at": _iso(run.get("failed_at")),
+            "canceled_at": _iso(run.get("canceled_at")),
+        },
+        "latest_error": run.get("latest_error"),
+        "worker": {
+            "worker_id": run.get("worker_id"),
+            "worker_metadata": run.get("worker_metadata"),
+            "actor": run.get("actor"),
+        },
+        "lease_expires_at": _iso(run.get("lease_expires_at")),
+        "last_heartbeat_at": _iso(run.get("last_heartbeat_at")),
+    }
 
 def _normalize_status_value(value: Any) -> str:
     return ''.join(ch for ch in str(value or '').lower() if ch.isalpha())
@@ -443,6 +684,9 @@ async def delete_campaign(campaign_id: int):
             raise HTTPException(status_code=404, detail="Campaign not found")
 
         # Delete child rows first to satisfy FK constraints.
+        cursor.execute("DELETE FROM pipeline_run_locks WHERE campaign_id = %s", (campaign_id,))
+        cursor.execute("DELETE FROM pipeline_run_stages WHERE campaign_id = %s", (campaign_id,))
+        cursor.execute("DELETE FROM pipeline_runs WHERE campaign_id = %s", (campaign_id,))
         cursor.execute("DELETE FROM export_logs WHERE campaign_id = %s", (campaign_id,))
         cursor.execute("DELETE FROM email_verification_logs WHERE campaign_id = %s", (campaign_id,))
         cursor.execute("DELETE FROM contacts WHERE campaign_id = %s", (campaign_id,))
@@ -473,6 +717,9 @@ async def delete_all_campaigns():
         verification_templates_count = cursor.fetchone()["count"]
 
         # Delete campaign-related records in FK-safe order.
+        cursor.execute("DELETE FROM pipeline_run_locks")
+        cursor.execute("DELETE FROM pipeline_run_stages")
+        cursor.execute("DELETE FROM pipeline_runs")
         cursor.execute("DELETE FROM contacts")
         cursor.execute("DELETE FROM requests")
         cursor.execute("DELETE FROM export_logs")
@@ -626,6 +873,807 @@ async def get_all_campaigns():
             campaign["email_count"] = metrics["email_count"]
             campaign["valid_email_count"] = metrics["valid_email_count"]
         return {"campaigns": campaigns}
+
+
+def _ensure_campaign_exists(cursor, campaign_id: int):
+    cursor.execute("SELECT id FROM search_campaigns WHERE id = %s", (campaign_id,))
+    if not cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+
+def _load_latest_pipeline_run(cursor, campaign_id: int) -> Optional[dict]:
+    cursor.execute("""
+        SELECT *
+        FROM pipeline_runs
+        WHERE campaign_id = %s
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+    """, (campaign_id,))
+    run = cursor.fetchone()
+    return dict(run) if run else None
+
+
+def _load_pipeline_run(cursor, run_id: int) -> Optional[dict]:
+    cursor.execute("SELECT * FROM pipeline_runs WHERE id = %s", (run_id,))
+    run = cursor.fetchone()
+    return dict(run) if run else None
+
+
+def _load_run_stages(cursor, run_id: int) -> List[dict]:
+    cursor.execute("""
+        SELECT *
+        FROM pipeline_run_stages
+        WHERE run_id = %s
+        ORDER BY stage_order ASC
+    """, (run_id,))
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def _current_stage_row(cursor, run_id: int, current_stage: str) -> Optional[dict]:
+    cursor.execute("""
+        SELECT *
+        FROM pipeline_run_stages
+        WHERE run_id = %s AND stage = %s
+        LIMIT 1
+    """, (run_id, current_stage))
+    stage_row = cursor.fetchone()
+    return dict(stage_row) if stage_row else None
+
+
+def _claim_lock_is_active(lock_row: Optional[dict], worker_id: str, now: datetime) -> bool:
+    if not lock_row:
+        return False
+    lock_owner = lock_row.get("worker_id")
+    lease_expires_at = lock_row.get("lease_expires_at")
+    if not lock_owner or lease_expires_at is None:
+        return False
+    if lock_owner == worker_id:
+        return False
+    return lease_expires_at > now
+
+
+def _upsert_pipeline_lock(cursor, run_id: int, campaign_id: int, worker_id: str, lease_expires_at: datetime, metadata: dict):
+    lock_token = str(uuid4())
+    cursor.execute("""
+        INSERT INTO pipeline_run_locks (run_id, campaign_id, worker_id, lock_token, metadata, lease_expires_at, updated_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (run_id) DO UPDATE
+        SET campaign_id = EXCLUDED.campaign_id,
+            worker_id = EXCLUDED.worker_id,
+            lock_token = EXCLUDED.lock_token,
+            metadata = EXCLUDED.metadata,
+            lease_expires_at = EXCLUDED.lease_expires_at,
+            updated_at = EXCLUDED.updated_at
+    """, (run_id, campaign_id, worker_id, lock_token, Json(metadata), lease_expires_at, _now_utc()))
+
+
+@app.post("/api/campaign/{campaign_id}/pipeline/start")
+async def start_campaign_pipeline(campaign_id: int, request: Request):
+    payload = await _read_json_body(request)
+    actor = str(payload.get("actor") or "dashboard").strip() or "dashboard"
+    worker_metadata = payload.get("worker_metadata")
+    retry_requested = bool(payload.get("retry", False))
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        _ensure_campaign_exists(cursor, campaign_id)
+
+        cursor.execute("""
+            SELECT *
+            FROM pipeline_runs
+            WHERE campaign_id = %s
+              AND status IN ('pending', 'running')
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+        """, (campaign_id,))
+        existing_active_run = cursor.fetchone()
+        if existing_active_run:
+            run = dict(existing_active_run)
+            stage_row = _current_stage_row(cursor, run["id"], run["current_stage"])
+            conn.commit()
+            return {
+                "status": "existing",
+                "idempotent": True,
+                "run_id": run["id"],
+                "campaign_id": campaign_id,
+                "pipeline_status": run["status"],
+                "current_stage": run["current_stage"],
+                "current_stage_status": stage_row["status"] if stage_row else run["status"],
+            }
+
+        retries = 0
+        if retry_requested:
+            cursor.execute("""
+                SELECT retries
+                FROM pipeline_runs
+                WHERE campaign_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            """, (campaign_id,))
+            previous_run = cursor.fetchone()
+            if previous_run:
+                retries = int(previous_run.get("retries", 0)) + 1
+
+        now = _now_utc()
+        try:
+            cursor.execute("""
+                INSERT INTO pipeline_runs (
+                    campaign_id,
+                    status,
+                    current_stage,
+                    retries,
+                    actor,
+                    worker_metadata,
+                    created_at,
+                    updated_at
+                )
+                VALUES (%s, 'pending', %s, %s, %s, %s, %s, %s)
+                RETURNING id, status, current_stage
+            """, (
+                campaign_id,
+                PIPELINE_STAGES[0],
+                retries,
+                actor,
+                Json(worker_metadata) if worker_metadata is not None else None,
+                now,
+                now,
+            ))
+            created_run = dict(cursor.fetchone())
+        except IntegrityError:
+            conn.rollback()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT *
+                FROM pipeline_runs
+                WHERE campaign_id = %s
+                  AND status IN ('pending', 'running')
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            """, (campaign_id,))
+            race_existing = cursor.fetchone()
+            if not race_existing:
+                raise
+            run = dict(race_existing)
+            stage_row = _current_stage_row(cursor, run["id"], run["current_stage"])
+            conn.commit()
+            return {
+                "status": "existing",
+                "idempotent": True,
+                "run_id": run["id"],
+                "campaign_id": campaign_id,
+                "pipeline_status": run["status"],
+                "current_stage": run["current_stage"],
+                "current_stage_status": stage_row["status"] if stage_row else run["status"],
+            }
+        run_id = created_run["id"]
+
+        for stage_order, stage in enumerate(PIPELINE_STAGES):
+            cursor.execute("""
+                INSERT INTO pipeline_run_stages (
+                    run_id,
+                    campaign_id,
+                    stage,
+                    stage_order,
+                    status,
+                    retries,
+                    actor,
+                    worker_metadata,
+                    created_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, 'pending', 0, %s, %s, %s, %s)
+            """, (
+                run_id,
+                campaign_id,
+                stage,
+                stage_order,
+                actor,
+                Json(worker_metadata) if worker_metadata is not None else None,
+                now,
+                now,
+            ))
+
+        conn.commit()
+
+    return {
+        "status": "created",
+        "idempotent": False,
+        "run_id": run_id,
+        "campaign_id": campaign_id,
+        "pipeline_status": created_run["status"],
+        "current_stage": created_run["current_stage"],
+    }
+
+
+@app.get("/api/campaign/{campaign_id}/pipeline/status")
+async def get_campaign_pipeline_status(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        _ensure_campaign_exists(cursor, campaign_id)
+
+        run = _load_latest_pipeline_run(cursor, campaign_id)
+        stages: List[dict] = []
+        if run:
+            stages = _load_run_stages(cursor, run["id"])
+
+        result = _serialize_pipeline_status(campaign_id, run, stages)
+        conn.commit()
+        return result
+
+
+@app.post("/api/pipeline/claim")
+async def claim_pipeline_stage(request: Request):
+    payload = await _read_json_body(request)
+    worker_id = str(payload.get("worker_id") or "").strip() or f"worker-{uuid4()}"
+    actor = str(payload.get("actor") or "daemon").strip() or "daemon"
+    lease_seconds = _coerce_lease_seconds(payload.get("lease_seconds"))
+    worker_metadata = payload.get("worker_metadata")
+    now = _now_utc()
+    lease_expires_at = now + timedelta(seconds=lease_seconds)
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT *
+            FROM pipeline_runs
+            WHERE status IN ('pending', 'running')
+            ORDER BY
+                CASE WHEN status = 'running' THEN 0 ELSE 1 END,
+                updated_at ASC,
+                id ASC
+            FOR UPDATE SKIP LOCKED
+        """)
+        candidate_runs = [dict(row) for row in cursor.fetchall()]
+
+        for run in candidate_runs:
+            run_id = run["id"]
+            campaign_id = run["campaign_id"]
+            current_stage = run.get("current_stage")
+
+            cursor.execute("SELECT * FROM pipeline_run_locks WHERE run_id = %s FOR UPDATE", (run_id,))
+            lock_row_raw = cursor.fetchone()
+            lock_row = dict(lock_row_raw) if lock_row_raw else None
+
+            if _claim_lock_is_active(lock_row, worker_id, now):
+                continue
+
+            stage_row = _current_stage_row(cursor, run_id, current_stage)
+            if not stage_row:
+                continue
+
+            if stage_row["status"] == "completed":
+                next_stage = _next_pipeline_stage(stage_row["stage"])
+                if not next_stage:
+                    cursor.execute("""
+                        UPDATE pipeline_runs
+                        SET status = 'completed',
+                            completed_at = %s,
+                            lease_expires_at = NULL,
+                            worker_id = %s,
+                            updated_at = %s
+                        WHERE id = %s
+                    """, (now, worker_id, now, run_id))
+                    continue
+                cursor.execute("""
+                    UPDATE pipeline_runs
+                    SET current_stage = %s,
+                        status = 'running',
+                        worker_id = %s,
+                        actor = %s,
+                        lease_expires_at = %s,
+                        last_heartbeat_at = %s,
+                        started_at = COALESCE(started_at, %s),
+                        updated_at = %s
+                    WHERE id = %s
+                """, (next_stage, worker_id, actor, lease_expires_at, now, now, now, run_id))
+                current_stage = next_stage
+                stage_row = _current_stage_row(cursor, run_id, current_stage)
+                if not stage_row:
+                    continue
+
+            if stage_row["status"] in {"failed", "canceled"}:
+                continue
+
+            _upsert_pipeline_lock(
+                cursor,
+                run_id=run_id,
+                campaign_id=campaign_id,
+                worker_id=worker_id,
+                lease_expires_at=lease_expires_at,
+                metadata=worker_metadata if isinstance(worker_metadata, dict) else {},
+            )
+
+            cursor.execute("""
+                UPDATE pipeline_runs
+                SET status = 'running',
+                    worker_id = %s,
+                    actor = %s,
+                    worker_metadata = %s,
+                    lease_expires_at = %s,
+                    last_heartbeat_at = %s,
+                    started_at = COALESCE(started_at, %s),
+                    updated_at = %s
+                WHERE id = %s
+            """, (
+                worker_id,
+                actor,
+                Json(worker_metadata) if worker_metadata is not None else None,
+                lease_expires_at,
+                now,
+                now,
+                now,
+                run_id,
+            ))
+
+            if stage_row["status"] == "pending":
+                cursor.execute("""
+                    UPDATE pipeline_run_stages
+                    SET status = 'running',
+                        worker_id = %s,
+                        actor = %s,
+                        worker_metadata = %s,
+                        started_at = COALESCE(started_at, %s),
+                        last_heartbeat_at = %s,
+                        updated_at = %s
+                    WHERE run_id = %s AND stage = %s
+                """, (
+                    worker_id,
+                    actor,
+                    Json(worker_metadata) if worker_metadata is not None else None,
+                    now,
+                    now,
+                    now,
+                    run_id,
+                    current_stage,
+                ))
+            else:
+                cursor.execute("""
+                    UPDATE pipeline_run_stages
+                    SET worker_id = %s,
+                        actor = %s,
+                        worker_metadata = %s,
+                        last_heartbeat_at = %s,
+                        updated_at = %s
+                    WHERE run_id = %s AND stage = %s
+                """, (
+                    worker_id,
+                    actor,
+                    Json(worker_metadata) if worker_metadata is not None else None,
+                    now,
+                    now,
+                    run_id,
+                    current_stage,
+                ))
+
+            conn.commit()
+            return {
+                "claimed": True,
+                "run_id": run_id,
+                "campaign_id": campaign_id,
+                "stage": current_stage,
+                "pipeline_status": "running",
+                "lease_expires_at": _iso(lease_expires_at),
+                "worker_id": worker_id,
+            }
+
+        conn.commit()
+        return {
+            "claimed": False,
+            "run_id": None,
+            "campaign_id": None,
+            "stage": None,
+        }
+
+
+@app.post("/api/pipeline/{run_id}/heartbeat")
+async def pipeline_heartbeat(run_id: int, request: Request):
+    payload = await _read_json_body(request)
+    worker_id = str(payload.get("worker_id") or "").strip()
+    lease_seconds = _coerce_lease_seconds(payload.get("lease_seconds"))
+    stage = payload.get("stage")
+    worker_metadata = payload.get("worker_metadata")
+    now = _now_utc()
+    lease_expires_at = now + timedelta(seconds=lease_seconds)
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        run = _load_pipeline_run(cursor, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Pipeline run not found")
+        if run["status"] in PIPELINE_TERMINAL_STATUSES:
+            raise HTTPException(status_code=409, detail=f"Run already {run['status']}")
+
+        claimed_stage = stage or run["current_stage"]
+        if claimed_stage not in PIPELINE_STAGE_INDEX:
+            raise HTTPException(status_code=400, detail="Invalid stage")
+
+        cursor.execute("SELECT * FROM pipeline_run_locks WHERE run_id = %s FOR UPDATE", (run_id,))
+        lock_raw = cursor.fetchone()
+        lock_row = dict(lock_raw) if lock_raw else None
+        if _claim_lock_is_active(lock_row, worker_id, now):
+            raise HTTPException(status_code=409, detail="Run currently leased by another worker")
+
+        if not worker_id:
+            worker_id = str(lock_row["worker_id"]) if lock_row else str(run.get("worker_id") or "")
+        if not worker_id:
+            worker_id = f"worker-{uuid4()}"
+
+        _upsert_pipeline_lock(
+            cursor,
+            run_id=run_id,
+            campaign_id=run["campaign_id"],
+            worker_id=worker_id,
+            lease_expires_at=lease_expires_at,
+            metadata=worker_metadata if isinstance(worker_metadata, dict) else {},
+        )
+
+        cursor.execute("""
+            UPDATE pipeline_runs
+            SET status = 'running',
+                worker_id = %s,
+                worker_metadata = %s,
+                lease_expires_at = %s,
+                last_heartbeat_at = %s,
+                updated_at = %s
+            WHERE id = %s
+        """, (
+            worker_id,
+            Json(worker_metadata) if worker_metadata is not None else None,
+            lease_expires_at,
+            now,
+            now,
+            run_id,
+        ))
+
+        cursor.execute("""
+            UPDATE pipeline_run_stages
+            SET status = CASE WHEN status = 'pending' THEN 'running' ELSE status END,
+                worker_id = %s,
+                worker_metadata = %s,
+                last_heartbeat_at = %s,
+                started_at = CASE WHEN status = 'pending' THEN COALESCE(started_at, %s) ELSE started_at END,
+                updated_at = %s
+            WHERE run_id = %s AND stage = %s
+        """, (
+            worker_id,
+            Json(worker_metadata) if worker_metadata is not None else None,
+            now,
+            now,
+            now,
+            run_id,
+            claimed_stage,
+        ))
+
+        conn.commit()
+        return {
+            "status": "ok",
+            "run_id": run_id,
+            "stage": claimed_stage,
+            "lease_expires_at": _iso(lease_expires_at),
+            "worker_id": worker_id,
+        }
+
+
+@app.post("/api/pipeline/{run_id}/stage-complete")
+async def complete_pipeline_stage(run_id: int, request: Request):
+    payload = await _read_json_body(request)
+    worker_id = str(payload.get("worker_id") or "").strip()
+    stage = str(payload.get("stage") or "").strip()
+    actor = str(payload.get("actor") or "daemon").strip() or "daemon"
+    worker_metadata = payload.get("worker_metadata")
+    now = _now_utc()
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        run = _load_pipeline_run(cursor, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Pipeline run not found")
+        if run["status"] in PIPELINE_TERMINAL_STATUSES:
+            raise HTTPException(status_code=409, detail=f"Run already {run['status']}")
+
+        current_stage = run["current_stage"]
+        stage_to_complete = stage or current_stage
+        if stage_to_complete not in PIPELINE_STAGE_INDEX:
+            raise HTTPException(status_code=400, detail="Invalid stage")
+        if stage_to_complete != current_stage:
+            raise HTTPException(status_code=409, detail=f"Current stage is '{current_stage}'")
+
+        cursor.execute("SELECT * FROM pipeline_run_locks WHERE run_id = %s FOR UPDATE", (run_id,))
+        lock_raw = cursor.fetchone()
+        lock_row = dict(lock_raw) if lock_raw else None
+        effective_worker_id = worker_id or str(run.get("worker_id") or "")
+        if _claim_lock_is_active(lock_row, effective_worker_id, now):
+            raise HTTPException(status_code=409, detail="Run currently leased by another worker")
+
+        if not worker_id:
+            worker_id = str(run.get("worker_id") or "")
+
+        cursor.execute("""
+            UPDATE pipeline_run_stages
+            SET status = 'completed',
+                worker_id = COALESCE(%s, worker_id),
+                actor = %s,
+                worker_metadata = %s,
+                completed_at = %s,
+                last_heartbeat_at = %s,
+                error_message = NULL,
+                error_payload = NULL,
+                updated_at = %s
+            WHERE run_id = %s
+              AND stage = %s
+              AND status IN ('pending', 'running', 'failed')
+        """, (
+            worker_id or None,
+            actor,
+            Json(worker_metadata) if worker_metadata is not None else None,
+            now,
+            now,
+            now,
+            run_id,
+            stage_to_complete,
+        ))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=409, detail="Stage is not claimable for completion")
+
+        next_stage = _next_pipeline_stage(stage_to_complete)
+        if next_stage is None:
+            cursor.execute("""
+                UPDATE pipeline_runs
+                SET status = 'completed',
+                    current_stage = %s,
+                    completed_at = %s,
+                    latest_error = NULL,
+                    error_payload = NULL,
+                    lease_expires_at = NULL,
+                    worker_id = COALESCE(%s, worker_id),
+                    worker_metadata = %s,
+                    last_heartbeat_at = %s,
+                    updated_at = %s
+                WHERE id = %s
+            """, (
+                stage_to_complete,
+                now,
+                worker_id or None,
+                Json(worker_metadata) if worker_metadata is not None else None,
+                now,
+                now,
+                run_id,
+            ))
+        else:
+            cursor.execute("""
+                UPDATE pipeline_runs
+                SET status = 'running',
+                    current_stage = %s,
+                    latest_error = NULL,
+                    error_payload = NULL,
+                    worker_id = COALESCE(%s, worker_id),
+                    worker_metadata = %s,
+                    last_heartbeat_at = %s,
+                    updated_at = %s
+                WHERE id = %s
+            """, (
+                next_stage,
+                worker_id or None,
+                Json(worker_metadata) if worker_metadata is not None else None,
+                now,
+                now,
+                run_id,
+            ))
+
+            cursor.execute("""
+                UPDATE pipeline_run_stages
+                SET status = CASE WHEN status = 'failed' THEN 'pending' ELSE status END,
+                    updated_at = %s
+                WHERE run_id = %s
+                  AND stage = %s
+                  AND status IN ('pending', 'failed')
+            """, (now, run_id, next_stage))
+
+        conn.commit()
+        return {
+            "status": "ok",
+            "run_id": run_id,
+            "completed_stage": stage_to_complete,
+            "next_stage": next_stage,
+            "pipeline_status": "completed" if next_stage is None else "running",
+        }
+
+
+@app.post("/api/pipeline/{run_id}/fail")
+async def fail_pipeline_run(run_id: int, request: Request):
+    payload = await _read_json_body(request)
+    worker_id = str(payload.get("worker_id") or "").strip()
+    stage = str(payload.get("stage") or "").strip()
+    actor = str(payload.get("actor") or "daemon").strip() or "daemon"
+    worker_metadata = payload.get("worker_metadata")
+    error_message = str(payload.get("error") or payload.get("message") or "Pipeline stage failed").strip()
+    error_payload = payload.get("error_payload")
+    now = _now_utc()
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        run = _load_pipeline_run(cursor, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Pipeline run not found")
+        if run["status"] in PIPELINE_TERMINAL_STATUSES:
+            raise HTTPException(status_code=409, detail=f"Run already {run['status']}")
+
+        current_stage = run["current_stage"]
+        stage_to_fail = stage or current_stage
+        if stage_to_fail not in PIPELINE_STAGE_INDEX:
+            raise HTTPException(status_code=400, detail="Invalid stage")
+
+        cursor.execute("SELECT * FROM pipeline_run_locks WHERE run_id = %s FOR UPDATE", (run_id,))
+        lock_raw = cursor.fetchone()
+        lock_row = dict(lock_raw) if lock_raw else None
+        effective_worker_id = worker_id or str(run.get("worker_id") or "")
+        if _claim_lock_is_active(lock_row, effective_worker_id, now):
+            raise HTTPException(status_code=409, detail="Run currently leased by another worker")
+
+        cursor.execute("""
+            UPDATE pipeline_run_stages
+            SET status = 'failed',
+                retries = retries + 1,
+                worker_id = COALESCE(%s, worker_id),
+                actor = %s,
+                worker_metadata = %s,
+                failed_at = %s,
+                last_heartbeat_at = %s,
+                error_message = %s,
+                error_payload = %s,
+                updated_at = %s
+            WHERE run_id = %s
+              AND stage = %s
+              AND status IN ('pending', 'running', 'failed')
+        """, (
+            worker_id or None,
+            actor,
+            Json(worker_metadata) if worker_metadata is not None else None,
+            now,
+            now,
+            error_message,
+            Json(error_payload) if error_payload is not None else None,
+            now,
+            run_id,
+            stage_to_fail,
+        ))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=409, detail="Stage is not claimable for failure")
+
+        cursor.execute("""
+            UPDATE pipeline_runs
+            SET status = 'failed',
+                current_stage = %s,
+                retries = retries + 1,
+                worker_id = COALESCE(%s, worker_id),
+                actor = %s,
+                worker_metadata = %s,
+                latest_error = %s,
+                error_payload = %s,
+                failed_at = %s,
+                lease_expires_at = NULL,
+                last_heartbeat_at = %s,
+                updated_at = %s
+            WHERE id = %s
+        """, (
+            stage_to_fail,
+            worker_id or None,
+            actor,
+            Json(worker_metadata) if worker_metadata is not None else None,
+            error_message,
+            Json(error_payload) if error_payload is not None else None,
+            now,
+            now,
+            now,
+            run_id,
+        ))
+
+        cursor.execute("DELETE FROM pipeline_run_locks WHERE run_id = %s", (run_id,))
+
+        conn.commit()
+        return {
+            "status": "failed",
+            "run_id": run_id,
+            "stage": stage_to_fail,
+            "error": error_message,
+        }
+
+
+@app.post("/api/campaign/{campaign_id}/contacts/cleanup")
+async def cleanup_campaign_contacts(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        _ensure_campaign_exists(cursor, campaign_id)
+
+        cursor.execute("""
+            SELECT id, domain, email, phone, place_id, business_name, status
+            FROM contacts
+            WHERE campaign_id = %s
+            ORDER BY id ASC
+        """, (campaign_id,))
+        contacts = [dict(row) for row in cursor.fetchall()]
+        before_count = len(contacts)
+
+        seen_keys = set()
+        duplicate_ids: List[int] = []
+        invalid_domain_ids: List[int] = []
+
+        for contact in contacts:
+            normalized_domain = _normalize_domain(contact.get("domain"))
+            if not _is_valid_domain(normalized_domain):
+                invalid_domain_ids.append(contact["id"])
+
+            key = _normalized_contact_key(contact)
+            if key in seen_keys:
+                duplicate_ids.append(contact["id"])
+            else:
+                seen_keys.add(key)
+
+        if invalid_domain_ids:
+            cursor.execute("""
+                UPDATE contacts
+                SET status = 'invalid_domain'
+                WHERE campaign_id = %s
+                  AND id = ANY(%s)
+            """, (campaign_id, invalid_domain_ids))
+
+        if duplicate_ids:
+            cursor.execute("""
+                DELETE FROM contacts
+                WHERE campaign_id = %s
+                  AND id = ANY(%s)
+            """, (campaign_id, duplicate_ids))
+
+        cursor.execute("SELECT COUNT(*) AS count FROM contacts WHERE campaign_id = %s", (campaign_id,))
+        after_count = int(cursor.fetchone()["count"])
+        conn.commit()
+
+        return {
+            "campaign_id": campaign_id,
+            "before_count": before_count,
+            "after_count": after_count,
+            "duplicates_removed": len(duplicate_ids),
+            "flagged_invalid_domain_count": len(invalid_domain_ids),
+        }
+
+
+@app.get("/api/campaign/{campaign_id}/stats")
+async def get_campaign_stats(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        _ensure_campaign_exists(cursor, campaign_id)
+
+        cursor.execute("""
+            SELECT id, domain, email, phone, place_id, business_name, nomail_pulled_at
+            FROM contacts
+            WHERE campaign_id = %s
+        """, (campaign_id,))
+        contacts = [dict(row) for row in cursor.fetchall()]
+
+        cursor.execute("""
+            SELECT
+                MAX(updated_at) AS pipeline_updated_at
+            FROM pipeline_runs
+            WHERE campaign_id = %s
+        """, (campaign_id,))
+        pipeline_timestamp = cursor.fetchone()
+        pipeline_updated_at = pipeline_timestamp.get("pipeline_updated_at") if pipeline_timestamp else None
+
+        max_nomail = None
+        for contact in contacts:
+            nomail_pulled_at = contact.get("nomail_pulled_at")
+            if nomail_pulled_at and (max_nomail is None or nomail_pulled_at > max_nomail):
+                max_nomail = nomail_pulled_at
+
+        last_updated_at_dt = None
+        for candidate in [max_nomail, pipeline_updated_at]:
+            if candidate and (last_updated_at_dt is None or candidate > last_updated_at_dt):
+                last_updated_at_dt = candidate
+
+        return _compute_campaign_stats_from_contacts(
+            contacts,
+            last_updated_at=_iso(last_updated_at_dt),
+        )
 
 @app.get("/api/campaign/{campaign_name}/requests")
 async def get_campaign_requests(campaign_name: str):

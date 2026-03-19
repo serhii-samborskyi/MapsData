@@ -44,6 +44,147 @@
                 </div>
             </div>
 
+            <!-- Pipeline Automation -->
+            <div class="app-card p-6">
+                <div class="flex items-center gap-4 mb-4">
+                    <span class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm font-medium">POST/GET</span>
+                    <h2 class="text-xl font-semibold">Pipeline Automation Endpoints</h2>
+                </div>
+                <p class="text-gray-600 mb-4">Run one-click campaign automation with worker claim/lease semantics.</p>
+                <div class="bg-gray-50 p-4 rounded mb-4">
+                    <h3 class="font-medium mb-2">POST /api/campaign/{campaign_id}/pipeline/start</h3>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto mb-3">
+{
+  "actor": "dashboard",
+  "retry": false
+}</pre>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
+{
+  "status": "created",
+  "idempotent": false,
+  "run_id": 42,
+  "campaign_id": 7,
+  "pipeline_status": "pending",
+  "current_stage": "maps_scrape"
+}</pre>
+                </div>
+                <div class="bg-gray-50 p-4 rounded mb-4">
+                    <h3 class="font-medium mb-2">GET /api/campaign/{campaign_id}/pipeline/status</h3>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
+{
+  "campaign_id": 7,
+  "run_id": 42,
+  "status": "running",
+  "current_stage": "cleanup_contacts",
+  "stages": [
+    {"stage": "maps_scrape", "status": "completed"},
+    {"stage": "cleanup_contacts", "status": "running"}
+  ],
+  "counts": {"total_stages": 5, "completed_stages": 1},
+  "latest_error": null
+}</pre>
+                </div>
+                <div class="bg-gray-50 p-4 rounded mb-4">
+                    <h3 class="font-medium mb-2">POST /api/pipeline/claim</h3>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto mb-3">
+{
+  "worker_id": "daemon-1",
+  "actor": "daemon",
+  "lease_seconds": 120
+}</pre>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
+{
+  "claimed": true,
+  "run_id": 42,
+  "campaign_id": 7,
+  "stage": "cleanup_contacts",
+  "lease_expires_at": "2026-03-19T14:00:00"
+}</pre>
+                </div>
+                <div class="bg-gray-50 p-4 rounded mb-4">
+                    <h3 class="font-medium mb-2">POST /api/pipeline/{run_id}/heartbeat</h3>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto mb-3">
+{
+  "worker_id": "daemon-1",
+  "stage": "cleanup_contacts",
+  "lease_seconds": 120
+}</pre>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
+{
+  "status": "ok",
+  "run_id": 42,
+  "stage": "cleanup_contacts",
+  "lease_expires_at": "2026-03-19T14:02:00"
+}</pre>
+                </div>
+                <div class="bg-gray-50 p-4 rounded mb-4">
+                    <h3 class="font-medium mb-2">POST /api/pipeline/{run_id}/stage-complete</h3>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto mb-3">
+{
+  "worker_id": "daemon-1",
+  "stage": "cleanup_contacts"
+}</pre>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
+{
+  "status": "ok",
+  "run_id": 42,
+  "completed_stage": "cleanup_contacts",
+  "next_stage": "email_fast",
+  "pipeline_status": "running"
+}</pre>
+                </div>
+                <div class="bg-gray-50 p-4 rounded mb-4">
+                    <h3 class="font-medium mb-2">POST /api/pipeline/{run_id}/fail</h3>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto mb-3">
+{
+  "worker_id": "daemon-1",
+  "stage": "email_fast",
+  "error": "Rate limited by provider",
+  "error_payload": {"http_status": 429}
+}</pre>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
+{
+  "status": "failed",
+  "run_id": 42,
+  "stage": "email_fast",
+  "error": "Rate limited by provider"
+}</pre>
+                </div>
+                <div class="bg-gray-50 p-4 rounded mb-4">
+                    <h3 class="font-medium mb-2">POST /api/campaign/{campaign_id}/contacts/cleanup</h3>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
+{
+  "campaign_id": 7,
+  "before_count": 1200,
+  "after_count": 1132,
+  "duplicates_removed": 68,
+  "flagged_invalid_domain_count": 41
+}</pre>
+                </div>
+                <div class="bg-gray-50 p-4 rounded mb-4">
+                    <h3 class="font-medium mb-2">GET /api/campaign/{campaign_id}/stats</h3>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
+{
+  "total_contacts": 1132,
+  "unique_contacts": 1084,
+  "contacts_with_domain": 1091,
+  "contacts_without_domain": 41,
+  "contacts_with_email": 412,
+  "contacts_without_email": 720,
+  "duplicates_removed": 48,
+  "last_updated_at": "2026-03-19T13:58:00"
+}</pre>
+                </div>
+                <div class="bg-gray-50 p-4 rounded">
+                    <h3 class="font-medium mb-2">Common Error Codes</h3>
+                    <ul class="list-disc list-inside text-sm text-gray-700 space-y-1">
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">400</code> invalid payload or unsupported stage/status value</li>
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">404</code> campaign or run not found</li>
+                        <li><code class="bg-gray-200 px-2 py-1 rounded">409</code> stage conflict, terminal run, or lock held by another worker</li>
+                    </ul>
+                </div>
+            </div>
+
             <!-- Get Random Contact Without Email -->
             <div class="app-card p-6">
                 <div class="flex items-center gap-4 mb-4">
