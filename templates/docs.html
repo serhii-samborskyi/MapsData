@@ -100,6 +100,15 @@
   "stage": "cleanup_contacts",
   "lease_expires_at": "2026-03-19T14:00:00"
 }</pre>
+                    <p class="font-medium mt-4 mb-2">No-claim example:</p>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
+{
+  "claimed": false,
+  "reason": "all_leased",
+  "run_id": null,
+  "campaign_id": null,
+  "stage": null
+}</pre>
                 </div>
                 <div class="bg-gray-50 p-4 rounded mb-4">
                     <h3 class="font-medium mb-2">POST /api/pipeline/{run_id}/heartbeat</h3>
@@ -173,6 +182,23 @@
   "contacts_without_email": 720,
   "duplicates_removed": 48,
   "last_updated_at": "2026-03-19T13:58:00"
+}</pre>
+                </div>
+                <div class="bg-gray-50 p-4 rounded mb-4">
+                    <h3 class="font-medium mb-2">GET /api/pipeline/debug/claimability</h3>
+                    <p class="text-sm text-gray-600 mb-2">Diagnostic endpoint to inspect why runs are not claimable.</p>
+                    <pre class="bg-gray-800 text-gray-200 p-4 rounded overflow-x-auto">
+{
+  "actor_allowed": true,
+  "worker_id": "daemon-1",
+  "runs": [
+    {
+      "run_id": 42,
+      "campaign_id": 7,
+      "claimable": false,
+      "not_claimable_reason": "all_leased"
+    }
+  ]
 }</pre>
                 </div>
                 <div class="bg-gray-50 p-4 rounded">

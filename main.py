@@ -58,6 +58,7 @@ PIPELINE_STAGE_INDEX = {stage: index for index, stage in enumerate(PIPELINE_STAG
 PIPELINE_DEFAULT_LEASE_SECONDS = 120
 PIPELINE_MIN_LEASE_SECONDS = 30
 PIPELINE_MAX_LEASE_SECONDS = 900
+PIPELINE_ALLOWED_CLAIM_ACTORS = {"daemon", "dashboard", "system", "worker"}
 
 
 def _now_utc() -> datetime:
@@ -947,6 +948,38 @@ def _upsert_pipeline_lock(cursor, run_id: int, campaign_id: int, worker_id: str,
     """, (run_id, campaign_id, worker_id, lock_token, Json(metadata), lease_expires_at, _now_utc()))
 
 
+def _load_run_stages_for_update(cursor, run_id: int) -> List[dict]:
+    cursor.execute("""
+        SELECT *
+        FROM pipeline_run_stages
+        WHERE run_id = %s
+        ORDER BY stage_order ASC
+        FOR UPDATE
+    """, (run_id,))
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def _resolve_run_stage_pointer(run: dict, stage_rows: List[dict]) -> Optional[dict]:
+    if not stage_rows:
+        return None
+
+    current_stage = run.get("current_stage")
+    stage_by_name = {row["stage"]: row for row in stage_rows}
+    current_row = stage_by_name.get(current_stage)
+    if current_row and current_row["status"] != "completed":
+        return current_row
+
+    for row in stage_rows:
+        if row["status"] != "completed":
+            return row
+
+    return None
+
+
+def _is_actor_allowed_for_claim(actor: str) -> bool:
+    return actor in PIPELINE_ALLOWED_CLAIM_ACTORS
+
+
 @app.post("/api/campaign/{campaign_id}/pipeline/start")
 async def start_campaign_pipeline(campaign_id: int, request: Request):
     payload = await _read_json_body(request)
@@ -1111,6 +1144,15 @@ async def claim_pipeline_stage(request: Request):
     now = _now_utc()
     lease_expires_at = now + timedelta(seconds=lease_seconds)
 
+    if not _is_actor_allowed_for_claim(actor):
+        return {
+            "claimed": False,
+            "reason": "actor_not_allowed",
+            "run_id": None,
+            "campaign_id": None,
+            "stage": None,
+        }
+
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -1125,53 +1167,64 @@ async def claim_pipeline_stage(request: Request):
         """)
         candidate_runs = [dict(row) for row in cursor.fetchall()]
 
+        if not candidate_runs:
+            conn.commit()
+            return {
+                "claimed": False,
+                "reason": "run_not_started",
+                "run_id": None,
+                "campaign_id": None,
+                "stage": None,
+            }
+
+        saw_all_leased = False
+        saw_non_claimable_stage = False
+
         for run in candidate_runs:
             run_id = run["id"]
             campaign_id = run["campaign_id"]
-            current_stage = run.get("current_stage")
+            stage_rows = _load_run_stages_for_update(cursor, run_id)
+            if not stage_rows:
+                saw_non_claimable_stage = True
+                continue
 
             cursor.execute("SELECT * FROM pipeline_run_locks WHERE run_id = %s FOR UPDATE", (run_id,))
             lock_row_raw = cursor.fetchone()
             lock_row = dict(lock_row_raw) if lock_row_raw else None
+            lock_active_other_worker = _claim_lock_is_active(lock_row, worker_id, now)
 
-            if _claim_lock_is_active(lock_row, worker_id, now):
-                continue
-
-            stage_row = _current_stage_row(cursor, run_id, current_stage)
+            stage_row = _resolve_run_stage_pointer(run, stage_rows)
             if not stage_row:
+                cursor.execute("""
+                    UPDATE pipeline_runs
+                    SET status = 'completed',
+                        completed_at = COALESCE(completed_at, %s),
+                        lease_expires_at = NULL,
+                        updated_at = %s
+                    WHERE id = %s
+                """, (now, now, run_id))
+                cursor.execute("DELETE FROM pipeline_run_locks WHERE run_id = %s", (run_id,))
+                saw_non_claimable_stage = True
                 continue
 
-            if stage_row["status"] == "completed":
-                next_stage = _next_pipeline_stage(stage_row["stage"])
-                if not next_stage:
-                    cursor.execute("""
-                        UPDATE pipeline_runs
-                        SET status = 'completed',
-                            completed_at = %s,
-                            lease_expires_at = NULL,
-                            worker_id = %s,
-                            updated_at = %s
-                        WHERE id = %s
-                    """, (now, worker_id, now, run_id))
-                    continue
+            if run.get("current_stage") != stage_row["stage"]:
                 cursor.execute("""
                     UPDATE pipeline_runs
                     SET current_stage = %s,
-                        status = 'running',
-                        worker_id = %s,
-                        actor = %s,
-                        lease_expires_at = %s,
-                        last_heartbeat_at = %s,
-                        started_at = COALESCE(started_at, %s),
                         updated_at = %s
                     WHERE id = %s
-                """, (next_stage, worker_id, actor, lease_expires_at, now, now, now, run_id))
-                current_stage = next_stage
-                stage_row = _current_stage_row(cursor, run_id, current_stage)
-                if not stage_row:
-                    continue
+                """, (stage_row["stage"], now, run_id))
 
-            if stage_row["status"] in {"failed", "canceled"}:
+            if stage_row["status"] not in {"pending", "running"}:
+                saw_non_claimable_stage = True
+                continue
+
+            if lock_active_other_worker and stage_row["status"] == "pending":
+                saw_all_leased = True
+                continue
+
+            if stage_row["status"] == "running" and lock_active_other_worker:
+                saw_all_leased = True
                 continue
 
             _upsert_pipeline_lock(
@@ -1186,6 +1239,7 @@ async def claim_pipeline_stage(request: Request):
             cursor.execute("""
                 UPDATE pipeline_runs
                 SET status = 'running',
+                    current_stage = %s,
                     worker_id = %s,
                     actor = %s,
                     worker_metadata = %s,
@@ -1195,6 +1249,7 @@ async def claim_pipeline_stage(request: Request):
                     updated_at = %s
                 WHERE id = %s
             """, (
+                stage_row["stage"],
                 worker_id,
                 actor,
                 Json(worker_metadata) if worker_metadata is not None else None,
@@ -1224,7 +1279,7 @@ async def claim_pipeline_stage(request: Request):
                     now,
                     now,
                     run_id,
-                    current_stage,
+                    stage_row["stage"],
                 ))
             else:
                 cursor.execute("""
@@ -1242,7 +1297,7 @@ async def claim_pipeline_stage(request: Request):
                     now,
                     now,
                     run_id,
-                    current_stage,
+                    stage_row["stage"],
                 ))
 
             conn.commit()
@@ -1250,18 +1305,109 @@ async def claim_pipeline_stage(request: Request):
                 "claimed": True,
                 "run_id": run_id,
                 "campaign_id": campaign_id,
-                "stage": current_stage,
+                "stage": stage_row["stage"],
                 "pipeline_status": "running",
                 "lease_expires_at": _iso(lease_expires_at),
                 "worker_id": worker_id,
             }
 
         conn.commit()
+        reason = "all_leased" if saw_all_leased else ("no_pending_stages" if saw_non_claimable_stage else "run_not_started")
         return {
             "claimed": False,
+            "reason": reason,
             "run_id": None,
             "campaign_id": None,
             "stage": None,
+        }
+
+
+@app.get("/api/pipeline/debug/claimability")
+async def debug_pipeline_claimability(campaign_id: Optional[int] = None, worker_id: str = "debug-worker", actor: str = "daemon"):
+    now = _now_utc()
+    actor_allowed = _is_actor_allowed_for_claim(actor)
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        params: List[Any] = []
+        campaign_clause = ""
+        if campaign_id is not None:
+            campaign_clause = "AND pr.campaign_id = %s"
+            params.append(campaign_id)
+
+        cursor.execute(f"""
+            SELECT pr.*, prl.worker_id AS lock_worker_id, prl.lease_expires_at AS lock_lease_expires_at
+            FROM pipeline_runs pr
+            LEFT JOIN pipeline_run_locks prl ON prl.run_id = pr.id
+            WHERE pr.status IN ('pending', 'running', 'failed', 'completed', 'canceled')
+            {campaign_clause}
+            ORDER BY pr.updated_at DESC, pr.id DESC
+            LIMIT 100
+        """, tuple(params))
+        runs = [dict(row) for row in cursor.fetchall()]
+
+        diagnostics = []
+        for run in runs:
+            cursor.execute("""
+                SELECT stage, stage_order, status, worker_id, last_heartbeat_at, error_message
+                FROM pipeline_run_stages
+                WHERE run_id = %s
+                ORDER BY stage_order ASC
+            """, (run["id"],))
+            stages = [dict(row) for row in cursor.fetchall()]
+            stage_row = _resolve_run_stage_pointer(run, stages)
+
+            reason = None
+            claimable = False
+            if run["status"] not in PIPELINE_ACTIVE_STATUSES:
+                reason = "run_not_started"
+            elif not actor_allowed:
+                reason = "actor_not_allowed"
+            elif not stage_row:
+                reason = "no_pending_stages"
+            elif stage_row["status"] not in {"pending", "running"}:
+                reason = "no_pending_stages"
+            else:
+                lock_row = {
+                    "worker_id": run.get("lock_worker_id"),
+                    "lease_expires_at": run.get("lock_lease_expires_at"),
+                }
+                if _claim_lock_is_active(lock_row, worker_id, now):
+                    reason = "all_leased"
+                else:
+                    claimable = True
+
+            diagnostics.append({
+                "run_id": run["id"],
+                "campaign_id": run["campaign_id"],
+                "run_status": run["status"],
+                "current_stage": run.get("current_stage"),
+                "resolved_stage": stage_row["stage"] if stage_row else None,
+                "resolved_stage_status": stage_row["status"] if stage_row else None,
+                "lock_worker_id": run.get("lock_worker_id"),
+                "lock_lease_expires_at": _iso(run.get("lock_lease_expires_at")),
+                "claimable": claimable,
+                "not_claimable_reason": None if claimable else reason,
+                "stages": [
+                    {
+                        "stage": stage["stage"],
+                        "status": stage["status"],
+                        "worker_id": stage.get("worker_id"),
+                        "last_heartbeat_at": _iso(stage.get("last_heartbeat_at")),
+                        "error_message": stage.get("error_message"),
+                    }
+                    for stage in stages
+                ],
+            })
+
+        return {
+            "timestamp": _iso(now),
+            "actor": actor,
+            "actor_allowed": actor_allowed,
+            "worker_id": worker_id,
+            "campaign_id_filter": campaign_id,
+            "active_runs_count": len([run for run in diagnostics if run["run_status"] in PIPELINE_ACTIVE_STATUSES]),
+            "runs": diagnostics,
         }
 
 
@@ -1446,6 +1592,7 @@ async def complete_pipeline_stage(run_id: int, request: Request):
                     current_stage = %s,
                     latest_error = NULL,
                     error_payload = NULL,
+                    lease_expires_at = NULL,
                     worker_id = COALESCE(%s, worker_id),
                     worker_metadata = %s,
                     last_heartbeat_at = %s,
@@ -1462,12 +1609,23 @@ async def complete_pipeline_stage(run_id: int, request: Request):
 
             cursor.execute("""
                 UPDATE pipeline_run_stages
-                SET status = CASE WHEN status = 'failed' THEN 'pending' ELSE status END,
+                SET status = CASE
+                        WHEN status IN ('completed', 'canceled') THEN status
+                        ELSE 'pending'
+                    END,
+                    worker_id = NULL,
+                    actor = NULL,
+                    worker_metadata = NULL,
+                    last_heartbeat_at = NULL,
+                    error_message = NULL,
+                    error_payload = NULL,
+                    failed_at = NULL,
                     updated_at = %s
                 WHERE run_id = %s
                   AND stage = %s
-                  AND status IN ('pending', 'failed')
             """, (now, run_id, next_stage))
+
+        cursor.execute("DELETE FROM pipeline_run_locks WHERE run_id = %s", (run_id,))
 
         conn.commit()
         return {

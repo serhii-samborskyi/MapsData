@@ -294,6 +294,10 @@ class PipelineEndpointTests(unittest.TestCase):
                 "fetchall": [{"id": 42, "campaign_id": 7, "status": "running", "current_stage": "cleanup_contacts"}],
             },
             {
+                "match": "from pipeline_run_stages",
+                "fetchall": [{"run_id": 42, "stage": "cleanup_contacts", "stage_order": 1, "status": "running"}],
+            },
+            {
                 "match": "from pipeline_run_locks",
                 "fetchone": {"worker_id": "daemon-a", "lease_expires_at": now + timedelta(seconds=120)},
             },
@@ -301,7 +305,17 @@ class PipelineEndpointTests(unittest.TestCase):
 
         response = asyncio.run(self.main.claim_pipeline_stage(FakeRequest({"worker_id": "daemon-b"})))
         self.assertFalse(response["claimed"])
+        self.assertEqual(response["reason"], "all_leased")
         self.assertIsNone(response["run_id"])
+
+    def test_claim_returns_reason_when_no_runs_exist(self):
+        self._patch_db([
+            {"match": "from pipeline_runs", "fetchall": []},
+        ])
+
+        response = asyncio.run(self.main.claim_pipeline_stage(FakeRequest({"worker_id": "daemon-b"})))
+        self.assertFalse(response["claimed"])
+        self.assertEqual(response["reason"], "run_not_started")
 
     def test_stage_complete_advances_to_next_stage(self):
         self._patch_db([
@@ -313,6 +327,7 @@ class PipelineEndpointTests(unittest.TestCase):
             {"match": "update pipeline_run_stages", "rowcount": 1},
             {"match": "update pipeline_runs", "rowcount": 1},
             {"match": "update pipeline_run_stages", "rowcount": 1},
+            {"match": "delete from pipeline_run_locks", "rowcount": 1},
         ])
 
         response = asyncio.run(self.main.complete_pipeline_stage(77, FakeRequest({"worker_id": "daemon-1", "stage": "cleanup_contacts"})))
