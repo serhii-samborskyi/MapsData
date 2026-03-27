@@ -521,3 +521,179 @@ class SmartLeadIntegration:
             raise Exception(f"Smartlead API returned status {response.status_code}: {response.text}")
         except requests.exceptions.RequestException as e:
             raise Exception(f"Smartlead network error: {str(e)}")
+
+
+class SendReadIntegration:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://app.sendread.co"
+        self.rate_limit = 120
+
+    def get_default_field_mapping(self):
+        return {
+            "email": "email",
+            "firstName": "firstname",
+            "company": "business_name",
+            "city": "city",
+            "phone": "phone",
+            "website": "domain",
+            "industry": "industry",
+            "facebook": "facebook",
+            "linkedin": "company_social",
+            "tags": "tags_import",
+            "custom1": "custom_1",
+            "custom2": "custom_2",
+            "custom3": "custom_3",
+            "custom4": "custom_4",
+            "custom5": "custom_5"
+        }
+
+    def _auth_headers(self) -> Dict:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "x-api-key": self.api_key,
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+
+    def _resolve_mapping_value(self, contact: Dict, contact_field: str) -> Optional[str]:
+        if not contact_field:
+            return None
+
+        normalized_field = str(contact_field).lower().replace(' ', '_')
+        if normalized_field in contact:
+            value = contact[normalized_field]
+        elif contact_field in contact:
+            value = contact[contact_field]
+        else:
+            value = contact_field
+
+        if value is None:
+            return None
+        cleaned = str(value).strip()
+        return cleaned if cleaned else None
+
+    def _clean_website(self, website: str) -> str:
+        if not website:
+            return website
+        website = website.strip()
+        if website.startswith("http://") or website.startswith("https://"):
+            return website
+        return f"https://{website}"
+
+    def transform_contact(self, contact: Dict, field_mapping: Dict) -> Dict:
+        transformed = {}
+
+        for api_field, contact_field in field_mapping.items():
+            value = self._resolve_mapping_value(contact, contact_field)
+            if value is None:
+                continue
+
+            if api_field == "website":
+                value = self._clean_website(value)
+
+            transformed[api_field] = value
+
+        return transformed
+
+    def validate_contact(self, transformed_contact: Dict) -> bool:
+        return bool((transformed_contact.get("email") or "").strip())
+
+    def _extract_list(self, payload) -> Optional[List]:
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            for key in ["data", "items", "results", "campaigns", "lists"]:
+                if isinstance(payload.get(key), list):
+                    return payload.get(key)
+        return None
+
+    def get_campaigns(self) -> List[Dict]:
+        import requests
+
+        url = f"{self.base_url}/api/public/campaigns"
+        try:
+            response = requests.get(url, headers=self._auth_headers(), timeout=30)
+            if response.status_code != 200:
+                raise Exception(f"SendRead campaign list failed with status {response.status_code}: {response.text}")
+            payload = response.json()
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"SendRead campaign list network error: {str(e)}")
+
+        raw_campaigns = self._extract_list(payload)
+        if raw_campaigns is None:
+            raise Exception("SendRead campaign list returned unknown response format")
+
+        campaigns = []
+        for item in raw_campaigns:
+            if not isinstance(item, dict):
+                continue
+            campaign_id = item.get("id") or item.get("campaign_id")
+            if campaign_id is None:
+                continue
+            name = item.get("name") or item.get("campaign_name") or f"Campaign {campaign_id}"
+            status = item.get("status") or ""
+            campaigns.append({
+                "id": str(campaign_id),
+                "name": str(name),
+                "status": str(status)
+            })
+        return campaigns
+
+    def get_ab_test_lists(self) -> List[Dict]:
+        import requests
+
+        url = f"{self.base_url}/api/public/ab-test-lists"
+        try:
+            response = requests.get(url, headers=self._auth_headers(), timeout=30)
+            if response.status_code != 200:
+                raise Exception(f"SendRead AB test list fetch failed with status {response.status_code}: {response.text}")
+            payload = response.json()
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"SendRead AB test list fetch network error: {str(e)}")
+
+        raw_lists = self._extract_list(payload)
+        if raw_lists is None:
+            raise Exception("SendRead AB test list response format unknown")
+
+        lists = []
+        for item in raw_lists:
+            if not isinstance(item, dict):
+                continue
+            list_id = item.get("id") or item.get("list_id") or item.get("ab_list_id")
+            if list_id is None:
+                continue
+            name = item.get("name") or item.get("list_name") or f"AB List {list_id}"
+            status = item.get("status") or ""
+            lists.append({
+                "id": str(list_id),
+                "name": str(name),
+                "status": str(status)
+            })
+        return lists
+
+    def export_to_campaign(self, campaign_id: str, leads: List[Dict]) -> Dict:
+        import requests
+
+        url = f"{self.base_url}/api/public/campaigns/{campaign_id}/leads"
+        payload = {"leads": leads}
+        try:
+            response = requests.post(url, headers=self._auth_headers(), json=payload, timeout=30)
+            if response.status_code not in [200, 201]:
+                raise Exception(f"SendRead campaign export failed with status {response.status_code}: {response.text}")
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"SendRead campaign export network error: {str(e)}")
+
+    def export_to_ab_test_list(self, ab_list_id: str, leads: List[Dict]) -> Dict:
+        import requests
+
+        url = f"{self.base_url}/api/public/ab-test-lists/{ab_list_id}/leads"
+        payload = {"leads": leads}
+        try:
+            response = requests.post(url, headers=self._auth_headers(), json=payload, timeout=30)
+            if response.status_code not in [200, 201]:
+                raise Exception(f"SendRead AB list export failed with status {response.status_code}: {response.text}")
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"SendRead AB list export network error: {str(e)}")

@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from database import init_db, get_db
-from templates import TemplateManager, ManyReachIntegration, SmartLeadIntegration
+from templates import TemplateManager, ManyReachIntegration, SmartLeadIntegration, SendReadIntegration
 from email_verification import EmailVerificationManager, EmailVerificationService, MyEmailVerifierIntegration
 from typing import List, Union, Any, Optional
 from psycopg2 import DataError, IntegrityError
@@ -2735,7 +2735,7 @@ async def get_provider_campaigns(request: Request):
     else:
         active_only = str(active_only_raw).strip().lower() in ["1", "true", "yes", "y"]
 
-    if service not in ["manyreach", "smartlead"]:
+    if service not in ["manyreach", "smartlead", "sendread_campaign", "sendread_list"]:
         raise HTTPException(status_code=400, detail="Unsupported service")
     if not api_key:
         raise HTTPException(status_code=400, detail="API key is required")
@@ -2744,9 +2744,15 @@ async def get_provider_campaigns(request: Request):
         if service == "manyreach":
             integration = ManyReachIntegration(api_key)
             campaigns = integration.get_campaigns()
-        else:
+        elif service == "smartlead":
             integration = SmartLeadIntegration(api_key)
             campaigns = integration.get_campaigns(active_only=active_only)
+        elif service == "sendread_campaign":
+            integration = SendReadIntegration(api_key)
+            campaigns = integration.get_campaigns()
+        else:
+            integration = SendReadIntegration(api_key)
+            campaigns = integration.get_ab_test_lists()
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to fetch {service} campaigns: {str(e)}")
 
@@ -2829,6 +2835,21 @@ async def preview_export(
             "field_mappings": template['field_mappings']
         }
 
+    if template['service'] in ['sendread_campaign', 'sendread_list']:
+        integration = SendReadIntegration("")
+        preview_data = []
+        for contact in preview_contacts:
+            transformed = integration.transform_contact(contact, template['field_mappings'])
+            preview_data.append(transformed)
+
+        return {
+            "template_name": template['name'],
+            "service": template['service'],
+            "total_contacts": len(filtered_contacts),
+            "preview_data": preview_data,
+            "field_mappings": template['field_mappings']
+        }
+
     return {"error": "Service not supported"}
 
 @app.post("/api/campaign/{campaign_id}/export")
@@ -2869,6 +2890,10 @@ async def export_campaign(campaign_id: int, request: Request):
                 raise HTTPException(status_code=429, detail=f"Rate limit exceeded. Max {integration.rate_limit} exports per minute.")
         elif template['service'] == 'smartlead':
             integration = SmartLeadIntegration(template['api_config'].get('api_key', ''))
+            if recent_exports >= integration.rate_limit:
+                raise HTTPException(status_code=429, detail=f"Rate limit exceeded. Max {integration.rate_limit} exports per minute.")
+        elif template['service'] in ['sendread_campaign', 'sendread_list']:
+            integration = SendReadIntegration(template['api_config'].get('api_key', ''))
             if recent_exports >= integration.rate_limit:
                 raise HTTPException(status_code=429, detail=f"Rate limit exceeded. Max {integration.rate_limit} exports per minute.")
 
@@ -3082,6 +3107,59 @@ async def export_campaign(campaign_id: int, request: Request):
                 conn.commit()
                 raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
+        if template['service'] in ['sendread_campaign', 'sendread_list']:
+            integration = SendReadIntegration(template['api_config'].get('api_key', ''))
+            target_id = str(template['api_config'].get('sendread_target_id', '')).strip()
+            target_type = str(template['api_config'].get('sendread_target_type', '')).strip().lower()
+
+            if not target_id:
+                raise HTTPException(status_code=400, detail="SendRead target ID is missing in template configuration")
+
+            if not target_type:
+                target_type = "campaign" if template['service'] == "sendread_campaign" else "ab_test_list"
+
+            transformed_contacts = []
+            for contact in contacts:
+                transformed = integration.transform_contact(contact, field_mappings)
+                if integration.validate_contact(transformed):
+                    transformed_contacts.append(transformed)
+
+            if not transformed_contacts:
+                raise HTTPException(status_code=400, detail="No valid contacts to export (email is required)")
+
+            try:
+                if target_type == "campaign":
+                    api_response = integration.export_to_campaign(target_id, transformed_contacts)
+                    endpoint = "https://app.sendread.co/api/public/campaigns/{id}/leads"
+                elif target_type == "ab_test_list":
+                    api_response = integration.export_to_ab_test_list(target_id, transformed_contacts)
+                    endpoint = "https://app.sendread.co/api/public/ab-test-lists/{id}/leads"
+                else:
+                    raise HTTPException(status_code=400, detail="Invalid SendRead target type in template configuration")
+
+                cursor.execute("""
+                    INSERT INTO export_logs (campaign_id, template_id, contacts_exported, status)
+                    VALUES (%s, %s, %s, %s)
+                """, (campaign_id, template_id, len(transformed_contacts), "completed"))
+                conn.commit()
+
+                return {
+                    "status": "Export completed successfully",
+                    "service": template['service'],
+                    "contacts_exported": len(transformed_contacts),
+                    "api_response": api_response,
+                    "endpoint": endpoint
+                }
+            except HTTPException:
+                raise
+            except Exception as e:
+                cursor.execute("""
+                    INSERT INTO export_logs (campaign_id, template_id, contacts_exported, status)
+                    VALUES (%s, %s, %s, %s)
+                """, (campaign_id, template_id, 0, f"failed: {str(e)}"))
+                conn.commit()
+                raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+
     return {"error": "Service not supported"}
 
 @app.get("/api/campaign/{campaign_id}/export/history")
@@ -3216,6 +3294,41 @@ async def test_export_lead(campaign_id: int, request: Request):
                 "transformed_contact": transformed,
                 "api_response": api_response
             }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Test export failed: {str(e)}")
+
+    if template["service"] in ["sendread_campaign", "sendread_list"]:
+        integration = SendReadIntegration(template["api_config"].get("api_key", ""))
+        target_id = str(template["api_config"].get("sendread_target_id", "")).strip()
+        target_type = str(template["api_config"].get("sendread_target_type", "")).strip().lower()
+
+        if not target_id:
+            raise HTTPException(status_code=400, detail="SendRead target ID is missing in template configuration")
+
+        if not target_type:
+            target_type = "campaign" if template["service"] == "sendread_campaign" else "ab_test_list"
+
+        transformed = integration.transform_contact(contact, field_mappings)
+        if not integration.validate_contact(transformed):
+            raise HTTPException(status_code=400, detail="Selected lead is missing email")
+
+        try:
+            if target_type == "campaign":
+                api_response = integration.export_to_campaign(target_id, [transformed])
+            elif target_type == "ab_test_list":
+                api_response = integration.export_to_ab_test_list(target_id, [transformed])
+            else:
+                raise HTTPException(status_code=400, detail="Invalid SendRead target type in template configuration")
+
+            return {
+                "status": "Test export completed successfully",
+                "service": template["service"],
+                "contact_id": contact_id,
+                "transformed_contact": transformed,
+                "api_response": api_response
+            }
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Test export failed: {str(e)}")
 
@@ -3724,6 +3837,44 @@ async def create_default_templates():
                         "ignore_duplicate_leads_in_other_campaign": False
                     },
                     "endpoint": "/campaigns/{campaign_id}/leads",
+                    "method": "POST"
+                }
+            )
+
+        # Check if SendRead campaign template already exists
+        cursor.execute("SELECT id FROM export_templates WHERE service = 'sendread_campaign'")
+        if not cursor.fetchone():
+            integration = SendReadIntegration("")
+            default_mapping = integration.get_default_field_mapping()
+
+            TemplateManager.create_template(
+                "SendRead Campaign Default",
+                "sendread_campaign",
+                default_mapping,
+                {
+                    "api_key": "",
+                    "sendread_target_id": "",
+                    "sendread_target_type": "campaign",
+                    "endpoint": "/api/public/campaigns/{campaign_id}/leads",
+                    "method": "POST"
+                }
+            )
+
+        # Check if SendRead list template already exists
+        cursor.execute("SELECT id FROM export_templates WHERE service = 'sendread_list'")
+        if not cursor.fetchone():
+            integration = SendReadIntegration("")
+            default_mapping = integration.get_default_field_mapping()
+
+            TemplateManager.create_template(
+                "SendRead AB List Default",
+                "sendread_list",
+                default_mapping,
+                {
+                    "api_key": "",
+                    "sendread_target_id": "",
+                    "sendread_target_type": "ab_test_list",
+                    "endpoint": "/api/public/ab-test-lists/{list_id}/leads",
                     "method": "POST"
                 }
             )

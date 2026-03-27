@@ -139,9 +139,35 @@ def _install_stub_modules():
         def export_to_smartlead_bulk(self, *_args, **_kwargs):
             return {"ok": True}
 
+    class SendReadIntegration:
+        def __init__(self, *_args, **_kwargs):
+            self.rate_limit = 120
+
+        def get_default_field_mapping(self):
+            return {}
+
+        def get_campaigns(self):
+            return []
+
+        def get_ab_test_lists(self):
+            return []
+
+        def transform_contact(self, *_args, **_kwargs):
+            return {}
+
+        def validate_contact(self, *_args, **_kwargs):
+            return True
+
+        def export_to_campaign(self, *_args, **_kwargs):
+            return {"ok": True}
+
+        def export_to_ab_test_list(self, *_args, **_kwargs):
+            return {"ok": True}
+
     templates.TemplateManager = TemplateManager
     templates.ManyReachIntegration = ManyReachIntegration
     templates.SmartLeadIntegration = SmartLeadIntegration
+    templates.SendReadIntegration = SendReadIntegration
     sys.modules["templates"] = templates
 
     email_verification = types.ModuleType("email_verification")

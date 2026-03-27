@@ -14,7 +14,7 @@
             <div>
                 <p class="app-chip">ScrapIQ</p>
                 <h1 class="section-title text-3xl font-semibold text-slate-900">Export Management</h1>
-                <p class="text-sm text-slate-600">Build templates, map fields, and push to ManyReach or Smartlead.</p>
+                <p class="text-sm text-slate-600">Build templates, map fields, and push to ManyReach, Smartlead, or SendRead.</p>
             </div>
             <a href="/" class="app-chip hover:text-slate-900 w-fit">← Back to ScrapIQ</a>
         </div>
@@ -188,6 +188,8 @@
                         <select id="editTemplateService" class="w-full p-2 border border-gray-300 rounded-lg" disabled>
                             <option value="manyreach">ManyReach</option>
                             <option value="smartlead">Smartlead.ai</option>
+                            <option value="sendread_campaign">SendRead Campaign</option>
+                            <option value="sendread_list">SendRead AB List</option>
                         </select>
                     </div>
                     <div class="mb-4">
@@ -204,7 +206,7 @@
                                 <option value="">Select a campaign from provider...</option>
                             </select>
                         </div>
-                        <div id="editTemplateCampaignLoadStatus" class="text-xs text-gray-500 mb-2">Load campaigns to pick campaign ID automatically.</div>
+                        <div id="editTemplateCampaignLoadStatus" class="text-xs text-gray-500 mb-2">Load targets to pick target ID automatically.</div>
                         <input type="text" id="editTemplateCampaignId" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="Enter campaign ID" required>
                         <div id="editTemplateCampaignIdHelp" class="text-xs text-gray-500 mt-1">Campaign ID where leads will be added.</div>
                     </div>
@@ -269,6 +271,8 @@
                         <select id="templateService" class="w-full p-2 border border-gray-300 rounded-lg" required>
                             <option value="manyreach">ManyReach</option>
                             <option value="smartlead">Smartlead.ai</option>
+                            <option value="sendread_campaign">SendRead Campaign</option>
+                            <option value="sendread_list">SendRead AB List</option>
                         </select>
                     </div>
                     <div class="mb-4">
@@ -285,7 +289,7 @@
                                 <option value="">Select a campaign from provider...</option>
                             </select>
                         </div>
-                        <div id="templateCampaignLoadStatus" class="text-xs text-gray-500 mb-2">Load campaigns to pick campaign ID automatically.</div>
+                        <div id="templateCampaignLoadStatus" class="text-xs text-gray-500 mb-2">Load targets to pick target ID automatically.</div>
                         <input type="text" id="templateCampaignId" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="Enter campaign ID" required>
                         <div id="templateCampaignIdHelp" class="text-xs text-gray-500 mt-1">Campaign ID where leads will be added.</div>
                     </div>
@@ -341,11 +345,15 @@
         let testLeadOptions = [];
         const SERVICE_LABELS = {
             manyreach: 'ManyReach',
-            smartlead: 'Smartlead.ai'
+            smartlead: 'Smartlead.ai',
+            sendread_campaign: 'SendRead Campaign',
+            sendread_list: 'SendRead AB List'
         };
         const SERVICE_RATE_LIMIT_LABELS = {
             manyreach: 'ManyReach: 60 requests per minute',
-            smartlead: 'Smartlead: 10 requests per 2 seconds (max 400 leads/request)'
+            smartlead: 'Smartlead: 10 requests per 2 seconds (max 400 leads/request)',
+            sendread_campaign: 'SendRead Campaign: 120 exports per minute',
+            sendread_list: 'SendRead AB List: 120 exports per minute'
         };
         const CONTACT_FIELD_OPTIONS = [
             { value: 'business_name', label: 'Business Name' },
@@ -464,6 +472,40 @@
                 "custom_18": "",
                 "custom_19": "",
                 "custom_20": ""
+            },
+            sendread_campaign: {
+                "email": "email",
+                "firstName": "firstname",
+                "company": "business_name",
+                "city": "city",
+                "phone": "phone",
+                "website": "domain",
+                "industry": "industry",
+                "facebook": "facebook",
+                "linkedin": "company_social",
+                "tags": "tags_import",
+                "custom1": "custom_1",
+                "custom2": "custom_2",
+                "custom3": "custom_3",
+                "custom4": "custom_4",
+                "custom5": "custom_5"
+            },
+            sendread_list: {
+                "email": "email",
+                "firstName": "firstname",
+                "company": "business_name",
+                "city": "city",
+                "phone": "phone",
+                "website": "domain",
+                "industry": "industry",
+                "facebook": "facebook",
+                "linkedin": "company_social",
+                "tags": "tags_import",
+                "custom1": "custom_1",
+                "custom2": "custom_2",
+                "custom3": "custom_3",
+                "custom4": "custom_4",
+                "custom5": "custom_5"
             }
         };
 
@@ -516,6 +558,26 @@
                 };
             }
 
+            if (service === 'sendread_campaign') {
+                return {
+                    api_key: apiKey,
+                    sendread_target_id: campaignId,
+                    sendread_target_type: 'campaign',
+                    endpoint: "/api/public/campaigns/{campaign_id}/leads",
+                    method: "POST"
+                };
+            }
+
+            if (service === 'sendread_list') {
+                return {
+                    api_key: apiKey,
+                    sendread_target_id: campaignId,
+                    sendread_target_type: 'ab_test_list',
+                    endpoint: "/api/public/ab-test-lists/{list_id}/leads",
+                    method: "POST"
+                };
+            }
+
             return {
                 api_key: apiKey,
                 manyreach_campaign_id: campaignId,
@@ -528,10 +590,10 @@
             const select = document.getElementById(selectId);
             const status = document.getElementById(statusId);
             if (select) {
-                select.innerHTML = '<option value="">Select a campaign from provider...</option>';
+                select.innerHTML = '<option value="">Select a target from provider...</option>';
             }
             if (status) {
-                status.textContent = 'Load campaigns to pick campaign ID automatically.';
+                status.textContent = 'Load targets to pick target ID automatically.';
             }
         }
 
@@ -541,7 +603,7 @@
                 return;
             }
 
-            select.innerHTML = '<option value="">Select a campaign from provider...</option>';
+            select.innerHTML = '<option value="">Select a target from provider...</option>';
             campaigns.forEach((campaign) => {
                 const option = document.createElement('option');
                 option.value = campaign.id;
@@ -564,7 +626,7 @@
             }
 
             if (status) {
-                status.textContent = 'Loading campaigns...';
+                status.textContent = 'Loading targets...';
             }
 
             try {
@@ -585,11 +647,11 @@
                 const campaigns = Array.isArray(data.campaigns) ? data.campaigns : [];
                 renderProviderCampaignSelector(selectId, campaigns, selectedCampaignId);
                 if (status) {
-                    status.textContent = `Loaded ${campaigns.length} campaign(s).`;
+                    status.textContent = `Loaded ${campaigns.length} target(s).`;
                 }
             } catch (error) {
                 if (status) {
-                    status.textContent = `Failed to load campaigns: ${error.message}`;
+                    status.textContent = `Failed to load targets: ${error.message}`;
                 }
             }
         }
@@ -613,6 +675,14 @@
                 label.textContent = 'Smartlead Campaign ID';
                 input.placeholder = 'Enter your Smartlead campaign ID';
                 help.textContent = 'Smartlead campaign ID where leads will be added.';
+            } else if (service === 'sendread_campaign') {
+                label.textContent = 'SendRead Campaign ID';
+                input.placeholder = 'Enter your SendRead campaign ID';
+                help.textContent = 'SendRead campaign ID where leads will be added.';
+            } else if (service === 'sendread_list') {
+                label.textContent = 'SendRead AB List ID';
+                input.placeholder = 'Enter your SendRead AB test list ID';
+                help.textContent = 'SendRead AB test list ID where leads will be added.';
             } else {
                 label.textContent = 'ManyReach Campaign ID';
                 input.placeholder = 'Enter your ManyReach campaign ID';
@@ -631,6 +701,14 @@
                 label.textContent = 'Smartlead Campaign ID';
                 input.placeholder = 'Enter your Smartlead campaign ID';
                 help.textContent = 'Smartlead campaign ID where leads will be added.';
+            } else if (service === 'sendread_campaign') {
+                label.textContent = 'SendRead Campaign ID';
+                input.placeholder = 'Enter your SendRead campaign ID';
+                help.textContent = 'SendRead campaign ID where leads will be added.';
+            } else if (service === 'sendread_list') {
+                label.textContent = 'SendRead AB List ID';
+                input.placeholder = 'Enter your SendRead AB test list ID';
+                help.textContent = 'SendRead AB test list ID where leads will be added.';
             } else {
                 label.textContent = 'ManyReach Campaign ID';
                 input.placeholder = 'Enter your ManyReach campaign ID';
@@ -1051,9 +1129,14 @@
                 document.getElementById('editTemplateName').value = template.name;
                 document.getElementById('editTemplateService').value = template.service;
                 document.getElementById('editTemplateApiKey').value = template.api_config.api_key || '';
-                const campaignId = template.service === 'smartlead'
-                    ? (template.api_config.smartlead_campaign_id || '')
-                    : (template.api_config.manyreach_campaign_id || '');
+                let campaignId = '';
+                if (template.service === 'smartlead') {
+                    campaignId = template.api_config.smartlead_campaign_id || '';
+                } else if (template.service === 'sendread_campaign' || template.service === 'sendread_list') {
+                    campaignId = template.api_config.sendread_target_id || '';
+                } else {
+                    campaignId = template.api_config.manyreach_campaign_id || '';
+                }
                 document.getElementById('editTemplateCampaignId').value = campaignId;
                 updateEditServiceUi(template.service);
 
