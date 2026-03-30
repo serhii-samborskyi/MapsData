@@ -1,6 +1,74 @@
 import json
+import re
 from typing import Dict, List, Optional
 from database import get_db
+
+
+def _looks_like_city(value: str) -> bool:
+    candidate = str(value or "").strip()
+    if len(candidate) < 2:
+        return False
+    if any(ch.isdigit() for ch in candidate):
+        return False
+    return bool(re.fullmatch(r"[A-Za-z .'\-]+", candidate))
+
+
+def extract_city_from_address(address: Optional[str]) -> str:
+    text = str(address or "").strip()
+    if not text:
+        return ""
+
+    # Typical US pattern: "Street, City, ST 12345"
+    match = re.search(r",\s*([^,]+?)\s*,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?\b", text)
+    if match:
+        city = match.group(1).strip()
+        if _looks_like_city(city):
+            return city
+
+    parts = [part.strip() for part in text.split(",") if part.strip()]
+    if len(parts) >= 3 and _looks_like_city(parts[-2]):
+        return parts[-2]
+
+    if len(parts) == 2:
+        # Example fallback: "City ST 12345"
+        second = parts[-1]
+        second_match = re.match(r"([A-Za-z .'\-]+)\s+[A-Z]{2}\s+\d{5}(?:-\d{4})?\b", second)
+        if second_match:
+            city = second_match.group(1).strip()
+            if _looks_like_city(city):
+                return city
+
+        if _looks_like_city(parts[0]):
+            return parts[0]
+
+    return ""
+
+
+def resolve_contact_value(contact: Dict, contact_field: str) -> Optional[str]:
+    if not contact_field:
+        return None
+
+    normalized_field = str(contact_field).lower().replace(' ', '_')
+    if normalized_field in contact:
+        value = contact[normalized_field]
+        from_contact = True
+    elif contact_field in contact:
+        value = contact[contact_field]
+        from_contact = True
+    else:
+        value = contact_field
+        from_contact = False
+
+    cleaned = str(value).strip() if value is not None else ""
+    if cleaned:
+        return cleaned
+
+    if from_contact and normalized_field == "city":
+        derived_city = extract_city_from_address(contact.get("address"))
+        if derived_city:
+            return derived_city
+
+    return None
 
 class TemplateManager:
     @staticmethod
@@ -118,43 +186,15 @@ class ManyReachIntegration:
         transformed = {}
 
         for api_field, contact_field in field_mapping.items():
-            if contact_field:
-                # Normalize the contact_field to match database format
-                # Convert "Review count" -> "review_count", "Business Name" -> "business_name", etc.
-                normalized_field = contact_field.lower().replace(' ', '_')
-                
-                # Check if it's a database field (try normalized version first, then exact match)
-                if normalized_field in contact:
-                    # Database field - use contact data with normalized field name
-                    value = contact[normalized_field]
-                    if value is not None and str(value).strip():
-                        cleaned_value = str(value).strip()
+            value = resolve_contact_value(contact, contact_field)
+            if value is None:
+                continue
 
-                        # Clean domain fields (both 'domain' and 'www' API fields)
-                        if api_field in ['domain', 'www']:
-                            cleaned_value = self._clean_domain(cleaned_value)
+            # Clean domain fields (both 'domain' and 'www' API fields)
+            if api_field in ['domain', 'www']:
+                value = self._clean_domain(value)
 
-                        transformed[api_field] = cleaned_value
-                elif contact_field in contact:
-                    # Database field - use contact data with exact field name
-                    value = contact[contact_field]
-                    if value is not None and str(value).strip():
-                        cleaned_value = str(value).strip()
-
-                        # Clean domain fields (both 'domain' and 'www' API fields)
-                        if api_field in ['domain', 'www']:
-                            cleaned_value = self._clean_domain(cleaned_value)
-
-                        transformed[api_field] = cleaned_value
-                else:
-                    # Custom value - use as-is (user-entered text)
-                    cleaned_value = str(contact_field).strip()
-                    if cleaned_value:
-                        # Clean domain fields even for custom values
-                        if api_field in ['domain', 'www']:
-                            cleaned_value = self._clean_domain(cleaned_value)
-
-                        transformed[api_field] = cleaned_value
+            transformed[api_field] = value
 
         # Add campaignid if provided
         if manyreach_campaign_id:
@@ -311,22 +351,7 @@ class SmartLeadIntegration:
         return mapping
 
     def _resolve_mapping_value(self, contact: Dict, contact_field: str) -> Optional[str]:
-        if not contact_field:
-            return None
-
-        normalized_field = str(contact_field).lower().replace(' ', '_')
-        if normalized_field in contact:
-            value = contact[normalized_field]
-        elif contact_field in contact:
-            value = contact[contact_field]
-        else:
-            value = contact_field
-
-        if value is None:
-            return None
-
-        cleaned = str(value).strip()
-        return cleaned if cleaned else None
+        return resolve_contact_value(contact, contact_field)
 
     def _clean_domain(self, domain: str) -> str:
         if not domain:
@@ -557,21 +582,7 @@ class SendReadIntegration:
         }
 
     def _resolve_mapping_value(self, contact: Dict, contact_field: str) -> Optional[str]:
-        if not contact_field:
-            return None
-
-        normalized_field = str(contact_field).lower().replace(' ', '_')
-        if normalized_field in contact:
-            value = contact[normalized_field]
-        elif contact_field in contact:
-            value = contact[contact_field]
-        else:
-            value = contact_field
-
-        if value is None:
-            return None
-        cleaned = str(value).strip()
-        return cleaned if cleaned else None
+        return resolve_contact_value(contact, contact_field)
 
     def _clean_website(self, website: str) -> str:
         if not website:

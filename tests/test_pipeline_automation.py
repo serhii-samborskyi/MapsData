@@ -168,6 +168,7 @@ def _install_stub_modules():
     templates.ManyReachIntegration = ManyReachIntegration
     templates.SmartLeadIntegration = SmartLeadIntegration
     templates.SendReadIntegration = SendReadIntegration
+    templates.extract_city_from_address = lambda *_args, **_kwargs: ""
     sys.modules["templates"] = templates
 
     email_verification = types.ModuleType("email_verification")

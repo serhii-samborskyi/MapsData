@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from database import init_db, get_db
-from templates import TemplateManager, ManyReachIntegration, SmartLeadIntegration, SendReadIntegration
+from templates import TemplateManager, ManyReachIntegration, SmartLeadIntegration, SendReadIntegration, extract_city_from_address
 from email_verification import EmailVerificationManager, EmailVerificationService, MyEmailVerifierIntegration
 from typing import List, Union, Any, Optional
 from psycopg2 import DataError, IntegrityError
@@ -3756,9 +3756,19 @@ async def export_campaign_csv(campaign_id: int, fields: str = None):
             # Default fields if none specified
             selected_fields = list(available_fields.keys())
         
-        # Build SQL query with selected fields
-        field_columns = [available_fields[field] for field in selected_fields]
-        query = f"SELECT {', '.join(field_columns)} FROM contacts WHERE campaign_id = %s ORDER BY id"
+        # Build SQL query with selected fields. Use aliases matching CSV field names.
+        select_expressions = [
+            f"{available_fields[field]} AS {field}"
+            for field in selected_fields
+        ]
+
+        # If city is requested but address is not, include address as hidden helper field
+        # so city can be derived from address for export output.
+        needs_city_fallback = 'city' in selected_fields
+        if needs_city_fallback and 'address' not in selected_fields:
+            select_expressions.append("address AS __address_fallback")
+
+        query = f"SELECT {', '.join(select_expressions)} FROM contacts WHERE campaign_id = %s ORDER BY id"
         
         cursor.execute(query, (campaign_id,))
         contacts = [dict(row) for row in cursor.fetchall()]
@@ -3771,12 +3781,17 @@ async def export_campaign_csv(campaign_id: int, fields: str = None):
         writer = csv.DictWriter(output, fieldnames=selected_fields)
         writer.writeheader()
         
-        # Map database column names back to field names for CSV
         for contact in contacts:
+            if needs_city_fallback and not str(contact.get('city') or '').strip():
+                fallback_address = contact.get('address') if 'address' in selected_fields else contact.get('__address_fallback')
+                derived_city = extract_city_from_address(fallback_address)
+                if derived_city:
+                    contact['city'] = derived_city
+
             csv_row = {}
             for field in selected_fields:
-                db_column = available_fields[field]
-                csv_row[field] = contact.get(db_column, '')
+                value = contact.get(field, '')
+                csv_row[field] = '' if value is None else value
             writer.writerow(csv_row)
         
         # Create response
