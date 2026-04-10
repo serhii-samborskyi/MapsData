@@ -738,29 +738,9 @@ async def get_campaigns(request: Request, partial: bool = False, page: int = 1, 
             campaign["verification_progress_percent"] = verification_percent
             campaign["verification_message"] = verification_message
             
-            # Only load detailed data if specifically requested (not for main list view)
-            if not partial:
-                # Get requests for this campaign (simplified)
-                cursor.execute("""
-                    SELECT id, req_text, status
-                    FROM requests 
-                    WHERE campaign_id = %s 
-                    ORDER BY id
-                """, (campaign['id'],))
-                campaign['requests'] = [dict(r) for r in cursor.fetchall()]
-
-                # Get sample contacts (limit to first 100 for performance)
-                cursor.execute("""
-                    SELECT * FROM contacts 
-                    WHERE campaign_id = %s 
-                    ORDER BY id 
-                    LIMIT 100
-                """, (campaign['id'],))
-                campaign['contacts'] = [dict(r) for r in cursor.fetchall()]
-            else:
-                # For partial loads (table refresh), skip detailed data
-                campaign['requests'] = []
-                campaign['contacts'] = []
+            # Dashboard details are lazy-loaded via dedicated endpoints.
+            campaign['requests'] = []
+            campaign['contacts'] = []
 
             campaigns.append(campaign)
 
@@ -775,6 +755,269 @@ async def get_campaigns(request: Request, partial: bool = False, page: int = 1, 
         "has_prev": page > 1,
         "has_next": page < total_pages
     })
+
+
+def _compute_verification_progress_payload(
+    campaign_id: int,
+    total_emails: int,
+    processed_emails: int,
+    active_job: Optional[dict],
+    latest_job: Optional[dict]
+) -> dict:
+    fallback_total_emails = max(0, int(total_emails or 0))
+    total_emails = fallback_total_emails
+    processed_emails = max(0, int(processed_emails or 0))
+
+    status = "idle"
+    message = "Not started"
+    current_email = "-"
+    active = False
+    job_id = None
+
+    if active_job:
+        active = True
+        status = str(active_job.get("status") or "running")
+        job_id = active_job.get("job_id")
+        total_emails = int(active_job.get("total_emails") or total_emails)
+        if total_emails <= 0:
+            total_emails = fallback_total_emails
+        processed_emails = int(active_job.get("processed_emails") or 0)
+        if total_emails > 0:
+            processed_emails = min(max(0, processed_emails), total_emails)
+        message = str(active_job.get("message") or "").strip() or "Verification in progress"
+        current_email = str(active_job.get("current_email") or "-")
+    elif latest_job and str(latest_job.get("status") or "") in {"completed", "failed", "cancelled"}:
+        status = str(latest_job.get("status") or "idle")
+        job_id = latest_job.get("job_id")
+        message = str(latest_job.get("message") or "").strip() or status.capitalize()
+        current_email = str(latest_job.get("current_email") or "-")
+        if status == "completed" and total_emails > 0:
+            processed_emails = total_emails
+    elif total_emails > 0 and processed_emails >= total_emails:
+        status = "completed"
+        message = "All emails processed"
+        processed_emails = total_emails
+
+    progress_percent = 0
+    if total_emails > 0:
+        progress_percent = round(min(100, (processed_emails / total_emails) * 100), 2)
+
+    return {
+        "campaign_id": campaign_id,
+        "job_id": job_id,
+        "active": active,
+        "status": status,
+        "total_emails": total_emails,
+        "processed_emails": processed_emails,
+        "progress_percent": progress_percent,
+        "current_email": current_email,
+        "message": message
+    }
+
+
+@app.get("/api/campaign/{campaign_id}/details")
+async def get_campaign_details(campaign_id: int, limit: int = 100):
+    capped_limit = min(max(int(limit or 100), 1), 300)
+    with get_db() as conn:
+        cursor = conn.cursor()
+        _ensure_campaign_exists(cursor, campaign_id)
+
+        cursor.execute("""
+            SELECT
+                r.id,
+                r.req_text,
+                r.status,
+                COUNT(c.id) AS contact_count
+            FROM requests r
+            LEFT JOIN contacts c ON c.request_id = r.id
+            WHERE r.campaign_id = %s
+            GROUP BY r.id, r.req_text, r.status
+            ORDER BY r.id DESC
+        """, (campaign_id,))
+        requests = [dict(row) for row in cursor.fetchall()]
+
+        cursor.execute("""
+            SELECT
+                id,
+                business_name,
+                category,
+                domain,
+                email,
+                address,
+                phone,
+                facebook,
+                instagram,
+                twitter,
+                yelp,
+                status,
+                email_status
+            FROM contacts
+            WHERE campaign_id = %s
+            ORDER BY id DESC
+            LIMIT %s
+        """, (campaign_id, capped_limit))
+        contacts = [dict(row) for row in cursor.fetchall()]
+
+    emails = [contact for contact in contacts if str(contact.get("email") or "").strip()]
+    return {
+        "campaign_id": campaign_id,
+        "limit": capped_limit,
+        "requests": requests,
+        "contacts": contacts,
+        "emails": emails
+    }
+
+
+@app.get("/api/dashboard/runtime-status")
+async def get_dashboard_runtime_status(campaign_ids: str = ""):
+    ids = []
+    for raw_id in str(campaign_ids or "").split(","):
+        token = raw_id.strip()
+        if not token:
+            continue
+        try:
+            ids.append(int(token))
+        except ValueError:
+            continue
+
+    seen = set()
+    campaign_id_list = []
+    for campaign_id in ids:
+        if campaign_id not in seen:
+            seen.add(campaign_id)
+            campaign_id_list.append(campaign_id)
+
+    if not campaign_id_list:
+        return {"campaigns": {}}
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        placeholders = ",".join(["%s"] * len(campaign_id_list))
+
+        cursor.execute(f"""
+            SELECT DISTINCT ON (campaign_id)
+                *
+            FROM pipeline_runs
+            WHERE campaign_id IN ({placeholders})
+            ORDER BY campaign_id, created_at DESC, id DESC
+        """, tuple(campaign_id_list))
+        latest_runs_raw = [dict(row) for row in cursor.fetchall()]
+        latest_run_by_campaign = {row["campaign_id"]: row for row in latest_runs_raw}
+
+        run_ids = [int(run["id"]) for run in latest_runs_raw]
+        stage_rows_by_run = {}
+        if run_ids:
+            stage_placeholders = ",".join(["%s"] * len(run_ids))
+            cursor.execute(f"""
+                SELECT *
+                FROM pipeline_run_stages
+                WHERE run_id IN ({stage_placeholders})
+                ORDER BY run_id ASC, stage_order ASC
+            """, tuple(run_ids))
+            for stage_row in cursor.fetchall():
+                stage = dict(stage_row)
+                stage_rows_by_run.setdefault(stage["run_id"], []).append(stage)
+
+        cursor.execute(f"""
+            SELECT
+                campaign_id,
+                id,
+                domain,
+                email,
+                phone,
+                place_id,
+                business_name,
+                nomail_pulled_at,
+                email_status,
+                status
+            FROM contacts
+            WHERE campaign_id IN ({placeholders})
+        """, tuple(campaign_id_list))
+        contacts_by_campaign = {}
+        for row in cursor.fetchall():
+            contact = dict(row)
+            contacts_by_campaign.setdefault(contact["campaign_id"], []).append(contact)
+
+        cursor.execute(f"""
+            SELECT
+                campaign_id,
+                MAX(updated_at) AS pipeline_updated_at
+            FROM pipeline_runs
+            WHERE campaign_id IN ({placeholders})
+            GROUP BY campaign_id
+        """, tuple(campaign_id_list))
+        pipeline_updated_at_map = {
+            int(row["campaign_id"]): row.get("pipeline_updated_at")
+            for row in cursor.fetchall()
+        }
+
+    with verification_jobs_lock:
+        active_jobs = {}
+        latest_jobs = {}
+        for job in verification_jobs.values():
+            campaign_id = job.get("campaign_id")
+            if campaign_id not in seen:
+                continue
+
+            sort_key = job.get("started_at") or job.get("completed_at") or ""
+            latest_existing = latest_jobs.get(campaign_id)
+            if not latest_existing or sort_key > (latest_existing.get("started_at") or latest_existing.get("completed_at") or ""):
+                latest_jobs[campaign_id] = dict(job)
+
+            if job.get("status") in {"queued", "running"}:
+                active_existing = active_jobs.get(campaign_id)
+                if not active_existing or sort_key > (active_existing.get("started_at") or ""):
+                    active_jobs[campaign_id] = dict(job)
+
+    result = {}
+    for campaign_id in campaign_id_list:
+        run = latest_run_by_campaign.get(campaign_id)
+        stages = stage_rows_by_run.get(run["id"], []) if run else []
+        pipeline = _serialize_pipeline_status(campaign_id, run, stages)
+
+        contacts = contacts_by_campaign.get(campaign_id, [])
+        pipeline_updated_at = pipeline_updated_at_map.get(campaign_id)
+        max_nomail = None
+        for contact in contacts:
+            nomail_pulled_at = contact.get("nomail_pulled_at")
+            if nomail_pulled_at and (max_nomail is None or nomail_pulled_at > max_nomail):
+                max_nomail = nomail_pulled_at
+
+        last_updated_at_dt = None
+        for candidate in [max_nomail, pipeline_updated_at]:
+            if candidate and (last_updated_at_dt is None or candidate > last_updated_at_dt):
+                last_updated_at_dt = candidate
+
+        stats = _compute_campaign_stats_from_contacts(
+            contacts,
+            last_updated_at=_iso(last_updated_at_dt),
+        )
+
+        total_emails = 0
+        processed_emails = 0
+        for contact in contacts:
+            email = str(contact.get("email") or "").strip()
+            if not email:
+                continue
+            total_emails += 1
+            if _resolve_contact_email_status(contact) != "unverified":
+                processed_emails += 1
+
+        verification = _compute_verification_progress_payload(
+            campaign_id=campaign_id,
+            total_emails=total_emails,
+            processed_emails=processed_emails,
+            active_job=active_jobs.get(campaign_id),
+            latest_job=latest_jobs.get(campaign_id),
+        )
+
+        result[str(campaign_id)] = {
+            "pipeline": pipeline,
+            "stats": stats,
+            "verification": verification,
+        }
+
+    return {"campaigns": result}
 
 @app.delete("/api/campaign/{campaign_id}")
 async def delete_campaign(campaign_id: int):
@@ -3572,11 +3815,6 @@ async def get_campaign_verification_progress(campaign_id: int):
 
     total_emails = int(counts.get("total_emails") or 0)
     processed_emails = int(counts.get("processed_emails") or 0)
-    status = "idle"
-    message = "Not started"
-    current_email = "-"
-    active = False
-    job_id = None
     latest_job = None
     active_job = None
 
@@ -3591,45 +3829,13 @@ async def get_campaign_verification_progress(campaign_id: int):
                 if active_job is None or timestamp > (active_job.get("started_at") or ""):
                     active_job = dict(job)
 
-    if active_job:
-        active = True
-        status = str(active_job.get("status") or "running")
-        job_id = active_job.get("job_id")
-        total_emails = int(active_job.get("total_emails") or total_emails)
-        if total_emails <= 0:
-            total_emails = int(counts.get("total_emails") or 0)
-        processed_emails = int(active_job.get("processed_emails") or 0)
-        if total_emails > 0:
-            processed_emails = min(processed_emails, total_emails)
-        message = str(active_job.get("message") or "").strip() or "Verification in progress"
-        current_email = str(active_job.get("current_email") or "-")
-    elif latest_job and str(latest_job.get("status") or "") in {"completed", "failed", "cancelled"}:
-        status = str(latest_job.get("status") or "idle")
-        job_id = latest_job.get("job_id")
-        message = str(latest_job.get("message") or "").strip() or status.capitalize()
-        current_email = str(latest_job.get("current_email") or "-")
-        if status == "completed" and total_emails > 0:
-            processed_emails = total_emails
-    elif total_emails > 0 and processed_emails >= total_emails:
-        status = "completed"
-        message = "All emails processed"
-        processed_emails = total_emails
-
-    progress_percent = 0
-    if total_emails > 0:
-        progress_percent = round(min(100, (processed_emails / total_emails) * 100), 2)
-
-    return {
-        "campaign_id": campaign_id,
-        "job_id": job_id,
-        "active": active,
-        "status": status,
-        "total_emails": total_emails,
-        "processed_emails": processed_emails,
-        "progress_percent": progress_percent,
-        "current_email": current_email,
-        "message": message
-    }
+    return _compute_verification_progress_payload(
+        campaign_id=campaign_id,
+        total_emails=total_emails,
+        processed_emails=processed_emails,
+        active_job=active_job,
+        latest_job=latest_job,
+    )
 
 @app.post("/api/verification-jobs/{job_id}/stop")
 async def stop_verification_job(job_id: str):

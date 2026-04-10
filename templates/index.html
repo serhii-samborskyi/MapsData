@@ -209,21 +209,9 @@
                         <tr id="requests-{{ campaign.id }}" class="hidden details-row">
                             <td colspan="7" class="no-label px-4 py-2">
                                 <div class="bg-slate-50 rounded-lg p-4 space-y-2 border border-slate-200/70">
-                                    {% for request in campaign.requests %}
-                                    <div class="flex flex-wrap items-center gap-3">
-                                        <span class="font-medium text-slate-700">{{ request.req_text }}</span>
-                                        <span class="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs font-medium">Contacts: {{ request.contact_count }}</span>
-                                        <span class="px-2 py-1 text-xs font-medium rounded-full
-                                            {% if request.status == 'completed' %}
-                                                bg-green-100 text-green-800
-                                            {% elif request.status == 'reserved' %}
-                                                bg-yellow-100 text-yellow-800
-                                            {% else %}
-                                                bg-gray-100 text-gray-800
-                                            {% endif %}
-                                        ">{{ request.status }}</span>
+                                    <div id="requests-list-{{ campaign.id }}" class="space-y-2">
+                                        <div class="text-sm text-slate-500">Open this section to load requests.</div>
                                     </div>
-                                    {% endfor %}
                                 </div>
                             </td>
                         </tr>
@@ -239,40 +227,10 @@
                                                 <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500">Email Status</th>
                                             </tr>
                                         </thead>
-                                        <tbody class="divide-y divide-gray-200">
-                                            {% set ns = namespace(has_email=false) %}
-                                            {% for contact in campaign.contacts %}
-                                                {% if contact.email and contact.email|trim != '' %}
-                                                    {% set ns.has_email = true %}
-                                                    <tr class="hover:bg-white/50 transition-all" data-contact-id="{{ contact.id }}">
-                                                        <td data-label="Email" class="px-3 py-2 text-sm text-gray-700">
-                                                            <div class="flex items-center gap-2">
-                                                                <span>{{ contact.email.split(',')[0] }}</span>
-                                                                <button onclick="removeContactEmail({{ contact.id }}, {{ campaign.id }}, this)" class="email-remove-btn" title="Remove email">×</button>
-                                                            </div>
-                                                        </td>
-                                                        <td data-label="Web Site" class="px-3 py-2 text-sm text-gray-700">
-                                                            {% if contact.domain %}
-                                                            {% set display_url = contact.domain.replace('https://', '').replace('http://', '').split('?')[0] %}
-                                                            <a href="{{ contact.domain if 'http' in contact.domain else 'http://' + contact.domain }}" target="_blank" class="text-blue-600 hover:underline">{{ display_url[:24] + '...' if display_url|length > 24 else display_url }}</a>
-                                                            {% else %}
-                                                            -
-                                                            {% endif %}
-                                                        </td>
-                                                        <td data-label="Company Name" class="px-3 py-2 text-sm text-gray-700">{{ contact.business_name or '-' }}</td>
-                                                        <td data-label="Email Status" class="px-3 py-2 text-sm">
-                                                            <span class="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-800">
-                                                                {{ contact.email_status or 'unverified' }}
-                                                            </span>
-                                                        </td>
-                                                    </tr>
-                                                {% endif %}
-                                            {% endfor %}
-                                            {% if not ns.has_email %}
+                                        <tbody id="emails-body-{{ campaign.id }}" class="divide-y divide-gray-200">
                                             <tr>
-                                                <td colspan="4" class="px-3 py-3 text-sm text-slate-500">No contacts with email in this campaign.</td>
+                                                <td colspan="4" class="px-3 py-3 text-sm text-slate-500">Open this section to load emails.</td>
                                             </tr>
-                                            {% endif %}
                                         </tbody>
                                     </table>
                                 </div>
@@ -304,70 +262,10 @@
                                                 <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500">Actions</th>
                                             </tr>
                                         </thead>
-                                        <tbody class="divide-y divide-gray-200">
-                                            {% for contact in campaign.contacts %}
-                                            <tr class="hover:bg-white/50 transition-all" data-contact-id="{{ contact.id }}">
-                                                <td data-label="IDs" class="px-3 py-2">
-                                                    <div class="space-y-1">
-                                                        <div class="text-xs text-gray-500">Campaign: {{ contact.campaign_id }}</div>
-                                                        <div class="text-xs text-gray-500">Request: {{ contact.request_id }}</div>
-                                                        <div class="text-xs text-gray-500">Place: {{ contact.place_id or '-' }}</div>
-                                                    </div>
-                                                </td>
-                                                <td data-label="Business Info" class="px-3 py-2">
-                                                    <div class="space-y-1">
-                                                        <div class="text-sm font-medium text-gray-700">{{ contact.business_name }}</div>
-                                                        <div class="text-xs text-gray-500">Category: {{ contact.category or '-' }}</div>
-                                                        <div class="text-xs text-gray-500">Rating: {{ contact.rating or '-' }} ({{ contact.review_count or 0 }} reviews)</div>
-                                                    </div>
-                                                </td>
-                                                <td data-label="Contact" class="px-3 py-2">
-                                                    <div class="space-y-1">
-                                                        <div class="text-sm text-gray-700">{{ contact.phone or '-' }}</div>
-                                                        <div class="text-sm text-gray-700 flex items-center gap-2">
-                                                            <span>{{ contact.email.split(',')[0] if contact.email else '-' }}</span>
-                                                            {% if contact.email and contact.email_status %}
-                                                                {% if contact.email_status == 'Valid' %}
-                                                                    <span class="text-green-500 font-bold" title="Valid Email">✓</span>
-                                                                {% elif contact.email_status in ['Invalid', 'Unknown', 'Catch-all'] %}
-                                                                    <span class="text-red-500 font-bold" title="{{ contact.email_status }} Email">✗</span>
-                                                                {% endif %}
-                                                            {% endif %}
-                                                        </div>
-                                                        <div class="text-sm text-gray-700">
-                                                            {% if contact.domain %}
-                                                            {% set display_url = contact.domain.replace('https://', '').replace('http://', '').split('?')[0] %}
-                                                            <a href="{{ contact.domain if 'http' in contact.domain else 'http://' + contact.domain }}" target="_blank" class="text-blue-600 hover:underline">{{ display_url[:20] + '...' if display_url|length > 20 else display_url }}</a>
-                                                            {% else %}
-                                                            -
-                                                            {% endif %}
-                                                        </div>
-                                                    </div>
-                                                </td>
-                                                <td data-label="Location" class="px-3 py-2 text-sm text-gray-700">{{ contact.address or '-' }}</td>
-                                                <td data-label="Social Links" class="px-3 py-2">
-                                                    <div class="flex flex-col space-y-1">
-                                                        {% if contact.facebook %}<a href="{{ contact.facebook }}" target="_blank" class="text-blue-600 hover:underline text-sm">Facebook</a>{% endif %}
-                                                        {% if contact.instagram %}<a href="{{ contact.instagram }}" target="_blank" class="text-pink-600 hover:underline text-sm">Instagram</a>{% endif %}
-                                                        {% if contact.twitter %}<a href="{{ contact.twitter }}" target="_blank" class="text-blue-400 hover:underline text-sm">Twitter</a>{% endif %}
-                                                        {% if contact.yelp %}<a href="{{ contact.yelp }}" target="_blank" class="text-red-600 hover:underline text-sm">Yelp</a>{% endif %}
-                                                        {% if not (contact.facebook or contact.instagram or contact.twitter or contact.yelp) %}-{% endif %}
-                                                    </div>
-                                                </td>
-                                                <td data-label="Status" class="px-3 py-2">
-                                                    <span class="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-800">
-                                                        {{ contact.status }}
-                                                    </span>
-                                                </td>
-                                                <td data-label="Actions" class="px-3 py-2 actions">
-                                                    <button onclick="removeContact({{ contact.id }}, {{ campaign.id }})" 
-                                                            class="bg-red-100 text-red-700 px-2 py-1 rounded text-xs font-medium hover:bg-red-200 transition-all"
-                                                            title="Remove Contact">
-                                                        ×
-                                                    </button>
-                                                </td>
+                                        <tbody id="contacts-body-{{ campaign.id }}" class="divide-y divide-gray-200">
+                                            <tr>
+                                                <td colspan="7" class="px-3 py-3 text-sm text-slate-500">Open this section to load contacts.</td>
                                             </tr>
-                                            {% endfor %}
                                         </tbody>
                                     </table>
                                 </div>
@@ -678,6 +576,8 @@
         let pipelinePollTimer = null;
         let currentCampaignPage = {{ page|default(1) }};
         let campaignsPerPage = {{ per_page|default(5) }};
+        const campaignDetailsCache = new Map();
+        const campaignDetailsLoading = new Set();
         const PIPELINE_STAGES = ['maps_scrape', 'cleanup_contacts', 'email_fast', 'email_fallback', 'finalize'];
         const PIPELINE_LABELS = {
             maps_scrape: 'Maps Scrape',
@@ -687,15 +587,18 @@
             finalize: 'Finalize'
         };
 
-        function toggleRequests(campaignId) {
+        async function toggleRequests(campaignId) {
+            await ensureCampaignDetailsLoaded(campaignId);
             const row = document.getElementById(`requests-${campaignId}`);
             row.classList.toggle('hidden');
         }
-        function toggleContacts(campaignId) {
+        async function toggleContacts(campaignId) {
+            await ensureCampaignDetailsLoaded(campaignId);
             const row = document.getElementById(`contacts-${campaignId}`);
             row.classList.toggle('hidden');
         }
-        function toggleEmails(campaignId) {
+        async function toggleEmails(campaignId) {
+            await ensureCampaignDetailsLoaded(campaignId);
             const row = document.getElementById(`emails-${campaignId}`);
             row.classList.toggle('hidden');
         }
@@ -789,6 +692,159 @@
             });
         }
 
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function renderDomainLink(domain, maxLen = 24) {
+            const raw = String(domain || '').trim();
+            if (!raw) return '-';
+            const cleanDisplay = raw.replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('?')[0];
+            const href = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
+            const text = cleanDisplay.length > maxLen ? `${cleanDisplay.slice(0, maxLen)}...` : cleanDisplay;
+            return `<a href="${escapeHtml(href)}" target="_blank" class="text-blue-600 hover:underline">${escapeHtml(text)}</a>`;
+        }
+
+        function getRequestStatusBadgeClass(status) {
+            const normalized = String(status || '').toLowerCase();
+            if (normalized === 'completed') return 'bg-green-100 text-green-800';
+            if (normalized === 'reserved') return 'bg-yellow-100 text-yellow-800';
+            return 'bg-gray-100 text-gray-800';
+        }
+
+        function getEmailStatusIndicator(status) {
+            const normalized = String(status || '').toLowerCase();
+            if (normalized === 'valid') return '<span class="text-green-500 font-bold" title="Valid Email">✓</span>';
+            if (['invalid', 'unknown', 'catch-all', 'catchall'].includes(normalized)) {
+                return `<span class="text-red-500 font-bold" title="${escapeHtml(status || 'Invalid')} Email">✗</span>`;
+            }
+            return '';
+        }
+
+        function renderRequestsDetails(campaignId, requests) {
+            const container = document.getElementById(`requests-list-${campaignId}`);
+            if (!container) return;
+            if (!Array.isArray(requests) || requests.length === 0) {
+                container.innerHTML = '<div class="text-sm text-slate-500">No requests found.</div>';
+                return;
+            }
+            container.innerHTML = requests.map((request) => `
+                <div class="flex flex-wrap items-center gap-3">
+                    <span class="font-medium text-slate-700">${escapeHtml(request.req_text || '')}</span>
+                    <span class="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs font-medium">Contacts: ${Number(request.contact_count || 0)}</span>
+                    <span class="px-2 py-1 text-xs font-medium rounded-full ${getRequestStatusBadgeClass(request.status)}">${escapeHtml(request.status || 'pending')}</span>
+                </div>
+            `).join('');
+        }
+
+        function renderEmailsDetails(campaignId, emails) {
+            const tbody = document.getElementById(`emails-body-${campaignId}`);
+            if (!tbody) return;
+            if (!Array.isArray(emails) || emails.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="px-3 py-3 text-sm text-slate-500">No contacts with email in this campaign.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = emails.map((contact) => `
+                <tr class="hover:bg-white/50 transition-all" data-contact-id="${Number(contact.id)}">
+                    <td data-label="Email" class="px-3 py-2 text-sm text-gray-700">
+                        <div class="flex items-center gap-2">
+                            <span>${escapeHtml(String(contact.email || '').split(',')[0])}</span>
+                            <button onclick="removeContactEmail(${Number(contact.id)}, ${Number(campaignId)}, this)" class="email-remove-btn" title="Remove email">×</button>
+                        </div>
+                    </td>
+                    <td data-label="Web Site" class="px-3 py-2 text-sm text-gray-700">${renderDomainLink(contact.domain, 24)}</td>
+                    <td data-label="Company Name" class="px-3 py-2 text-sm text-gray-700">${escapeHtml(contact.business_name || '-')}</td>
+                    <td data-label="Email Status" class="px-3 py-2 text-sm">
+                        <span class="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-800">${escapeHtml(contact.email_status || 'unverified')}</span>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function renderContactsDetails(campaignId, contacts) {
+            const tbody = document.getElementById(`contacts-body-${campaignId}`);
+            if (!tbody) return;
+            if (!Array.isArray(contacts) || contacts.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="px-3 py-3 text-sm text-slate-500">No contacts found for this campaign.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = contacts.map((contact) => `
+                <tr class="hover:bg-white/50 transition-all" data-contact-id="${Number(contact.id)}">
+                    <td data-label="IDs" class="px-3 py-2">
+                        <div class="space-y-1">
+                            <div class="text-xs text-gray-500">Campaign: ${Number(campaignId)}</div>
+                            <div class="text-xs text-gray-500">Place: ${escapeHtml(contact.place_id || '-')}</div>
+                        </div>
+                    </td>
+                    <td data-label="Business Info" class="px-3 py-2">
+                        <div class="space-y-1">
+                            <div class="text-sm font-medium text-gray-700">${escapeHtml(contact.business_name || '-')}</div>
+                            <div class="text-xs text-gray-500">Category: ${escapeHtml(contact.category || '-')}</div>
+                        </div>
+                    </td>
+                    <td data-label="Contact" class="px-3 py-2">
+                        <div class="space-y-1">
+                            <div class="text-sm text-gray-700">${escapeHtml(contact.phone || '-')}</div>
+                            <div class="text-sm text-gray-700 flex items-center gap-2">
+                                <span>${escapeHtml(String(contact.email || '').split(',')[0] || '-')}</span>
+                                ${getEmailStatusIndicator(contact.email_status)}
+                            </div>
+                            <div class="text-sm text-gray-700">${renderDomainLink(contact.domain, 20)}</div>
+                        </div>
+                    </td>
+                    <td data-label="Location" class="px-3 py-2 text-sm text-gray-700">${escapeHtml(contact.address || '-')}</td>
+                    <td data-label="Social Links" class="px-3 py-2">
+                        <div class="flex flex-col space-y-1">
+                            ${contact.facebook ? `<a href="${escapeHtml(contact.facebook)}" target="_blank" class="text-blue-600 hover:underline text-sm">Facebook</a>` : ''}
+                            ${contact.instagram ? `<a href="${escapeHtml(contact.instagram)}" target="_blank" class="text-pink-600 hover:underline text-sm">Instagram</a>` : ''}
+                            ${contact.twitter ? `<a href="${escapeHtml(contact.twitter)}" target="_blank" class="text-blue-400 hover:underline text-sm">Twitter</a>` : ''}
+                            ${contact.yelp ? `<a href="${escapeHtml(contact.yelp)}" target="_blank" class="text-red-600 hover:underline text-sm">Yelp</a>` : ''}
+                            ${!(contact.facebook || contact.instagram || contact.twitter || contact.yelp) ? '-' : ''}
+                        </div>
+                    </td>
+                    <td data-label="Status" class="px-3 py-2">
+                        <span class="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-800">${escapeHtml(contact.status || 'pending')}</span>
+                    </td>
+                    <td data-label="Actions" class="px-3 py-2 actions">
+                        <button onclick="removeContact(${Number(contact.id)}, ${Number(campaignId)})"
+                                class="bg-red-100 text-red-700 px-2 py-1 rounded text-xs font-medium hover:bg-red-200 transition-all"
+                                title="Remove Contact">×</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        async function ensureCampaignDetailsLoaded(campaignId) {
+            if (campaignDetailsCache.has(campaignId)) {
+                return;
+            }
+            if (campaignDetailsLoading.has(campaignId)) {
+                return;
+            }
+            campaignDetailsLoading.add(campaignId);
+            try {
+                const response = await fetch(`/api/campaign/${campaignId}/details?limit=100`);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const payload = await response.json();
+                campaignDetailsCache.set(campaignId, payload);
+                renderRequestsDetails(campaignId, payload.requests || []);
+                renderEmailsDetails(campaignId, payload.emails || []);
+                renderContactsDetails(campaignId, payload.contacts || []);
+                attachSearchInputListeners();
+            } catch (error) {
+                console.error(`Error loading campaign details for ${campaignId}:`, error);
+            } finally {
+                campaignDetailsLoading.delete(campaignId);
+            }
+        }
+
         function syncCampaignPaginationState() {
             const container = document.getElementById('campaignsTableContainer');
             if (!container) return;
@@ -830,11 +886,13 @@
                     currentContainer.dataset.totalCampaigns = newContainer.dataset.totalCampaigns || '0';
                 }
                 syncCampaignPaginationState();
+                campaignDetailsCache.clear();
+                campaignDetailsLoading.clear();
 
                 // Re-attach event listeners for search inputs after refresh
                 attachSearchInputListeners();
 
-                await Promise.all([refreshAllPipelineStatuses(), refreshAllVerificationStatuses()]);
+                await refreshRuntimeStatuses();
             } catch (error) {
                 console.error('Error refreshing campaigns:', error);
             }
@@ -981,13 +1039,34 @@
             }
         }
 
-        async function refreshAllPipelineStatuses() {
+        async function refreshRuntimeStatuses() {
             const campaignRows = Array.from(document.querySelectorAll('tr[id^="campaign-row-"]'));
             const campaignIds = campaignRows
                 .map(row => row.id.replace('campaign-row-', ''))
                 .filter(Boolean);
+            if (campaignIds.length === 0) return;
 
-            await Promise.all(campaignIds.map(campaignId => refreshPipelineStatus(campaignId)));
+            try {
+                const response = await fetch(`/api/dashboard/runtime-status?campaign_ids=${encodeURIComponent(campaignIds.join(','))}`);
+                if (!response.ok) {
+                    throw new Error(`Runtime status failed: ${response.status}`);
+                }
+                const payload = await response.json();
+                const statusMap = payload.campaigns || {};
+
+                campaignIds.forEach((campaignId) => {
+                    const item = statusMap[campaignId] || statusMap[String(campaignId)];
+                    if (!item) return;
+                    renderPipelineState(campaignId, item.pipeline || {}, item.stats || {});
+                    renderVerificationProgress(campaignId, item.verification || {});
+                });
+            } catch (error) {
+                console.error('Error loading runtime statuses:', error);
+            }
+        }
+
+        async function refreshAllPipelineStatuses() {
+            await refreshRuntimeStatuses();
         }
 
         function renderVerificationProgress(campaignId, progress) {
@@ -1026,12 +1105,7 @@
         }
 
         async function refreshAllVerificationStatuses() {
-            const campaignRows = Array.from(document.querySelectorAll('tr[id^="campaign-row-"]'));
-            const campaignIds = campaignRows
-                .map(row => row.id.replace('campaign-row-', ''))
-                .filter(Boolean);
-
-            await Promise.all(campaignIds.map(campaignId => refreshVerificationStatus(campaignId)));
+            await refreshRuntimeStatuses();
         }
 
         async function startPipeline(campaignId) {
@@ -1611,15 +1685,13 @@
             bindRefreshIndicator();
             syncCampaignPaginationState();
             attachSearchInputListeners();
-            refreshAllPipelineStatuses();
-            refreshAllVerificationStatuses();
+            refreshRuntimeStatuses();
 
             if (pipelinePollTimer) {
                 clearInterval(pipelinePollTimer);
             }
             pipelinePollTimer = setInterval(() => {
-                refreshAllPipelineStatuses();
-                refreshAllVerificationStatuses();
+                refreshRuntimeStatuses();
             }, 15000);
         });
     </script>

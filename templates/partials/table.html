@@ -141,21 +141,9 @@
         <tr id="requests-{{ campaign.id }}" class="hidden details-row">
             <td colspan="7" class="no-label px-4 py-2">
                 <div class="bg-slate-50 rounded-lg p-4 space-y-2 border border-slate-200/70">
-                    {% for request in campaign.requests %}
-                    <div class="flex flex-wrap items-center gap-3">
-                        <span class="font-medium text-slate-700">{{ request.req_text }}</span>
-                        <span class="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs font-medium">Contacts: {{ request.contact_count }}</span>
-                        <span class="px-2 py-1 text-xs font-medium rounded-full
-                            {% if request.status == 'completed' %}
-                                bg-green-100 text-green-800
-                            {% elif request.status == 'reserved' %}
-                                bg-yellow-100 text-yellow-800
-                            {% else %}
-                                bg-gray-100 text-gray-800
-                            {% endif %}
-                        ">{{ request.status }}</span>
+                    <div id="requests-list-{{ campaign.id }}" class="space-y-2">
+                        <div class="text-sm text-slate-500">Open this section to load requests.</div>
                     </div>
-                    {% endfor %}
                 </div>
             </td>
         </tr>
@@ -171,40 +159,10 @@
                                 <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500">Email Status</th>
                             </tr>
                         </thead>
-                        <tbody class="divide-y divide-gray-200">
-                            {% set ns = namespace(has_email=false) %}
-                            {% for contact in campaign.contacts %}
-                                {% if contact.email and contact.email|trim != '' %}
-                                    {% set ns.has_email = true %}
-                                    <tr class="hover:bg-white/50 transition-all" data-contact-id="{{ contact.id }}">
-                                        <td data-label="Email" class="px-3 py-2 text-sm text-gray-700">
-                                            <div class="flex items-center gap-2">
-                                                <span>{{ contact.email.split(',')[0] }}</span>
-                                                <button onclick="removeContactEmail({{ contact.id }}, {{ campaign.id }}, this)" class="email-remove-btn" title="Remove email">×</button>
-                                            </div>
-                                        </td>
-                                        <td data-label="Web Site" class="px-3 py-2 text-sm text-gray-700">
-                                            {% if contact.domain %}
-                                            {% set display_url = contact.domain.replace('https://', '').replace('http://', '').split('?')[0] %}
-                                            <a href="{{ contact.domain if 'http' in contact.domain else 'http://' + contact.domain }}" target="_blank" class="text-blue-600 hover:underline">{{ display_url[:24] + '...' if display_url|length > 24 else display_url }}</a>
-                                            {% else %}
-                                            -
-                                            {% endif %}
-                                        </td>
-                                        <td data-label="Company Name" class="px-3 py-2 text-sm text-gray-700">{{ contact.business_name or '-' }}</td>
-                                        <td data-label="Email Status" class="px-3 py-2 text-sm">
-                                            <span class="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-800">
-                                                {{ contact.email_status or 'unverified' }}
-                                            </span>
-                                        </td>
-                                    </tr>
-                                {% endif %}
-                            {% endfor %}
-                            {% if not ns.has_email %}
+                        <tbody id="emails-body-{{ campaign.id }}" class="divide-y divide-gray-200">
                             <tr>
-                                <td colspan="4" class="px-3 py-3 text-sm text-slate-500">No contacts with email in this campaign.</td>
+                                <td colspan="4" class="px-3 py-3 text-sm text-slate-500">Open this section to load emails.</td>
                             </tr>
-                            {% endif %}
                         </tbody>
                     </table>
                 </div>
@@ -236,70 +194,10 @@
                                 <th class="px-3 py-2 text-left text-xs font-semibold text-slate-500">Actions</th>
                             </tr>
                         </thead>
-                        <tbody class="divide-y divide-gray-200">
-                            {% for contact in campaign.contacts %}
-                            <tr class="hover:bg-white/50 transition-all" data-contact-id="{{ contact.id }}">
-                                <td data-label="IDs" class="px-3 py-2">
-                                    <div class="space-y-1">
-                                        <div class="text-xs text-gray-500">Campaign: {{ contact.campaign_id }}</div>
-                                        <div class="text-xs text-gray-500">Request: {{ contact.request_id }}</div>
-                                        <div class="text-xs text-gray-500">Place: {{ contact.place_id or '-' }}</div>
-                                    </div>
-                                </td>
-                                <td data-label="Business Info" class="px-3 py-2">
-                                    <div class="space-y-1">
-                                        <div class="text-sm font-medium text-gray-700">{{ contact.business_name }}</div>
-                                        <div class="text-xs text-gray-500">Category: {{ contact.category or '-' }}</div>
-                                        <div class="text-xs text-gray-500">Rating: {{ contact.rating or '-' }} ({{ contact.review_count or 0 }} reviews)</div>
-                                    </div>
-                                </td>
-                                <td data-label="Contact" class="px-3 py-2">
-                                    <div class="space-y-1">
-                                        <div class="text-sm text-gray-700">{{ contact.phone or '-' }}</div>
-                                        <div class="text-sm text-gray-700 flex items-center gap-2">
-                                            <span>{{ contact.email.split(',')[0] if contact.email else '-' }}</span>
-                                            {% if contact.email and contact.email_status %}
-                                                {% if contact.email_status == 'Valid' %}
-                                                    <span class="text-green-500 font-bold" title="Valid Email">✓</span>
-                                                {% elif contact.email_status in ['Invalid', 'Unknown', 'Catch-all'] %}
-                                                    <span class="text-red-500 font-bold" title="{{ contact.email_status }} Email">✗</span>
-                                                {% endif %}
-                                            {% endif %}
-                                        </div>
-                                        <div class="text-sm text-gray-700">
-                                            {% if contact.domain %}
-                                            {% set display_url = contact.domain.replace('https://', '').replace('http://', '').split('?')[0] %}
-                                            <a href="{{ contact.domain if 'http' in contact.domain else 'http://' + contact.domain }}" target="_blank" class="text-blue-600 hover:underline">{{ display_url[:20] + '...' if display_url|length > 20 else display_url }}</a>
-                                            {% else %}
-                                            -
-                                            {% endif %}
-                                        </div>
-                                    </div>
-                                </td>
-                                <td data-label="Location" class="px-3 py-2 text-sm text-gray-700">{{ contact.address or '-' }}</td>
-                                <td data-label="Social Links" class="px-3 py-2">
-                                    <div class="flex flex-col space-y-1">
-                                        {% if contact.facebook %}<a href="{{ contact.facebook }}" target="_blank" class="text-blue-600 hover:underline text-sm">Facebook</a>{% endif %}
-                                        {% if contact.instagram %}<a href="{{ contact.instagram }}" target="_blank" class="text-pink-600 hover:underline text-sm">Instagram</a>{% endif %}
-                                        {% if contact.twitter %}<a href="{{ contact.twitter }}" target="_blank" class="text-blue-400 hover:underline text-sm">Twitter</a>{% endif %}
-                                        {% if contact.yelp %}<a href="{{ contact.yelp }}" target="_blank" class="text-red-600 hover:underline text-sm">Yelp</a>{% endif %}
-                                        {% if not (contact.facebook or contact.instagram or contact.twitter or contact.yelp) %}-{% endif %}
-                                    </div>
-                                </td>
-                                <td data-label="Status" class="px-3 py-2">
-                                    <span class="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-800">
-                                        {{ contact.status }}
-                                    </span>
-                                </td>
-                                <td data-label="Actions" class="px-3 py-2 actions">
-                                    <button onclick="removeContact({{ contact.id }}, {{ campaign.id }})" 
-                                            class="bg-red-100 text-red-700 px-2 py-1 rounded text-xs font-medium hover:bg-red-200 transition-all"
-                                            title="Remove Contact">
-                                        ×
-                                    </button>
-                                </td>
+                        <tbody id="contacts-body-{{ campaign.id }}" class="divide-y divide-gray-200">
+                            <tr>
+                                <td colspan="7" class="px-3 py-3 text-sm text-slate-500">Open this section to load contacts.</td>
                             </tr>
-                            {% endfor %}
                         </tbody>
                     </table>
                 </div>
