@@ -65,6 +65,11 @@
 
         <div class="app-card p-6">
             <h2 class="section-title text-2xl font-semibold mb-4 text-slate-900">Active Campaigns</h2>
+            <div id="campaignsTableContainer"
+                 data-current-page="{{ page }}"
+                 data-per-page="{{ per_page }}"
+                 data-total-pages="{{ total_pages }}"
+                 data-total-campaigns="{{ total_campaigns }}">
             <div class="overflow-x-auto hide-scrollbar">
                 <table class="w-full responsive-table">
                     <thead>
@@ -90,6 +95,10 @@
                                 {% set completion = 100 %}
                             {% endif %}
                         {% endif %}
+                        {% set verification_total = campaign.verification_total_emails or 0 %}
+                        {% set verification_processed = campaign.verification_processed_emails or 0 %}
+                        {% set verification_percent = campaign.verification_progress_percent or 0 %}
+                        {% set verification_status = campaign.verification_status or 'idle' %}
                         <tr id="campaign-row-{{ campaign.id }}" class="campaign-row hover:bg-slate-50/80 transition-all">
                             <td data-label="ID" class="text-sm text-slate-700">{{ campaign.id }}</td>
                             <td data-label="Name" class="text-sm text-slate-700 font-medium">{{ campaign.name }}</td>
@@ -114,6 +123,16 @@
                                     <span id="pipeline-badge-{{ campaign.id }}" class="inline-flex items-center rounded-full bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-600">
                                         Pipeline: pending
                                     </span>
+                                </div>
+                                <div class="mt-3 rounded-lg border border-slate-200 bg-white/80 px-2 py-2">
+                                    <div id="verification-progress-label-{{ campaign.id }}" class="flex items-center justify-between text-[11px]">
+                                        <span class="font-medium text-slate-600">Verification: {{ verification_status }}</span>
+                                        <span class="text-slate-500">{{ verification_processed }}/{{ verification_total }}</span>
+                                    </div>
+                                    <div class="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+                                        <div id="verification-progress-bar-{{ campaign.id }}" class="h-1.5 rounded-full transition-all duration-500 {% if verification_status in ['queued', 'running'] %}bg-blue-500{% elif verification_status == 'completed' %}bg-green-500{% elif verification_status in ['failed', 'cancelled'] %}bg-red-500{% else %}bg-slate-400{% endif %}" style="width: {{ verification_percent }}%"></div>
+                                    </div>
+                                    <div id="verification-progress-note-{{ campaign.id }}" class="mt-1 text-[11px] text-slate-500 truncate">{{ campaign.verification_message or '' }}</div>
                                 </div>
                             </td>
                             <td data-label="Total Requests" class="text-sm text-slate-700">{{ campaign.total_requests or 0 }}</td>
@@ -357,6 +376,27 @@
                         {% endfor %}
                     </tbody>
                 </table>
+            </div>
+                <div class="mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <p class="text-xs text-slate-500">
+                        Showing {{ campaigns|length }} of {{ total_campaigns }} campaigns • Page {{ page }} of {{ total_pages }}
+                    </p>
+                    <div class="flex items-center gap-2">
+                        <button type="button"
+                                onclick="return goToCampaignPage({{ page - 1 }})"
+                                {% if not has_prev %}disabled{% endif %}
+                                class="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50">
+                            Previous
+                        </button>
+                        <span class="text-xs font-medium text-slate-500">Page {{ page }}</span>
+                        <button type="button"
+                                onclick="return goToCampaignPage({{ page + 1 }})"
+                                {% if not has_next %}disabled{% endif %}
+                                class="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50">
+                            Next
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -636,6 +676,8 @@
         let pendingExcludeCampaignId = null;
         let allCampaigns = [];
         let pipelinePollTimer = null;
+        let currentCampaignPage = {{ page|default(1) }};
+        let campaignsPerPage = {{ per_page|default(5) }};
         const PIPELINE_STAGES = ['maps_scrape', 'cleanup_contacts', 'email_fast', 'email_fallback', 'finalize'];
         const PIPELINE_LABELS = {
             maps_scrape: 'Maps Scrape',
@@ -747,19 +789,52 @@
             });
         }
 
+        function syncCampaignPaginationState() {
+            const container = document.getElementById('campaignsTableContainer');
+            if (!container) return;
+            const parsedPage = parseInt(container.dataset.currentPage || '1', 10);
+            const parsedPerPage = parseInt(container.dataset.perPage || '5', 10);
+            if (!Number.isNaN(parsedPage) && parsedPage > 0) {
+                currentCampaignPage = parsedPage;
+            }
+            if (!Number.isNaN(parsedPerPage) && parsedPerPage > 0) {
+                campaignsPerPage = parsedPerPage;
+            }
+        }
+
+        async function goToCampaignPage(page) {
+            const container = document.getElementById('campaignsTableContainer');
+            const totalPages = parseInt(container?.dataset.totalPages || '1', 10) || 1;
+            const targetPage = Math.min(Math.max(1, parseInt(page, 10) || 1), totalPages);
+            if (targetPage === currentCampaignPage) return false;
+
+            currentCampaignPage = targetPage;
+            await refreshCampaigns();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            return false;
+        }
+
         async function refreshCampaigns() {
             try {
-                const response = await fetch('/?partial=true');
+                const response = await fetch(`/?partial=true&page=${encodeURIComponent(currentCampaignPage)}&per_page=${encodeURIComponent(campaignsPerPage)}`);
                 const html = await response.text();
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(html, 'text/html');
-                const newTable = doc.querySelector('table');
-                document.querySelector('table').innerHTML = newTable.innerHTML;
+                const newContainer = doc.querySelector('#campaignsTableContainer');
+                const currentContainer = document.getElementById('campaignsTableContainer');
+                if (newContainer && currentContainer) {
+                    currentContainer.innerHTML = newContainer.innerHTML;
+                    currentContainer.dataset.currentPage = newContainer.dataset.currentPage || String(currentCampaignPage);
+                    currentContainer.dataset.perPage = newContainer.dataset.perPage || String(campaignsPerPage);
+                    currentContainer.dataset.totalPages = newContainer.dataset.totalPages || '1';
+                    currentContainer.dataset.totalCampaigns = newContainer.dataset.totalCampaigns || '0';
+                }
+                syncCampaignPaginationState();
 
                 // Re-attach event listeners for search inputs after refresh
                 attachSearchInputListeners();
 
-                await refreshAllPipelineStatuses();
+                await Promise.all([refreshAllPipelineStatuses(), refreshAllVerificationStatuses()]);
             } catch (error) {
                 console.error('Error refreshing campaigns:', error);
             }
@@ -779,6 +854,13 @@
             if (status === 'failed') return 'bg-red-100 text-red-700';
             if (status === 'canceled') return 'bg-yellow-100 text-yellow-700';
             return 'bg-slate-100 text-slate-600';
+        }
+
+        function getVerificationBarClass(status) {
+            if (status === 'running' || status === 'queued') return 'bg-blue-500';
+            if (status === 'completed') return 'bg-green-500';
+            if (status === 'failed' || status === 'cancelled') return 'bg-red-500';
+            return 'bg-slate-400';
         }
 
         function renderPipelineTimeline(campaignId, pipeline) {
@@ -906,6 +988,50 @@
                 .filter(Boolean);
 
             await Promise.all(campaignIds.map(campaignId => refreshPipelineStatus(campaignId)));
+        }
+
+        function renderVerificationProgress(campaignId, progress) {
+            const label = document.getElementById(`verification-progress-label-${campaignId}`);
+            const bar = document.getElementById(`verification-progress-bar-${campaignId}`);
+            const note = document.getElementById(`verification-progress-note-${campaignId}`);
+            if (!label || !bar || !note || !progress) return;
+
+            const status = progress.status || 'idle';
+            const total = Number(progress.total_emails || 0);
+            const processed = Number(progress.processed_emails || 0);
+            const percent = Number(progress.progress_percent || 0);
+            const safePercent = Math.max(0, Math.min(100, percent));
+
+            label.innerHTML = `
+                <span class="font-medium text-slate-600">Verification: ${status}</span>
+                <span class="text-slate-500">${processed}/${total}</span>
+            `;
+            bar.className = `h-1.5 rounded-full transition-all duration-500 ${getVerificationBarClass(status)}`;
+            bar.style.width = `${safePercent}%`;
+            note.textContent = progress.message || '';
+            note.title = progress.current_email && progress.current_email !== '-' ? `Current: ${progress.current_email}` : '';
+        }
+
+        async function refreshVerificationStatus(campaignId) {
+            try {
+                const response = await fetch(`/api/campaign/${campaignId}/verification-progress`);
+                if (!response.ok) {
+                    throw new Error(`Verification progress failed: ${response.status}`);
+                }
+                const progress = await response.json();
+                renderVerificationProgress(campaignId, progress);
+            } catch (error) {
+                console.error(`Error loading verification progress for campaign ${campaignId}:`, error);
+            }
+        }
+
+        async function refreshAllVerificationStatuses() {
+            const campaignRows = Array.from(document.querySelectorAll('tr[id^="campaign-row-"]'));
+            const campaignIds = campaignRows
+                .map(row => row.id.replace('campaign-row-', ''))
+                .filter(Boolean);
+
+            await Promise.all(campaignIds.map(campaignId => refreshVerificationStatus(campaignId)));
         }
 
         async function startPipeline(campaignId) {
@@ -1483,14 +1609,17 @@
         document.addEventListener('DOMContentLoaded', () => {
             updateSearchPhraseCount();
             bindRefreshIndicator();
+            syncCampaignPaginationState();
             attachSearchInputListeners();
             refreshAllPipelineStatuses();
+            refreshAllVerificationStatuses();
 
             if (pipelinePollTimer) {
                 clearInterval(pipelinePollTimer);
             }
             pipelinePollTimer = setInterval(() => {
                 refreshAllPipelineStatuses();
+                refreshAllVerificationStatuses();
             }, 15000);
         });
     </script>
