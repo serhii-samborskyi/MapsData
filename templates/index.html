@@ -575,7 +575,7 @@
         let allCampaigns = [];
         let pipelinePollTimer = null;
         let currentCampaignPage = {{ page|default(1) }};
-        let campaignsPerPage = {{ per_page|default(5) }};
+        let campaignsPerPage = {{ per_page|default(3) }};
         const campaignDetailsCache = new Map();
         const campaignDetailsLoading = new Set();
         const PIPELINE_STAGES = ['maps_scrape', 'cleanup_contacts', 'email_fast', 'email_fallback', 'finalize'];
@@ -849,7 +849,7 @@
             const container = document.getElementById('campaignsTableContainer');
             if (!container) return;
             const parsedPage = parseInt(container.dataset.currentPage || '1', 10);
-            const parsedPerPage = parseInt(container.dataset.perPage || '5', 10);
+            const parsedPerPage = parseInt(container.dataset.perPage || '3', 10);
             if (!Number.isNaN(parsedPage) && parsedPage > 0) {
                 currentCampaignPage = parsedPage;
             }

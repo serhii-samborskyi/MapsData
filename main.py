@@ -625,9 +625,9 @@ async def get_verify_page(request: Request):
     return templates.TemplateResponse("verify.html", {"request": request})
 
 @app.get("/", response_class=HTMLResponse)
-async def get_campaigns(request: Request, partial: bool = False, page: int = 1, per_page: int = 5):
+async def get_campaigns(request: Request, partial: bool = False, page: int = 1, per_page: int = 3):
     page = max(1, int(page or 1))
-    per_page = int(per_page or 5)
+    per_page = int(per_page or 3)
     per_page = min(max(per_page, 1), 25)
 
     with get_db() as conn:
