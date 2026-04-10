@@ -656,7 +656,7 @@ async def get_campaigns(
         offset = (page - 1) * per_page
         
         # Single optimized query to get all campaign data at once
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT 
                 sc.id,
                 sc.name,
