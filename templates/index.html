@@ -65,6 +65,15 @@
 
         <div class="app-card p-6">
             <h2 class="section-title text-2xl font-semibold mb-4 text-slate-900">Active Campaigns</h2>
+            <div class="mb-4">
+                <input
+                    id="campaignSearchInput"
+                    type="text"
+                    value="{{ search_term or '' }}"
+                    placeholder="Search campaigns by name..."
+                    class="w-full md:max-w-md rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-200"
+                >
+            </div>
             <div id="campaignsTableContainer"
                  data-current-page="{{ page }}"
                  data-per-page="{{ per_page }}"
@@ -272,6 +281,11 @@
                             </td>
                         </tr>
                         {% endfor %}
+                        {% if campaigns|length == 0 %}
+                        <tr>
+                            <td colspan="7" class="px-4 py-4 text-sm text-slate-500">No campaigns found.</td>
+                        </tr>
+                        {% endif %}
                     </tbody>
                 </table>
             </div>
@@ -576,6 +590,8 @@
         let pipelinePollTimer = null;
         let currentCampaignPage = {{ page|default(1) }};
         let campaignsPerPage = {{ per_page|default(3) }};
+        let campaignSearchTerm = {{ (search_term or '')|tojson }};
+        let campaignSearchTimer = null;
         const campaignDetailsCache = new Map();
         const campaignDetailsLoading = new Set();
         const PIPELINE_STAGES = ['maps_scrape', 'cleanup_contacts', 'email_fast', 'email_fallback', 'finalize'];
@@ -870,9 +886,21 @@
             return false;
         }
 
+        function handleCampaignSearchInput(event) {
+            const nextTerm = String(event?.target?.value || '').trim();
+            campaignSearchTerm = nextTerm;
+            currentCampaignPage = 1;
+            if (campaignSearchTimer) {
+                clearTimeout(campaignSearchTimer);
+            }
+            campaignSearchTimer = setTimeout(() => {
+                refreshCampaigns();
+            }, 250);
+        }
+
         async function refreshCampaigns() {
             try {
-                const response = await fetch(`/?partial=true&page=${encodeURIComponent(currentCampaignPage)}&per_page=${encodeURIComponent(campaignsPerPage)}`);
+                const response = await fetch(`/?partial=true&page=${encodeURIComponent(currentCampaignPage)}&per_page=${encodeURIComponent(campaignsPerPage)}&search=${encodeURIComponent(campaignSearchTerm)}`);
                 const html = await response.text();
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(html, 'text/html');
@@ -1685,6 +1713,10 @@
             bindRefreshIndicator();
             syncCampaignPaginationState();
             attachSearchInputListeners();
+            const searchInput = document.getElementById('campaignSearchInput');
+            if (searchInput) {
+                searchInput.addEventListener('input', handleCampaignSearchInput);
+            }
             refreshRuntimeStatuses();
 
             if (pipelinePollTimer) {

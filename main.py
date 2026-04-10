@@ -625,15 +625,30 @@ async def get_verify_page(request: Request):
     return templates.TemplateResponse("verify.html", {"request": request})
 
 @app.get("/", response_class=HTMLResponse)
-async def get_campaigns(request: Request, partial: bool = False, page: int = 1, per_page: int = 3):
+async def get_campaigns(
+    request: Request,
+    partial: bool = False,
+    page: int = 1,
+    per_page: int = 3,
+    search: str = ""
+):
     page = max(1, int(page or 1))
     per_page = int(per_page or 3)
     per_page = min(max(per_page, 1), 25)
+    search_term = str(search or "").strip()
+    search_clause = ""
+    search_params: List[Any] = []
+    if search_term:
+        search_clause = " WHERE sc.name ILIKE %s"
+        search_params = [f"%{search_term}%"]
 
     with get_db() as conn:
         cursor = conn.cursor()
 
-        cursor.execute("SELECT COUNT(*) AS count FROM search_campaigns")
+        cursor.execute(
+            f"SELECT COUNT(*) AS count FROM search_campaigns sc{search_clause}",
+            tuple(search_params)
+        )
         total_campaigns = int((cursor.fetchone() or {}).get("count") or 0)
         total_pages = max(1, (total_campaigns + per_page - 1) // per_page)
         if page > total_pages:
@@ -662,11 +677,12 @@ async def get_campaigns(request: Request, partial: bool = False, page: int = 1, 
             FROM search_campaigns sc
             LEFT JOIN requests r ON sc.id = r.campaign_id
             LEFT JOIN contacts c ON sc.id = c.campaign_id
+            {search_clause}
             GROUP BY sc.id, sc.name, sc.status
             ORDER BY sc.id DESC
             LIMIT %s
             OFFSET %s
-        """, (per_page, offset))
+        """, tuple(search_params + [per_page, offset]))
 
         campaign_rows = cursor.fetchall()
         campaigns = []
@@ -753,7 +769,8 @@ async def get_campaigns(request: Request, partial: bool = False, page: int = 1, 
         "total_campaigns": total_campaigns,
         "total_pages": total_pages,
         "has_prev": page > 1,
-        "has_next": page < total_pages
+        "has_next": page < total_pages,
+        "search_term": search_term
     })
 
 

@@ -204,6 +204,11 @@
             </td>
         </tr>
         {% endfor %}
+        {% if campaigns|length == 0 %}
+        <tr>
+            <td colspan="7" class="px-4 py-4 text-sm text-slate-500">No campaigns found.</td>
+        </tr>
+        {% endif %}
     </tbody>
 </table>
 <div class="mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
