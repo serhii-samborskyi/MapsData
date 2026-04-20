@@ -1516,6 +1516,27 @@ async def claim_pipeline_stage(request: Request):
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
+            SELECT prl.run_id, prl.worker_id, prl.lease_expires_at
+            FROM pipeline_run_locks prl
+            JOIN pipeline_runs pr ON pr.id = prl.run_id
+            WHERE pr.status IN ('pending', 'running')
+              AND prl.lease_expires_at IS NOT NULL
+              AND prl.lease_expires_at > %s
+        """, (now,))
+        active_lock_rows = [dict(row) for row in cursor.fetchall()]
+        current_worker_active_run_ids = {
+            int(row["run_id"])
+            for row in active_lock_rows
+            if str(row.get("worker_id") or "").strip() == worker_id
+        }
+        other_active_workers = {
+            str(row.get("worker_id") or "").strip()
+            for row in active_lock_rows
+            if str(row.get("worker_id") or "").strip() and str(row.get("worker_id") or "").strip() != worker_id
+        }
+        fairness_block_second_distinct_run = bool(current_worker_active_run_ids and other_active_workers)
+
+        cursor.execute("""
             SELECT *
             FROM pipeline_runs
             WHERE status IN ('pending', 'running')
@@ -1539,53 +1560,11 @@ async def claim_pipeline_stage(request: Request):
 
         saw_all_leased = False
         saw_non_claimable_stage = False
+        deferred_current_worker_runs = []
 
-        for run in candidate_runs:
+        def _claim_run_stage(run: dict, stage_row: dict) -> dict:
             run_id = run["id"]
             campaign_id = run["campaign_id"]
-            stage_rows = _load_run_stages_for_update(cursor, run_id)
-            if not stage_rows:
-                saw_non_claimable_stage = True
-                continue
-
-            cursor.execute("SELECT * FROM pipeline_run_locks WHERE run_id = %s FOR UPDATE", (run_id,))
-            lock_row_raw = cursor.fetchone()
-            lock_row = dict(lock_row_raw) if lock_row_raw else None
-            lock_active_other_worker = _claim_lock_is_active(lock_row, worker_id, now)
-
-            stage_row = _resolve_run_stage_pointer(run, stage_rows)
-            if not stage_row:
-                cursor.execute("""
-                    UPDATE pipeline_runs
-                    SET status = 'completed',
-                        completed_at = COALESCE(completed_at, %s),
-                        lease_expires_at = NULL,
-                        updated_at = %s
-                    WHERE id = %s
-                """, (now, now, run_id))
-                cursor.execute("DELETE FROM pipeline_run_locks WHERE run_id = %s", (run_id,))
-                saw_non_claimable_stage = True
-                continue
-
-            if run.get("current_stage") != stage_row["stage"]:
-                cursor.execute("""
-                    UPDATE pipeline_runs
-                    SET current_stage = %s,
-                        updated_at = %s
-                    WHERE id = %s
-                """, (stage_row["stage"], now, run_id))
-
-            if stage_row["status"] not in {"pending", "running"}:
-                saw_non_claimable_stage = True
-                continue
-
-            if lock_active_other_worker and stage_row["status"] == "pending":
-                saw_all_leased = True
-                continue
-
-            if stage_row["status"] == "running" and lock_active_other_worker:
-                saw_all_leased = True
-                continue
 
             _upsert_pipeline_lock(
                 cursor,
@@ -1660,7 +1639,6 @@ async def claim_pipeline_stage(request: Request):
                     stage_row["stage"],
                 ))
 
-            conn.commit()
             return {
                 "claimed": True,
                 "run_id": run_id,
@@ -1670,6 +1648,81 @@ async def claim_pipeline_stage(request: Request):
                 "lease_expires_at": _iso(lease_expires_at),
                 "worker_id": worker_id,
             }
+
+        for run in candidate_runs:
+            run_id = run["id"]
+            stage_rows = _load_run_stages_for_update(cursor, run_id)
+            if not stage_rows:
+                saw_non_claimable_stage = True
+                continue
+
+            cursor.execute("SELECT * FROM pipeline_run_locks WHERE run_id = %s FOR UPDATE", (run_id,))
+            lock_row_raw = cursor.fetchone()
+            lock_row = dict(lock_row_raw) if lock_row_raw else None
+            lock_active_other_worker = _claim_lock_is_active(lock_row, worker_id, now)
+            lock_owner = str(lock_row.get("worker_id") or "").strip() if lock_row else ""
+            lock_owned_by_current_worker = bool(
+                lock_owner == worker_id
+                and lock_row
+                and lock_row.get("lease_expires_at")
+                and lock_row.get("lease_expires_at") > now
+            )
+
+            stage_row = _resolve_run_stage_pointer(run, stage_rows)
+            if not stage_row:
+                cursor.execute("""
+                    UPDATE pipeline_runs
+                    SET status = 'completed',
+                        completed_at = COALESCE(completed_at, %s),
+                        lease_expires_at = NULL,
+                        updated_at = %s
+                    WHERE id = %s
+                """, (now, now, run_id))
+                cursor.execute("DELETE FROM pipeline_run_locks WHERE run_id = %s", (run_id,))
+                saw_non_claimable_stage = True
+                continue
+
+            if run.get("current_stage") != stage_row["stage"]:
+                cursor.execute("""
+                    UPDATE pipeline_runs
+                    SET current_stage = %s,
+                        updated_at = %s
+                    WHERE id = %s
+                """, (stage_row["stage"], now, run_id))
+
+            if stage_row["status"] not in {"pending", "running"}:
+                saw_non_claimable_stage = True
+                continue
+
+            if lock_active_other_worker and stage_row["status"] == "pending":
+                saw_all_leased = True
+                continue
+
+            if stage_row["status"] == "running" and lock_active_other_worker:
+                saw_all_leased = True
+                continue
+
+            # Fairness: defer runs already owned by this worker so unclaimed/other-owned
+            # claimable runs are considered first.
+            if lock_owned_by_current_worker:
+                deferred_current_worker_runs.append((run, stage_row))
+                continue
+
+            # Fairness: if this worker already holds an active run and other workers are
+            # active, avoid assigning another distinct run to this worker.
+            if fairness_block_second_distinct_run and run_id not in current_worker_active_run_ids:
+                saw_all_leased = True
+                continue
+
+            claim_response = _claim_run_stage(run, stage_row)
+            conn.commit()
+            return claim_response
+
+        # Fallback pass: allow reclaim/renew of runs already leased by this worker.
+        for run, stage_row in deferred_current_worker_runs:
+            claim_response = _claim_run_stage(run, stage_row)
+            conn.commit()
+            return claim_response
 
         conn.commit()
         reason = "all_leased" if saw_all_leased else ("no_pending_stages" if saw_non_claimable_stage else "run_not_started")
