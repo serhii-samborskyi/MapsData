@@ -1545,6 +1545,9 @@ async def claim_pipeline_stage(request: Request):
 
     with get_db() as conn:
         cursor = conn.cursor()
+        # Serialize claims per machine so two daemon processes on the same machine
+        # cannot race and claim two different runs at the same time.
+        cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (machine_id,))
         cursor.execute("""
             SELECT prl.run_id, prl.worker_id, prl.lease_expires_at
             FROM pipeline_run_locks prl

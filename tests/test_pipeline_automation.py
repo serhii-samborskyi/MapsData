@@ -316,6 +316,7 @@ class PipelineEndpointTests(unittest.TestCase):
     def test_claim_returns_none_when_lock_is_active_for_other_worker(self):
         now = datetime.utcnow()
         self._patch_db([
+            {"match": "pg_advisory_xact_lock"},
             {
                 "match": "from pipeline_run_locks prl",
                 "fetchall": [{"run_id": 42, "worker_id": "daemon-a", "lease_expires_at": now + timedelta(seconds=120)}],
@@ -341,6 +342,7 @@ class PipelineEndpointTests(unittest.TestCase):
 
     def test_claim_returns_reason_when_no_runs_exist(self):
         self._patch_db([
+            {"match": "pg_advisory_xact_lock"},
             {"match": "from pipeline_run_locks prl", "fetchall": []},
             {"match": "from pipeline_runs", "fetchall": []},
         ])
@@ -352,6 +354,7 @@ class PipelineEndpointTests(unittest.TestCase):
     def test_claim_fairness_blocks_second_distinct_run_when_other_worker_active(self):
         now = datetime.utcnow()
         self._patch_db([
+            {"match": "pg_advisory_xact_lock"},
             {
                 "match": "from pipeline_run_locks prl",
                 "fetchall": [
@@ -399,6 +402,7 @@ class PipelineEndpointTests(unittest.TestCase):
 
     def test_claim_returns_maps_mode_and_machine_fields(self):
         self._patch_db([
+            {"match": "pg_advisory_xact_lock"},
             {"match": "from pipeline_run_locks prl", "fetchall": []},
             {
                 "match": "from pipeline_runs pr",
@@ -438,6 +442,7 @@ class PipelineEndpointTests(unittest.TestCase):
     def test_claim_free_machine_policy_blocks_second_run_even_without_other_workers(self):
         now = datetime.utcnow()
         self._patch_db([
+            {"match": "pg_advisory_xact_lock"},
             {
                 "match": "from pipeline_run_locks prl",
                 "fetchall": [
