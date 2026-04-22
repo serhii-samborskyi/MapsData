@@ -20,7 +20,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS search_campaigns (
                 id SERIAL PRIMARY KEY,
                 name TEXT NOT NULL,
-                status TEXT NOT NULL
+                status TEXT NOT NULL,
+                maps_scrape_mode TEXT NOT NULL DEFAULT 'slow'
             )
         ''')
         cursor.execute('''
@@ -211,11 +212,36 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_run_stages_run_order ON pipeline_run_stages(run_id, stage_order)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_run_stages_campaign_status ON pipeline_run_stages(campaign_id, status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_run_locks_campaign_lease ON pipeline_run_locks(campaign_id, lease_expires_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_run_locks_worker_lease ON pipeline_run_locks(worker_id, lease_expires_at)")
         cursor.execute('''
             CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_active_run_per_campaign
             ON pipeline_runs(campaign_id)
             WHERE status IN ('pending', 'running')
         ''')
+        cursor.execute("ALTER TABLE search_campaigns ADD COLUMN IF NOT EXISTS maps_scrape_mode TEXT")
+        cursor.execute("""
+            UPDATE search_campaigns
+            SET maps_scrape_mode = 'slow'
+            WHERE maps_scrape_mode IS NULL
+               OR maps_scrape_mode NOT IN ('fast', 'slow')
+        """)
+        cursor.execute("ALTER TABLE search_campaigns ALTER COLUMN maps_scrape_mode SET DEFAULT 'slow'")
+        cursor.execute("ALTER TABLE search_campaigns ALTER COLUMN maps_scrape_mode SET NOT NULL")
+        cursor.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM pg_constraint
+                    WHERE conname = 'search_campaigns_maps_scrape_mode_check'
+                ) THEN
+                    ALTER TABLE search_campaigns
+                    ADD CONSTRAINT search_campaigns_maps_scrape_mode_check
+                    CHECK (maps_scrape_mode IN ('fast', 'slow'));
+                END IF;
+            END
+            $$;
+        """)
         conn.commit()
 
         # Add new columns to existing contacts table if they don't exist

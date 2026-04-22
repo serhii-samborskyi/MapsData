@@ -59,6 +59,7 @@ PIPELINE_DEFAULT_LEASE_SECONDS = 120
 PIPELINE_MIN_LEASE_SECONDS = 30
 PIPELINE_MAX_LEASE_SECONDS = 900
 PIPELINE_ALLOWED_CLAIM_ACTORS = {"daemon", "dashboard", "system", "worker"}
+MAPS_SCRAPE_MODES = {"fast", "slow"}
 
 
 def _now_utc() -> datetime:
@@ -192,6 +193,20 @@ def _coerce_lease_seconds(value: Any) -> int:
     return lease_seconds
 
 
+def _normalize_maps_scrape_mode(value: Any, default: str = "slow") -> str:
+    mode = str(value or "").strip().lower()
+    if mode in MAPS_SCRAPE_MODES:
+        return mode
+    return default if default in MAPS_SCRAPE_MODES else "slow"
+
+
+def _resolve_claim_machine_id(payload: dict) -> str:
+    machine_id = str(payload.get("machine_id") or "").strip()
+    if machine_id:
+        return machine_id
+    return str(payload.get("worker_id") or "").strip()
+
+
 async def _read_json_body(request: Request) -> dict:
     try:
         payload = await request.json()
@@ -277,6 +292,7 @@ def _serialize_pipeline_status(campaign_id: int, run: Optional[dict], stages: Li
         "latest_error": run.get("latest_error"),
         "worker": {
             "worker_id": run.get("worker_id"),
+            "machine_id": run.get("worker_id"),
             "worker_metadata": run.get("worker_metadata"),
             "actor": run.get("actor"),
         },
@@ -661,6 +677,7 @@ async def get_campaigns(
                 sc.id,
                 sc.name,
                 sc.status,
+                COALESCE(sc.maps_scrape_mode, 'slow') AS maps_scrape_mode,
                 COUNT(DISTINCT r.id) as total_requests,
                 COUNT(DISTINCT c.id) as total_contacts,
                 COUNT(DISTINCT CASE WHEN r.status = 'completed' THEN r.id END) as completed_requests,
@@ -678,7 +695,7 @@ async def get_campaigns(
             LEFT JOIN requests r ON sc.id = r.campaign_id
             LEFT JOIN contacts c ON sc.id = c.campaign_id
             {search_clause}
-            GROUP BY sc.id, sc.name, sc.status
+            GROUP BY sc.id, sc.name, sc.status, sc.maps_scrape_mode
             ORDER BY sc.id DESC
             LIMIT %s
             OFFSET %s
@@ -1134,13 +1151,21 @@ async def complete_campaign(campaign_id: int):
     return {"status": "Campaign marked as completed"}
 
 @app.post("/create_campaign")
-async def create_campaign(name: str = Form(...), search_phrases: str = Form(...)):
+async def create_campaign(
+    name: str = Form(...),
+    search_phrases: str = Form(...),
+    maps_scrape_mode: str = Form("slow"),
+):
     phrases = [p.strip() for p in search_phrases.split("\n") if p.strip()]
+    requested_mode = str(maps_scrape_mode or "").strip().lower()
+    if requested_mode and requested_mode not in MAPS_SCRAPE_MODES:
+        raise HTTPException(status_code=400, detail="Invalid maps_scrape_mode")
+    normalized_mode = _normalize_maps_scrape_mode(requested_mode or "slow")
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO search_campaigns (name, status) VALUES (%s, %s) RETURNING id",
-            (name, "active")
+            "INSERT INTO search_campaigns (name, status, maps_scrape_mode) VALUES (%s, %s, %s) RETURNING id",
+            (name, "active", normalized_mode)
         )
         campaign_id = cursor.fetchone()['id']
         for phrase in phrases:
@@ -1149,7 +1174,11 @@ async def create_campaign(name: str = Form(...), search_phrases: str = Form(...)
                 (campaign_id, phrase, "pending")
             )
         conn.commit()
-    return {"status": "Campaign created", "campaign_id": campaign_id}
+    return {
+        "status": "Campaign created",
+        "campaign_id": campaign_id,
+        "maps_scrape_mode": normalized_mode,
+    }
 
 @app.get("/api/reserve_phrase/{campaign_id}")
 async def reserve_phrase(campaign_id: int):
@@ -1497,7 +1526,8 @@ async def get_campaign_pipeline_status(campaign_id: int):
 @app.post("/api/pipeline/claim")
 async def claim_pipeline_stage(request: Request):
     payload = await _read_json_body(request)
-    worker_id = str(payload.get("worker_id") or "").strip() or f"worker-{uuid4()}"
+    requested_worker_id = str(payload.get("worker_id") or "").strip()
+    machine_id = _resolve_claim_machine_id(payload) or f"machine-{uuid4()}"
     actor = str(payload.get("actor") or "daemon").strip() or "daemon"
     lease_seconds = _coerce_lease_seconds(payload.get("lease_seconds"))
     worker_metadata = payload.get("worker_metadata")
@@ -1524,28 +1554,27 @@ async def claim_pipeline_stage(request: Request):
               AND prl.lease_expires_at > %s
         """, (now,))
         active_lock_rows = [dict(row) for row in cursor.fetchall()]
-        current_worker_active_run_ids = {
+        current_machine_active_run_ids = {
             int(row["run_id"])
             for row in active_lock_rows
-            if str(row.get("worker_id") or "").strip() == worker_id
+            if str(row.get("worker_id") or "").strip() == machine_id
         }
-        other_active_workers = {
-            str(row.get("worker_id") or "").strip()
-            for row in active_lock_rows
-            if str(row.get("worker_id") or "").strip() and str(row.get("worker_id") or "").strip() != worker_id
-        }
-        fairness_block_second_distinct_run = bool(current_worker_active_run_ids and other_active_workers)
 
         cursor.execute("""
-            SELECT *
-            FROM pipeline_runs
-            WHERE status IN ('pending', 'running')
+            SELECT
+                pr.*,
+                sc.name AS campaign_name,
+                COALESCE(sc.maps_scrape_mode, 'slow') AS maps_scrape_mode
+            FROM pipeline_runs pr
+            JOIN search_campaigns sc ON sc.id = pr.campaign_id
+            WHERE pr.status IN ('pending', 'running')
             ORDER BY
-                CASE WHEN status = 'running' THEN 0 ELSE 1 END,
-                updated_at ASC,
-                id ASC
+                CASE WHEN COALESCE(pr.worker_id, '') = %s THEN 0 ELSE 1 END,
+                CASE WHEN pr.status = 'running' THEN 0 ELSE 1 END,
+                pr.updated_at ASC,
+                pr.id ASC
             FOR UPDATE SKIP LOCKED
-        """)
+        """, (machine_id,))
         candidate_runs = [dict(row) for row in cursor.fetchall()]
 
         if not candidate_runs:
@@ -1560,19 +1589,24 @@ async def claim_pipeline_stage(request: Request):
 
         saw_all_leased = False
         saw_non_claimable_stage = False
-        deferred_current_worker_runs = []
 
         def _claim_run_stage(run: dict, stage_row: dict) -> dict:
             run_id = run["id"]
             campaign_id = run["campaign_id"]
+            lock_metadata = {}
+            if isinstance(worker_metadata, dict):
+                lock_metadata.update(worker_metadata)
+            lock_metadata.setdefault("machine_id", machine_id)
+            if requested_worker_id:
+                lock_metadata.setdefault("worker_id", requested_worker_id)
 
             _upsert_pipeline_lock(
                 cursor,
                 run_id=run_id,
                 campaign_id=campaign_id,
-                worker_id=worker_id,
+                worker_id=machine_id,
                 lease_expires_at=lease_expires_at,
-                metadata=worker_metadata if isinstance(worker_metadata, dict) else {},
+                metadata=lock_metadata,
             )
 
             cursor.execute("""
@@ -1589,9 +1623,9 @@ async def claim_pipeline_stage(request: Request):
                 WHERE id = %s
             """, (
                 stage_row["stage"],
-                worker_id,
+                machine_id,
                 actor,
-                Json(worker_metadata) if worker_metadata is not None else None,
+                Json(lock_metadata) if lock_metadata else None,
                 lease_expires_at,
                 now,
                 now,
@@ -1611,9 +1645,9 @@ async def claim_pipeline_stage(request: Request):
                         updated_at = %s
                     WHERE run_id = %s AND stage = %s
                 """, (
-                    worker_id,
+                    machine_id,
                     actor,
-                    Json(worker_metadata) if worker_metadata is not None else None,
+                    Json(lock_metadata) if lock_metadata else None,
                     now,
                     now,
                     now,
@@ -1630,9 +1664,9 @@ async def claim_pipeline_stage(request: Request):
                         updated_at = %s
                     WHERE run_id = %s AND stage = %s
                 """, (
-                    worker_id,
+                    machine_id,
                     actor,
-                    Json(worker_metadata) if worker_metadata is not None else None,
+                    Json(lock_metadata) if lock_metadata else None,
                     now,
                     now,
                     run_id,
@@ -1646,7 +1680,10 @@ async def claim_pipeline_stage(request: Request):
                 "stage": stage_row["stage"],
                 "pipeline_status": "running",
                 "lease_expires_at": _iso(lease_expires_at),
-                "worker_id": worker_id,
+                "worker_id": machine_id,
+                "machine_id": machine_id,
+                "campaign_name": run.get("campaign_name"),
+                "maps_scrape_mode": _normalize_maps_scrape_mode(run.get("maps_scrape_mode"), "slow"),
             }
 
         for run in candidate_runs:
@@ -1659,14 +1696,7 @@ async def claim_pipeline_stage(request: Request):
             cursor.execute("SELECT * FROM pipeline_run_locks WHERE run_id = %s FOR UPDATE", (run_id,))
             lock_row_raw = cursor.fetchone()
             lock_row = dict(lock_row_raw) if lock_row_raw else None
-            lock_active_other_worker = _claim_lock_is_active(lock_row, worker_id, now)
-            lock_owner = str(lock_row.get("worker_id") or "").strip() if lock_row else ""
-            lock_owned_by_current_worker = bool(
-                lock_owner == worker_id
-                and lock_row
-                and lock_row.get("lease_expires_at")
-                and lock_row.get("lease_expires_at") > now
-            )
+            lock_active_other_machine = _claim_lock_is_active(lock_row, machine_id, now)
 
             stage_row = _resolve_run_stage_pointer(run, stage_rows)
             if not stage_row:
@@ -1694,32 +1724,24 @@ async def claim_pipeline_stage(request: Request):
                 saw_non_claimable_stage = True
                 continue
 
-            if lock_active_other_worker and stage_row["status"] == "pending":
+            if lock_active_other_machine:
                 saw_all_leased = True
                 continue
 
-            if stage_row["status"] == "running" and lock_active_other_worker:
+            run_owner_machine = str(run.get("worker_id") or "").strip()
+            owner_lease_expires_at = run.get("lease_expires_at")
+            run_owned_by_other_machine = bool(run_owner_machine and run_owner_machine != machine_id)
+            owner_lease_active = bool(owner_lease_expires_at and owner_lease_expires_at > now)
+
+            if run_owned_by_other_machine and owner_lease_active:
                 saw_all_leased = True
                 continue
 
-            # Fairness: defer runs already owned by this worker so unclaimed/other-owned
-            # claimable runs are considered first.
-            if lock_owned_by_current_worker:
-                deferred_current_worker_runs.append((run, stage_row))
-                continue
-
-            # Fairness: if this worker already holds an active run and other workers are
-            # active, avoid assigning another distinct run to this worker.
-            if fairness_block_second_distinct_run and run_id not in current_worker_active_run_ids:
+            # A machine may own at most one active run at a time.
+            if current_machine_active_run_ids and run_id not in current_machine_active_run_ids:
                 saw_all_leased = True
                 continue
 
-            claim_response = _claim_run_stage(run, stage_row)
-            conn.commit()
-            return claim_response
-
-        # Fallback pass: allow reclaim/renew of runs already leased by this worker.
-        for run, stage_row in deferred_current_worker_runs:
             claim_response = _claim_run_stage(run, stage_row)
             conn.commit()
             return claim_response
@@ -1736,9 +1758,15 @@ async def claim_pipeline_stage(request: Request):
 
 
 @app.get("/api/pipeline/debug/claimability")
-async def debug_pipeline_claimability(campaign_id: Optional[int] = None, worker_id: str = "debug-worker", actor: str = "daemon"):
+async def debug_pipeline_claimability(
+    campaign_id: Optional[int] = None,
+    worker_id: str = "",
+    machine_id: str = "",
+    actor: str = "daemon",
+):
     now = _now_utc()
     actor_allowed = _is_actor_allowed_for_claim(actor)
+    effective_machine_id = str(machine_id or worker_id or "debug-worker").strip() or "debug-worker"
 
     with get_db() as conn:
         cursor = conn.cursor()
@@ -1785,7 +1813,7 @@ async def debug_pipeline_claimability(campaign_id: Optional[int] = None, worker_
                     "worker_id": run.get("lock_worker_id"),
                     "lease_expires_at": run.get("lock_lease_expires_at"),
                 }
-                if _claim_lock_is_active(lock_row, worker_id, now):
+                if _claim_lock_is_active(lock_row, effective_machine_id, now):
                     reason = "all_leased"
                 else:
                     claimable = True
@@ -1795,6 +1823,7 @@ async def debug_pipeline_claimability(campaign_id: Optional[int] = None, worker_
                 "campaign_id": run["campaign_id"],
                 "run_status": run["status"],
                 "current_stage": run.get("current_stage"),
+                "owner_machine_id": run.get("worker_id"),
                 "resolved_stage": stage_row["stage"] if stage_row else None,
                 "resolved_stage_status": stage_row["status"] if stage_row else None,
                 "lock_worker_id": run.get("lock_worker_id"),
@@ -1818,6 +1847,7 @@ async def debug_pipeline_claimability(campaign_id: Optional[int] = None, worker_
             "actor": actor,
             "actor_allowed": actor_allowed,
             "worker_id": worker_id,
+            "machine_id": effective_machine_id,
             "campaign_id_filter": campaign_id,
             "active_runs_count": len([run for run in diagnostics if run["run_status"] in PIPELINE_ACTIVE_STATUSES]),
             "runs": diagnostics,
@@ -1827,7 +1857,8 @@ async def debug_pipeline_claimability(campaign_id: Optional[int] = None, worker_
 @app.post("/api/pipeline/{run_id}/heartbeat")
 async def pipeline_heartbeat(run_id: int, request: Request):
     payload = await _read_json_body(request)
-    worker_id = str(payload.get("worker_id") or "").strip()
+    requested_worker_id = str(payload.get("worker_id") or "").strip()
+    machine_id = _resolve_claim_machine_id(payload)
     lease_seconds = _coerce_lease_seconds(payload.get("lease_seconds"))
     stage = payload.get("stage")
     worker_metadata = payload.get("worker_metadata")
@@ -1849,21 +1880,29 @@ async def pipeline_heartbeat(run_id: int, request: Request):
         cursor.execute("SELECT * FROM pipeline_run_locks WHERE run_id = %s FOR UPDATE", (run_id,))
         lock_raw = cursor.fetchone()
         lock_row = dict(lock_raw) if lock_raw else None
-        if _claim_lock_is_active(lock_row, worker_id, now):
+        effective_machine_id = machine_id or (str(lock_row["worker_id"]) if lock_row else str(run.get("worker_id") or ""))
+        if _claim_lock_is_active(lock_row, effective_machine_id, now):
             raise HTTPException(status_code=409, detail="Run currently leased by another worker")
 
-        if not worker_id:
-            worker_id = str(lock_row["worker_id"]) if lock_row else str(run.get("worker_id") or "")
-        if not worker_id:
-            worker_id = f"worker-{uuid4()}"
+        if not machine_id:
+            machine_id = effective_machine_id
+        if not machine_id:
+            machine_id = f"machine-{uuid4()}"
+
+        lock_metadata = {}
+        if isinstance(worker_metadata, dict):
+            lock_metadata.update(worker_metadata)
+        lock_metadata.setdefault("machine_id", machine_id)
+        if requested_worker_id:
+            lock_metadata.setdefault("worker_id", requested_worker_id)
 
         _upsert_pipeline_lock(
             cursor,
             run_id=run_id,
             campaign_id=run["campaign_id"],
-            worker_id=worker_id,
+            worker_id=machine_id,
             lease_expires_at=lease_expires_at,
-            metadata=worker_metadata if isinstance(worker_metadata, dict) else {},
+            metadata=lock_metadata,
         )
 
         cursor.execute("""
@@ -1876,8 +1915,8 @@ async def pipeline_heartbeat(run_id: int, request: Request):
                 updated_at = %s
             WHERE id = %s
         """, (
-            worker_id,
-            Json(worker_metadata) if worker_metadata is not None else None,
+            machine_id,
+            Json(lock_metadata) if lock_metadata else None,
             lease_expires_at,
             now,
             now,
@@ -1894,8 +1933,8 @@ async def pipeline_heartbeat(run_id: int, request: Request):
                 updated_at = %s
             WHERE run_id = %s AND stage = %s
         """, (
-            worker_id,
-            Json(worker_metadata) if worker_metadata is not None else None,
+            machine_id,
+            Json(lock_metadata) if lock_metadata else None,
             now,
             now,
             now,
@@ -1909,14 +1948,16 @@ async def pipeline_heartbeat(run_id: int, request: Request):
             "run_id": run_id,
             "stage": claimed_stage,
             "lease_expires_at": _iso(lease_expires_at),
-            "worker_id": worker_id,
+            "worker_id": machine_id,
+            "machine_id": machine_id,
         }
 
 
 @app.post("/api/pipeline/{run_id}/stage-complete")
 async def complete_pipeline_stage(run_id: int, request: Request):
     payload = await _read_json_body(request)
-    worker_id = str(payload.get("worker_id") or "").strip()
+    requested_worker_id = str(payload.get("worker_id") or "").strip()
+    machine_id = _resolve_claim_machine_id(payload)
     stage = str(payload.get("stage") or "").strip()
     actor = str(payload.get("actor") or "daemon").strip() or "daemon"
     worker_metadata = payload.get("worker_metadata")
@@ -1940,12 +1981,20 @@ async def complete_pipeline_stage(run_id: int, request: Request):
         cursor.execute("SELECT * FROM pipeline_run_locks WHERE run_id = %s FOR UPDATE", (run_id,))
         lock_raw = cursor.fetchone()
         lock_row = dict(lock_raw) if lock_raw else None
-        effective_worker_id = worker_id or str(run.get("worker_id") or "")
-        if _claim_lock_is_active(lock_row, effective_worker_id, now):
+        effective_machine_id = machine_id or (str(lock_row["worker_id"]) if lock_row else str(run.get("worker_id") or ""))
+        if _claim_lock_is_active(lock_row, effective_machine_id, now):
             raise HTTPException(status_code=409, detail="Run currently leased by another worker")
 
-        if not worker_id:
-            worker_id = str(run.get("worker_id") or "")
+        if not machine_id:
+            machine_id = effective_machine_id
+
+        lock_metadata = {}
+        if isinstance(worker_metadata, dict):
+            lock_metadata.update(worker_metadata)
+        if machine_id:
+            lock_metadata.setdefault("machine_id", machine_id)
+        if requested_worker_id:
+            lock_metadata.setdefault("worker_id", requested_worker_id)
 
         cursor.execute("""
             UPDATE pipeline_run_stages
@@ -1962,9 +2011,9 @@ async def complete_pipeline_stage(run_id: int, request: Request):
               AND stage = %s
               AND status IN ('pending', 'running', 'failed')
         """, (
-            worker_id or None,
+            machine_id or None,
             actor,
-            Json(worker_metadata) if worker_metadata is not None else None,
+            Json(lock_metadata) if lock_metadata else None,
             now,
             now,
             now,
@@ -1992,20 +2041,29 @@ async def complete_pipeline_stage(run_id: int, request: Request):
             """, (
                 stage_to_complete,
                 now,
-                worker_id or None,
-                Json(worker_metadata) if worker_metadata is not None else None,
+                machine_id or None,
+                Json(lock_metadata) if lock_metadata else None,
                 now,
                 now,
                 run_id,
             ))
+            cursor.execute("DELETE FROM pipeline_run_locks WHERE run_id = %s", (run_id,))
         else:
+            next_lease_expires_at = None
+            if lock_row and lock_row.get("lease_expires_at"):
+                next_lease_expires_at = lock_row.get("lease_expires_at")
+            elif run.get("lease_expires_at"):
+                next_lease_expires_at = run.get("lease_expires_at")
+            if not next_lease_expires_at or next_lease_expires_at <= now:
+                next_lease_expires_at = now + timedelta(seconds=PIPELINE_DEFAULT_LEASE_SECONDS)
+
             cursor.execute("""
                 UPDATE pipeline_runs
                 SET status = 'running',
                     current_stage = %s,
                     latest_error = NULL,
                     error_payload = NULL,
-                    lease_expires_at = NULL,
+                    lease_expires_at = %s,
                     worker_id = COALESCE(%s, worker_id),
                     worker_metadata = %s,
                     last_heartbeat_at = %s,
@@ -2013,8 +2071,9 @@ async def complete_pipeline_stage(run_id: int, request: Request):
                 WHERE id = %s
             """, (
                 next_stage,
-                worker_id or None,
-                Json(worker_metadata) if worker_metadata is not None else None,
+                next_lease_expires_at,
+                machine_id or None,
+                Json(lock_metadata) if lock_metadata else None,
                 now,
                 now,
                 run_id,
@@ -2038,7 +2097,15 @@ async def complete_pipeline_stage(run_id: int, request: Request):
                   AND stage = %s
             """, (now, run_id, next_stage))
 
-        cursor.execute("DELETE FROM pipeline_run_locks WHERE run_id = %s", (run_id,))
+            lock_owner = machine_id or str(run.get("worker_id") or "").strip() or f"machine-{uuid4()}"
+            _upsert_pipeline_lock(
+                cursor,
+                run_id=run_id,
+                campaign_id=run["campaign_id"],
+                worker_id=lock_owner,
+                lease_expires_at=next_lease_expires_at,
+                metadata=lock_metadata,
+            )
 
         conn.commit()
         return {
@@ -2047,13 +2114,15 @@ async def complete_pipeline_stage(run_id: int, request: Request):
             "completed_stage": stage_to_complete,
             "next_stage": next_stage,
             "pipeline_status": "completed" if next_stage is None else "running",
+            "machine_id": machine_id,
         }
 
 
 @app.post("/api/pipeline/{run_id}/fail")
 async def fail_pipeline_run(run_id: int, request: Request):
     payload = await _read_json_body(request)
-    worker_id = str(payload.get("worker_id") or "").strip()
+    requested_worker_id = str(payload.get("worker_id") or "").strip()
+    machine_id = _resolve_claim_machine_id(payload)
     stage = str(payload.get("stage") or "").strip()
     actor = str(payload.get("actor") or "daemon").strip() or "daemon"
     worker_metadata = payload.get("worker_metadata")
@@ -2077,9 +2146,20 @@ async def fail_pipeline_run(run_id: int, request: Request):
         cursor.execute("SELECT * FROM pipeline_run_locks WHERE run_id = %s FOR UPDATE", (run_id,))
         lock_raw = cursor.fetchone()
         lock_row = dict(lock_raw) if lock_raw else None
-        effective_worker_id = worker_id or str(run.get("worker_id") or "")
-        if _claim_lock_is_active(lock_row, effective_worker_id, now):
+        effective_machine_id = machine_id or (str(lock_row["worker_id"]) if lock_row else str(run.get("worker_id") or ""))
+        if _claim_lock_is_active(lock_row, effective_machine_id, now):
             raise HTTPException(status_code=409, detail="Run currently leased by another worker")
+
+        if not machine_id:
+            machine_id = effective_machine_id
+
+        lock_metadata = {}
+        if isinstance(worker_metadata, dict):
+            lock_metadata.update(worker_metadata)
+        if machine_id:
+            lock_metadata.setdefault("machine_id", machine_id)
+        if requested_worker_id:
+            lock_metadata.setdefault("worker_id", requested_worker_id)
 
         cursor.execute("""
             UPDATE pipeline_run_stages
@@ -2097,9 +2177,9 @@ async def fail_pipeline_run(run_id: int, request: Request):
               AND stage = %s
               AND status IN ('pending', 'running', 'failed')
         """, (
-            worker_id or None,
+            machine_id or None,
             actor,
-            Json(worker_metadata) if worker_metadata is not None else None,
+            Json(lock_metadata) if lock_metadata else None,
             now,
             now,
             error_message,
@@ -2128,9 +2208,9 @@ async def fail_pipeline_run(run_id: int, request: Request):
             WHERE id = %s
         """, (
             stage_to_fail,
-            worker_id or None,
+            machine_id or None,
             actor,
-            Json(worker_metadata) if worker_metadata is not None else None,
+            Json(lock_metadata) if lock_metadata else None,
             error_message,
             Json(error_payload) if error_payload is not None else None,
             now,
@@ -2147,6 +2227,7 @@ async def fail_pipeline_run(run_id: int, request: Request):
             "run_id": run_id,
             "stage": stage_to_fail,
             "error": error_message,
+            "machine_id": machine_id,
         }
 
 
@@ -2845,9 +2926,10 @@ async def duplicate_campaign(campaign_id: int, request: Request):
                 new_name = f"{base_name} {counter}"
 
         # Create new campaign
+        maps_scrape_mode = _normalize_maps_scrape_mode(original_campaign.get("maps_scrape_mode"), "slow")
         cursor.execute(
-            "INSERT INTO search_campaigns (name, status) VALUES (%s, %s) RETURNING id",
-            (new_name, "active")
+            "INSERT INTO search_campaigns (name, status, maps_scrape_mode) VALUES (%s, %s, %s) RETURNING id",
+            (new_name, "active", maps_scrape_mode)
         )
         new_campaign_id = cursor.fetchone()['id']
 

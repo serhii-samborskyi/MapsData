@@ -388,7 +388,7 @@ class PipelineEndpointTests(unittest.TestCase):
             {"match": "update pipeline_run_stages", "rowcount": 1},
             {"match": "update pipeline_runs", "rowcount": 1},
             {"match": "update pipeline_run_stages", "rowcount": 1},
-            {"match": "delete from pipeline_run_locks", "rowcount": 1},
+            {"match": "insert into pipeline_run_locks", "rowcount": 1},
         ])
 
         response = asyncio.run(self.main.complete_pipeline_stage(77, FakeRequest({"worker_id": "daemon-1", "stage": "cleanup_contacts"})))
@@ -396,6 +396,71 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(response["completed_stage"], "cleanup_contacts")
         self.assertEqual(response["next_stage"], "email_fast")
         self.assertEqual(response["pipeline_status"], "running")
+
+    def test_claim_returns_maps_mode_and_machine_fields(self):
+        self._patch_db([
+            {"match": "from pipeline_run_locks prl", "fetchall": []},
+            {
+                "match": "from pipeline_runs pr",
+                "fetchall": [
+                    {
+                        "id": 42,
+                        "campaign_id": 7,
+                        "status": "pending",
+                        "current_stage": "maps_scrape",
+                        "worker_id": None,
+                        "lease_expires_at": None,
+                        "campaign_name": "HVAC Dallas",
+                        "maps_scrape_mode": "fast",
+                    }
+                ],
+            },
+            {
+                "match": "from pipeline_run_stages",
+                "fetchall": [{"run_id": 42, "stage": "maps_scrape", "stage_order": 0, "status": "pending"}],
+            },
+            {"match": "from pipeline_run_locks where run_id", "fetchone": None},
+            {"match": "insert into pipeline_run_locks", "rowcount": 1},
+            {"match": "update pipeline_runs", "rowcount": 1},
+            {"match": "update pipeline_run_stages", "rowcount": 1},
+        ])
+
+        response = asyncio.run(self.main.claim_pipeline_stage(FakeRequest({"worker_id": "daemon-a"})))
+        self.assertTrue(response["claimed"])
+        self.assertEqual(response["run_id"], 42)
+        self.assertEqual(response["campaign_id"], 7)
+        self.assertEqual(response["stage"], "maps_scrape")
+        self.assertEqual(response["pipeline_status"], "running")
+        self.assertEqual(response["maps_scrape_mode"], "fast")
+        self.assertEqual(response["worker_id"], "daemon-a")
+        self.assertEqual(response["machine_id"], "daemon-a")
+
+    def test_claim_free_machine_policy_blocks_second_run_even_without_other_workers(self):
+        now = datetime.utcnow()
+        self._patch_db([
+            {
+                "match": "from pipeline_run_locks prl",
+                "fetchall": [
+                    {"run_id": 10, "worker_id": "daemon-a", "lease_expires_at": now + timedelta(seconds=120)},
+                ],
+            },
+            {
+                "match": "from pipeline_runs pr",
+                "fetchall": [{"id": 99, "campaign_id": 8, "status": "pending", "current_stage": "email_fast"}],
+            },
+            {
+                "match": "from pipeline_run_stages",
+                "fetchall": [{"run_id": 99, "stage": "email_fast", "stage_order": 2, "status": "pending"}],
+            },
+            {
+                "match": "from pipeline_run_locks where run_id",
+                "fetchone": None,
+            },
+        ])
+
+        response = asyncio.run(self.main.claim_pipeline_stage(FakeRequest({"worker_id": "daemon-a"})))
+        self.assertFalse(response["claimed"])
+        self.assertEqual(response["reason"], "all_leased")
 
     def test_fail_and_retry_start_flow(self):
         self._patch_db([
@@ -432,6 +497,28 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertFalse(retry_response["idempotent"])
         self.assertEqual(retry_response["run_id"], 99)
         self.assertEqual(retry_response["current_stage"], "maps_scrape")
+
+    def test_create_campaign_defaults_maps_mode_to_slow(self):
+        self._patch_db([
+            {"match": "insert into search_campaigns", "fetchone": {"id": 123}},
+            {"match": "insert into requests", "rowcount": 1},
+            {"match": "insert into requests", "rowcount": 1},
+        ])
+
+        response = asyncio.run(self.main.create_campaign(name="Demo", search_phrases="a\nb"))
+        self.assertEqual(response["campaign_id"], 123)
+        self.assertEqual(response["maps_scrape_mode"], "slow")
+
+    def test_create_campaign_rejects_invalid_maps_mode(self):
+        with self.assertRaises(self.main.HTTPException) as ctx:
+            asyncio.run(
+                self.main.create_campaign(
+                    name="Demo",
+                    search_phrases="a",
+                    maps_scrape_mode="turbo",
+                )
+            )
+        self.assertEqual(ctx.exception.status_code, 400)
 
     def test_cleanup_flags_invalid_domains_and_removes_duplicates(self):
         self._patch_db([
