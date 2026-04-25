@@ -67,6 +67,9 @@ def resolve_contact_value(contact: Dict, contact_field: str) -> Optional[str]:
         derived_city = extract_city_from_address(contact.get("address"))
         if derived_city:
             return derived_city
+        request_city = str(contact.get("__request_city") or contact.get("request_city") or "").strip()
+        if request_city:
+            return request_city
 
     return None
 

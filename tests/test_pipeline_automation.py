@@ -622,6 +622,23 @@ class PipelineUnitLogicTests(unittest.TestCase):
         self.assertTrue(self.main._stage_recently_heartbeated_by_other_worker(run, stage_row, "daemon-b", now))
         self.assertFalse(self.main._stage_recently_heartbeated_by_other_worker(run, stage_row, "daemon-a", now))
 
+    def test_extract_city_from_request_text_uses_common_pattern(self):
+        city = self.main._extract_city_from_request_text(
+            "lawn care Colfax, WI",
+            common_prefix="lawn care ",
+            common_suffix=", WI",
+        )
+        self.assertEqual(city, "Colfax")
+
+    def test_apply_city_fallback_for_export_uses_request_city_map(self):
+        contacts = [
+            {"id": 1, "city": "", "address": "", "request_id": 1001},
+            {"id": 2, "city": "Elmwood", "address": "", "request_id": 1002},
+        ]
+        self.main._apply_city_fallback_for_export(contacts, {1001: "Mondovi", 1002: "Durand"})
+        self.assertEqual(contacts[0]["city"], "Mondovi")
+        self.assertEqual(contacts[1]["city"], "Elmwood")
+
 
 if __name__ == "__main__":
     unittest.main()

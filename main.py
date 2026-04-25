@@ -169,6 +169,140 @@ def _compute_campaign_stats_from_contacts(contacts: List[dict], last_updated_at:
     }
 
 
+def _longest_common_prefix(values: List[str]) -> str:
+    if not values:
+        return ""
+    prefix = values[0]
+    for value in values[1:]:
+        while prefix and not value.startswith(prefix):
+            prefix = prefix[:-1]
+        if not prefix:
+            break
+    return prefix
+
+
+def _longest_common_suffix(values: List[str]) -> str:
+    if not values:
+        return ""
+    suffix = values[0]
+    for value in values[1:]:
+        while suffix and not value.endswith(suffix):
+            suffix = suffix[1:]
+        if not suffix:
+            break
+    return suffix
+
+
+def _looks_like_city_name(value: str) -> bool:
+    candidate = str(value or "").strip()
+    if len(candidate) < 2 or len(candidate) > 80:
+        return False
+    if any(ch.isdigit() for ch in candidate):
+        return False
+    return bool(re.fullmatch(r"[A-Za-z .'\-]+", candidate))
+
+
+def _extract_city_from_request_text(req_text: str, common_prefix: str = "", common_suffix: str = "") -> str:
+    text = str(req_text or "").strip()
+    if not text:
+        return ""
+
+    if common_prefix or common_suffix:
+        left = len(common_prefix) if common_prefix and text.startswith(common_prefix) else 0
+        right_bound = len(text) - len(common_suffix) if common_suffix and text.endswith(common_suffix) else len(text)
+        if right_bound > left:
+            middle = text[left:right_bound].strip(" ,-/")
+            if _looks_like_city_name(middle):
+                return middle
+
+    # Fallback: phrase + "City, ST" pattern
+    state_match = re.search(r",\s*[A-Z]{2}(?:\s+\d{5}(?:-\d{4})?)?\s*$", text)
+    if state_match:
+        before_state = text[:state_match.start()].strip()
+        if common_prefix and before_state.lower().startswith(common_prefix.lower()):
+            before_state = before_state[len(common_prefix):].strip()
+        if "," in before_state:
+            before_state = before_state.split(",")[-1].strip()
+        before_state = re.sub(r"\b(in|near)\s+$", "", before_state, flags=re.IGNORECASE).strip()
+        if _looks_like_city_name(before_state):
+            return before_state
+
+    return ""
+
+
+def _build_campaign_request_city_map(cursor, campaign_id: int, sample_limit: int = 10) -> dict[int, str]:
+    cursor.execute("""
+        SELECT id, req_text
+        FROM requests
+        WHERE campaign_id = %s
+          AND req_text IS NOT NULL
+          AND btrim(req_text) != ''
+        ORDER BY id ASC
+    """, (campaign_id,))
+    rows = [dict(row) for row in cursor.fetchall()]
+    if not rows:
+        return {}
+
+    unique_texts: List[str] = []
+    seen = set()
+    for row in rows:
+        text = str(row.get("req_text") or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        unique_texts.append(text)
+        if len(unique_texts) >= max(1, sample_limit):
+            break
+
+    prefix = ""
+    suffix = ""
+    if len(unique_texts) >= 2:
+        prefix = _longest_common_prefix(unique_texts)
+        suffix = _longest_common_suffix(unique_texts)
+
+    city_map: dict[int, str] = {}
+    for row in rows:
+        request_id = row.get("id")
+        try:
+            request_id_int = int(request_id)
+        except (TypeError, ValueError):
+            continue
+        city = _extract_city_from_request_text(row.get("req_text", ""), prefix, suffix)
+        if city:
+            city_map[request_id_int] = city
+    return city_map
+
+
+def _apply_city_fallback_for_export(contacts: List[dict], request_city_map: Optional[dict[int, str]] = None) -> None:
+    if not contacts:
+        return
+
+    city_lookup = request_city_map or {}
+    for contact in contacts:
+        current_city = str(contact.get("city") or "").strip()
+        if current_city:
+            continue
+
+        address_value = contact.get("address")
+        if not address_value:
+            address_value = contact.get("__address_fallback")
+        derived_city = extract_city_from_address(address_value)
+        if not derived_city:
+            request_id_raw = contact.get("request_id")
+            if request_id_raw is None:
+                request_id_raw = contact.get("__request_id_fallback")
+            try:
+                request_id = int(request_id_raw)
+            except (TypeError, ValueError):
+                request_id = None
+            if request_id is not None:
+                derived_city = city_lookup.get(request_id, "")
+
+        if derived_city:
+            contact["city"] = derived_city
+            contact["__request_city"] = derived_city
+
+
 def _next_pipeline_stage(stage: str) -> Optional[str]:
     if stage not in PIPELINE_STAGE_INDEX:
         return None
@@ -3352,6 +3486,8 @@ async def preview_export(
         """
         cursor.execute(query, tuple(params))
         contacts = [dict(row) for row in cursor.fetchall()]
+        request_city_map = _build_campaign_request_city_map(cursor, campaign_id)
+        _apply_city_fallback_for_export(contacts, request_city_map)
 
     filtered_contacts = [
         contact for contact in contacts
@@ -3479,6 +3615,8 @@ async def export_campaign(campaign_id: int, request: Request):
 
         cursor.execute(query, tuple(params))
         all_candidates = [dict(row) for row in cursor.fetchall()]
+        request_city_map = _build_campaign_request_city_map(cursor, campaign_id)
+        _apply_city_fallback_for_export(all_candidates, request_city_map)
         eligible_contacts = [
             contact for contact in all_candidates
             if _matches_export_status_filter(contact, export_valid_only, export_catch_all, export_catch_all_only)
@@ -3792,6 +3930,8 @@ async def test_export_lead(campaign_id: int, request: Request):
             raise HTTPException(status_code=404, detail="Lead not found in selected campaign")
 
         contact = dict(contact)
+        request_city_map = _build_campaign_request_city_map(cursor, campaign_id)
+        _apply_city_fallback_for_export([contact], request_city_map)
 
     if template["service"] == "manyreach":
         integration = ManyReachIntegration(template["api_config"].get("api_key", ""))
@@ -4366,6 +4506,8 @@ async def export_campaign_csv(campaign_id: int, fields: str = None):
         needs_city_fallback = 'city' in selected_fields
         if needs_city_fallback and 'address' not in selected_fields:
             select_expressions.append("address AS __address_fallback")
+        if needs_city_fallback and 'request_id' not in selected_fields:
+            select_expressions.append("request_id AS __request_id_fallback")
 
         query = f"SELECT {', '.join(select_expressions)} FROM contacts WHERE campaign_id = %s ORDER BY id"
         
@@ -4374,19 +4516,17 @@ async def export_campaign_csv(campaign_id: int, fields: str = None):
         
         if not contacts:
             raise HTTPException(status_code=404, detail="No contacts found for this campaign")
+
+        if needs_city_fallback:
+            request_city_map = _build_campaign_request_city_map(cursor, campaign_id)
+            _apply_city_fallback_for_export(contacts, request_city_map)
         
         # Create CSV in memory with selected fields only
         output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=selected_fields)
         writer.writeheader()
-        
-        for contact in contacts:
-            if needs_city_fallback and not str(contact.get('city') or '').strip():
-                fallback_address = contact.get('address') if 'address' in selected_fields else contact.get('__address_fallback')
-                derived_city = extract_city_from_address(fallback_address)
-                if derived_city:
-                    contact['city'] = derived_city
 
+        for contact in contacts:
             csv_row = {}
             for field in selected_fields:
                 value = contact.get(field, '')
