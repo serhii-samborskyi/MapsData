@@ -548,6 +548,41 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(response["duplicates_removed"], 1)
         self.assertEqual(response["flagged_invalid_domain_count"], 2)
 
+    def test_save_contacts_allows_inflight_request_when_campaign_not_active(self):
+        self._patch_db([
+            {"match": "select status from search_campaigns", "fetchone": {"status": "completed"}},
+            {"match": "select id, status from requests", "fetchone": {"id": 777, "status": "inuse"}},
+            {"match": "from pipeline_runs", "fetchone": None},
+            {"match": "insert into contacts", "fetchone": {"id": 501}},
+        ])
+
+        payload = [{
+            "campaign_id": 12,
+            "request_id": 777,
+            "business_name": "Demo Biz",
+            "address": "123 Main St",
+        }]
+        response = asyncio.run(self.main.save_contacts(FakeRequest(payload)))
+        self.assertEqual(response["status"], "Contacts saved successfully")
+        self.assertEqual(len(response["saved_contacts"]), 1)
+        self.assertEqual(response["saved_contacts"][0]["contact_id"], 501)
+
+    def test_save_contacts_rejects_inactive_campaign_without_inflight_context(self):
+        self._patch_db([
+            {"match": "select status from search_campaigns", "fetchone": {"status": "completed"}},
+            {"match": "select id, status from requests", "fetchone": {"id": 777, "status": "completed"}},
+            {"match": "from pipeline_runs", "fetchone": None},
+        ])
+
+        payload = [{
+            "campaign_id": 12,
+            "request_id": 777,
+            "business_name": "Demo Biz",
+        }]
+        with self.assertRaises(self.main.HTTPException) as ctx:
+            asyncio.run(self.main.save_contacts(FakeRequest(payload)))
+        self.assertEqual(ctx.exception.status_code, 400)
+
 
 class PipelineUnitLogicTests(unittest.TestCase):
     def setUp(self):
@@ -579,6 +614,13 @@ class PipelineUnitLogicTests(unittest.TestCase):
         self.assertEqual(stats["duplicates_removed"], 1)
         self.assertEqual(stats["contacts_with_domain"], 2)
         self.assertEqual(stats["contacts_without_domain"], 1)
+
+    def test_stage_recent_heartbeat_blocks_reclaim(self):
+        now = datetime.utcnow()
+        run = {"worker_id": "daemon-a", "last_heartbeat_at": now - timedelta(seconds=30)}
+        stage_row = {"worker_id": "daemon-a", "last_heartbeat_at": now - timedelta(seconds=30)}
+        self.assertTrue(self.main._stage_recently_heartbeated_by_other_worker(run, stage_row, "daemon-b", now))
+        self.assertFalse(self.main._stage_recently_heartbeated_by_other_worker(run, stage_row, "daemon-a", now))
 
 
 if __name__ == "__main__":

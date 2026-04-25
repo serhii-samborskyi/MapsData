@@ -58,6 +58,7 @@ PIPELINE_STAGE_INDEX = {stage: index for index, stage in enumerate(PIPELINE_STAG
 PIPELINE_DEFAULT_LEASE_SECONDS = 120
 PIPELINE_MIN_LEASE_SECONDS = 30
 PIPELINE_MAX_LEASE_SECONDS = 900
+PIPELINE_RECLAIM_HEARTBEAT_GRACE_SECONDS = 75
 PIPELINE_ALLOWED_CLAIM_ACTORS = {"daemon", "dashboard", "system", "worker"}
 MAPS_SCRAPE_MODES = {"fast", "slow"}
 
@@ -1322,6 +1323,22 @@ def _claim_lock_is_active(lock_row: Optional[dict], worker_id: str, now: datetim
     return lease_expires_at > now
 
 
+def _stage_recently_heartbeated_by_other_worker(run: dict, stage_row: dict, worker_id: str, now: datetime) -> bool:
+    owner = str(stage_row.get("worker_id") or run.get("worker_id") or "").strip()
+    if not owner or owner == worker_id:
+        return False
+
+    heartbeat_at = (
+        stage_row.get("last_heartbeat_at")
+        or run.get("last_heartbeat_at")
+        or stage_row.get("updated_at")
+        or run.get("updated_at")
+    )
+    if not isinstance(heartbeat_at, datetime):
+        return False
+    return heartbeat_at > (now - timedelta(seconds=PIPELINE_RECLAIM_HEARTBEAT_GRACE_SECONDS))
+
+
 def _upsert_pipeline_lock(cursor, run_id: int, campaign_id: int, worker_id: str, lease_expires_at: datetime, metadata: dict):
     lock_token = str(uuid4())
     cursor.execute("""
@@ -1725,6 +1742,10 @@ async def claim_pipeline_stage(request: Request):
 
             if stage_row["status"] not in {"pending", "running"}:
                 saw_non_claimable_stage = True
+                continue
+
+            if stage_row["status"] == "running" and _stage_recently_heartbeated_by_other_worker(run, stage_row, machine_id, now):
+                saw_all_leased = True
                 continue
 
             if lock_active_other_machine:
@@ -2331,18 +2352,24 @@ async def get_campaign_stats(campaign_id: int):
         )
 
 @app.get("/api/campaign/{campaign_name}/requests")
-async def get_campaign_requests(campaign_name: str):
+async def get_campaign_requests(campaign_name: str, include_inuse: bool = False):
+    statuses = ["pending"]
+    if include_inuse:
+        statuses.append("inuse")
+
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT r.*, sc.name as campaign_name
             FROM requests r
             JOIN search_campaigns sc ON r.campaign_id = sc.id
-            WHERE sc.name = %s AND r.status = 'pending'
-        """, (campaign_name,))
+            WHERE sc.name = %s AND r.status = ANY(%s)
+            ORDER BY r.id ASC
+        """, (campaign_name, statuses))
         requests = [dict(row) for row in cursor.fetchall()]
         if not requests:
-            raise HTTPException(status_code=404, detail="No pending requests found")
+            requested_statuses = ", ".join(statuses)
+            raise HTTPException(status_code=404, detail=f"No {requested_statuses} requests found")
         return {"requests": requests}
 
 @app.get("/api/request/{request_id}/status/{status}")
@@ -2459,6 +2486,9 @@ async def save_contacts(request: Request):
     saved_contacts = []
     with get_db() as conn:
         cursor = conn.cursor()
+        campaign_status_cache: dict[int, str] = {}
+        pipeline_active_cache: dict[int, bool] = {}
+        request_status_cache: dict[tuple[int, int], str] = {}
 
         for contact_index, contact in enumerate(contacts, start=1):
             if not isinstance(contact, dict):
@@ -2517,18 +2547,45 @@ async def save_contacts(request: Request):
                 else:
                     place_id = ""
 
-            # Verify campaign exists and is active
-            cursor.execute("SELECT status FROM search_campaigns WHERE id = %s", (campaign_id,))
-            campaign = cursor.fetchone()
-            if not campaign:
-                raise HTTPException(status_code=404, detail=f"Campaign {campaign_id} not found")
-            if campaign['status'] != 'active':
-                raise HTTPException(status_code=400, detail=f"Campaign {campaign_id} is not active")
+            # Verify campaign exists.
+            campaign_status = campaign_status_cache.get(campaign_id)
+            if campaign_status is None:
+                cursor.execute("SELECT status FROM search_campaigns WHERE id = %s", (campaign_id,))
+                campaign = cursor.fetchone()
+                if not campaign:
+                    raise HTTPException(status_code=404, detail=f"Campaign {campaign_id} not found")
+                campaign_status = str(campaign.get("status") or "").strip().lower() or "inactive"
+                campaign_status_cache[campaign_id] = campaign_status
 
-            # Verify request belongs to campaign
-            cursor.execute("SELECT id FROM requests WHERE id = %s AND campaign_id = %s", (request_id, campaign_id))
-            if not cursor.fetchone():
-                raise HTTPException(status_code=400, detail=f"Invalid request ID {request_id} for campaign {campaign_id}")
+            # Verify request belongs to campaign and capture request status.
+            request_key = (campaign_id, request_id)
+            request_status = request_status_cache.get(request_key)
+            if request_status is None:
+                cursor.execute("SELECT id, status FROM requests WHERE id = %s AND campaign_id = %s", (request_id, campaign_id))
+                request_row = cursor.fetchone()
+                if not request_row:
+                    raise HTTPException(status_code=400, detail=f"Invalid request ID {request_id} for campaign {campaign_id}")
+                request_status = str(request_row.get("status") or "").strip().lower()
+                request_status_cache[request_key] = request_status
+
+            if campaign_status != "active":
+                pipeline_is_active = pipeline_active_cache.get(campaign_id)
+                if pipeline_is_active is None:
+                    cursor.execute("""
+                        SELECT 1
+                        FROM pipeline_runs
+                        WHERE campaign_id = %s
+                          AND status IN ('pending', 'running')
+                        LIMIT 1
+                    """, (campaign_id,))
+                    pipeline_is_active = bool(cursor.fetchone())
+                    pipeline_active_cache[campaign_id] = pipeline_is_active
+
+                # Allow contact writes for in-flight pipeline ingestion even if campaign status
+                # already flipped out of "active" due late-stage transitions/failover races.
+                request_in_progress = request_status in {"pending", "inuse"}
+                if not pipeline_is_active and not request_in_progress:
+                    raise HTTPException(status_code=400, detail=f"Campaign {campaign_id} is not active")
 
             try:
                 cursor.execute(
