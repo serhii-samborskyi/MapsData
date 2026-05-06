@@ -1405,17 +1405,49 @@ async def get_active_campaigns():
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT 
-                sc.*,
-                COUNT(DISTINCT r.id) as total_requests,
-                COUNT(DISTINCT c.id) as total_contacts
-            FROM search_campaigns sc
-            LEFT JOIN requests r ON sc.id = r.campaign_id
-            LEFT JOIN contacts c ON sc.id = c.campaign_id
-            WHERE sc.status = 'active'
-            GROUP BY sc.id
+            SELECT
+                id,
+                name,
+                status,
+                COALESCE(maps_scrape_mode, 'slow') AS maps_scrape_mode
+            FROM search_campaigns
+            WHERE status = 'active'
+            ORDER BY id ASC
         """)
         campaigns = [dict(row) for row in cursor.fetchall()]
+        campaign_ids = [int(row["id"]) for row in campaigns]
+
+        request_summary = {}
+        contact_summary = {}
+        if campaign_ids:
+            placeholders = ",".join(["%s"] * len(campaign_ids))
+
+            cursor.execute(f"""
+                SELECT campaign_id, COUNT(*) AS total_requests
+                FROM requests
+                WHERE campaign_id IN ({placeholders})
+                GROUP BY campaign_id
+            """, tuple(campaign_ids))
+            request_summary = {
+                int(row["campaign_id"]): int(row.get("total_requests") or 0)
+                for row in cursor.fetchall()
+            }
+
+            cursor.execute(f"""
+                SELECT campaign_id, COUNT(*) AS total_contacts
+                FROM contacts
+                WHERE campaign_id IN ({placeholders})
+                GROUP BY campaign_id
+            """, tuple(campaign_ids))
+            contact_summary = {
+                int(row["campaign_id"]): int(row.get("total_contacts") or 0)
+                for row in cursor.fetchall()
+            }
+
+        for campaign in campaigns:
+            campaign_id = int(campaign["id"])
+            campaign["total_requests"] = request_summary.get(campaign_id, 0)
+            campaign["total_contacts"] = contact_summary.get(campaign_id, 0)
         return {"campaigns": campaigns}
 
 @app.get("/api/campaigns/all")
@@ -1423,19 +1455,53 @@ async def get_all_campaigns():
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT 
-                sc.*,
-                COUNT(DISTINCT r.id) as total_requests,
-                COUNT(DISTINCT c.id) as total_contacts
-            FROM search_campaigns sc
-            LEFT JOIN requests r ON sc.id = r.campaign_id
-            LEFT JOIN contacts c ON sc.id = c.campaign_id
-            GROUP BY sc.id
-            ORDER BY sc.status = 'active' DESC, sc.name ASC
+            SELECT
+                id,
+                name,
+                status,
+                COALESCE(maps_scrape_mode, 'slow') AS maps_scrape_mode
+            FROM search_campaigns
+            ORDER BY status = 'active' DESC, name ASC
         """)
         campaigns = [dict(row) for row in cursor.fetchall()]
-        email_metrics = _compute_campaign_email_metrics(cursor)
+        campaign_ids = [int(row["id"]) for row in campaigns]
+
+        request_summary = {}
+        contact_summary = {}
+        if campaign_ids:
+            placeholders = ",".join(["%s"] * len(campaign_ids))
+
+            cursor.execute(f"""
+                SELECT
+                    campaign_id,
+                    COUNT(*) AS total_requests
+                FROM requests
+                WHERE campaign_id IN ({placeholders})
+                GROUP BY campaign_id
+            """, tuple(campaign_ids))
+            request_summary = {
+                int(row["campaign_id"]): int(row.get("total_requests") or 0)
+                for row in cursor.fetchall()
+            }
+
+            cursor.execute(f"""
+                SELECT
+                    campaign_id,
+                    COUNT(*) AS total_contacts
+                FROM contacts
+                WHERE campaign_id IN ({placeholders})
+                GROUP BY campaign_id
+            """, tuple(campaign_ids))
+            contact_summary = {
+                int(row["campaign_id"]): int(row.get("total_contacts") or 0)
+                for row in cursor.fetchall()
+            }
+
+        email_metrics = _compute_campaign_email_metrics(cursor, campaign_ids)
         for campaign in campaigns:
+            campaign_id = int(campaign["id"])
+            campaign["total_requests"] = request_summary.get(campaign_id, 0)
+            campaign["total_contacts"] = contact_summary.get(campaign_id, 0)
             metrics = email_metrics.get(campaign["id"], {"email_count": 0, "valid_email_count": 0})
             campaign["email_count"] = metrics["email_count"]
             campaign["valid_email_count"] = metrics["valid_email_count"]

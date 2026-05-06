@@ -276,26 +276,14 @@
                 const select = document.getElementById('campaignSelect');
                 select.innerHTML = '<option value="">Select a campaign...</option>';
                 
-                // Filter campaigns to only show those with emails > 0
-                const campaignsWithEmails = [];
-                
-                for (const campaign of data.campaigns) {
-                    // Get detailed campaign info to count emails
-                    const detailResponse = await fetch(`/api/campaign/${campaign.id}`);
-                    const detailData = await detailResponse.json();
-                    const emailCount = detailData.contacts.filter(c => c.email && c.email.trim() !== '').length;
-                    
-                    if (emailCount > 0) {
-                        campaign.email_count = emailCount;
-                        campaignsWithEmails.push(campaign);
-                    }
-                }
+                // Use precomputed API metric to avoid N+1 requests on page load.
+                const campaignsWithEmails = (data.campaigns || []).filter(campaign => Number(campaign.email_count || 0) > 0);
                 
                 campaignsWithEmails.forEach(campaign => {
                     const option = document.createElement('option');
                     option.value = campaign.id;
                     const statusLabel = campaign.status === 'completed' ? ' [COMPLETED]' : '';
-                    option.textContent = `${campaign.name} (${campaign.email_count} emails)${statusLabel}`;
+                    option.textContent = `${campaign.name} (${Number(campaign.email_count || 0)} emails)${statusLabel}`;
                     select.appendChild(option);
                 });
 
