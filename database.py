@@ -213,6 +213,9 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_run_stages_campaign_status ON pipeline_run_stages(campaign_id, status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_run_locks_campaign_lease ON pipeline_run_locks(campaign_id, lease_expires_at)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_run_locks_worker_lease ON pipeline_run_locks(worker_id, lease_expires_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_requests_campaign_id ON requests(campaign_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_requests_campaign_status ON requests(campaign_id, status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_contacts_campaign_id ON contacts(campaign_id)")
         cursor.execute('''
             CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_active_run_per_campaign
             ON pipeline_runs(campaign_id)

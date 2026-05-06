@@ -473,11 +473,21 @@ def _compute_campaign_email_metrics(cursor, campaign_ids: Optional[List[int]] = 
     This avoids inconsistencies from join-heavy aggregate queries.
     """
     query = """
-        SELECT campaign_id, email_status, status
+        SELECT
+            campaign_id,
+            COUNT(*) FILTER (
+                WHERE email IS NOT NULL AND btrim(email) != ''
+            ) AS email_count,
+            COUNT(*) FILTER (
+                WHERE email IS NOT NULL
+                  AND btrim(email) != ''
+                  AND (
+                      regexp_replace(lower(coalesce(nullif(btrim(email_status), ''), status, '')), '[^a-z]', '', 'g') LIKE 'valid%%'
+                      OR regexp_replace(lower(coalesce(nullif(btrim(email_status), ''), status, '')), '[^a-z]', '', 'g') = 'verified'
+                  )
+            ) AS valid_email_count
         FROM contacts
         WHERE campaign_id IS NOT NULL
-          AND email IS NOT NULL
-          AND btrim(email) != ''
     """
     params: List[Any] = []
     if campaign_ids is not None:
@@ -487,21 +497,18 @@ def _compute_campaign_email_metrics(cursor, campaign_ids: Optional[List[int]] = 
         query += f" AND campaign_id IN ({placeholders})"
         params.extend(campaign_ids)
 
-    cursor.execute(query, tuple(params))
+    query += " GROUP BY campaign_id"
 
+    cursor.execute(query, tuple(params))
     metrics = {}
     for row in cursor.fetchall():
         campaign_id = row.get("campaign_id")
         if campaign_id is None:
             continue
-
-        campaign_metrics = metrics.setdefault(campaign_id, {"email_count": 0, "valid_email_count": 0})
-        campaign_metrics["email_count"] += 1
-
-        normalized_status = _resolve_contact_email_status(row)
-        if _is_valid_email_status(normalized_status):
-            campaign_metrics["valid_email_count"] += 1
-
+        metrics[campaign_id] = {
+            "email_count": int(row.get("email_count") or 0),
+            "valid_email_count": int(row.get("valid_email_count") or 0),
+        }
     return metrics
 
 # Initialize database
@@ -806,31 +813,16 @@ async def get_campaigns(
             page = total_pages
         offset = (page - 1) * per_page
         
-        # Single optimized query to get all campaign data at once
+        # Fetch only the current page of campaigns first, then aggregate related tables
+        # only for those IDs. This keeps homepage latency stable as data grows.
         cursor.execute(f"""
             SELECT 
                 sc.id,
                 sc.name,
                 sc.status,
-                COALESCE(sc.maps_scrape_mode, 'slow') AS maps_scrape_mode,
-                COUNT(DISTINCT r.id) as total_requests,
-                COUNT(DISTINCT c.id) as total_contacts,
-                COUNT(DISTINCT CASE WHEN r.status = 'completed' THEN r.id END) as completed_requests,
-                COUNT(DISTINCT CASE WHEN c.email IS NOT NULL AND btrim(c.email) != '' THEN c.id END) as email_count,
-                COUNT(
-                    DISTINCT CASE
-                        WHEN c.email IS NOT NULL
-                             AND btrim(c.email) != ''
-                             AND coalesce(nullif(btrim(c.email_status), ''), 'unverified') != 'unverified'
-                        THEN c.id
-                    END
-                ) AS verification_processed_count,
-                0 as valid_email_count
+                COALESCE(sc.maps_scrape_mode, 'slow') AS maps_scrape_mode
             FROM search_campaigns sc
-            LEFT JOIN requests r ON sc.id = r.campaign_id
-            LEFT JOIN contacts c ON sc.id = c.campaign_id
             {search_clause}
-            GROUP BY sc.id, sc.name, sc.status, sc.maps_scrape_mode
             ORDER BY sc.id DESC
             LIMIT %s
             OFFSET %s
@@ -839,6 +831,50 @@ async def get_campaigns(
         campaign_rows = cursor.fetchall()
         campaigns = []
         campaign_ids = [int(row["id"]) for row in campaign_rows]
+        request_summary_by_campaign = {}
+        contacts_summary_by_campaign = {}
+
+        if campaign_ids:
+            placeholders = ",".join(["%s"] * len(campaign_ids))
+
+            cursor.execute(f"""
+                SELECT
+                    campaign_id,
+                    COUNT(*) AS total_requests,
+                    COUNT(*) FILTER (WHERE status = 'completed') AS completed_requests
+                FROM requests
+                WHERE campaign_id IN ({placeholders})
+                GROUP BY campaign_id
+            """, tuple(campaign_ids))
+            request_summary_by_campaign = {
+                int(row["campaign_id"]): {
+                    "total_requests": int(row.get("total_requests") or 0),
+                    "completed_requests": int(row.get("completed_requests") or 0),
+                }
+                for row in cursor.fetchall()
+            }
+
+            cursor.execute(f"""
+                SELECT
+                    campaign_id,
+                    COUNT(*) AS total_contacts,
+                    COUNT(*) FILTER (
+                        WHERE email IS NOT NULL
+                          AND btrim(email) != ''
+                          AND coalesce(nullif(btrim(email_status), ''), 'unverified') != 'unverified'
+                    ) AS verification_processed_count
+                FROM contacts
+                WHERE campaign_id IN ({placeholders})
+                GROUP BY campaign_id
+            """, tuple(campaign_ids))
+            contacts_summary_by_campaign = {
+                int(row["campaign_id"]): {
+                    "total_contacts": int(row.get("total_contacts") or 0),
+                    "verification_processed_count": int(row.get("verification_processed_count") or 0),
+                }
+                for row in cursor.fetchall()
+            }
+
         email_metrics = _compute_campaign_email_metrics(cursor, campaign_ids)
 
         with verification_jobs_lock:
@@ -862,6 +898,12 @@ async def get_campaigns(
 
         for row in campaign_rows:
             campaign = dict(row)
+            req_summary = request_summary_by_campaign.get(campaign["id"], {"total_requests": 0, "completed_requests": 0})
+            contact_summary = contacts_summary_by_campaign.get(campaign["id"], {"total_contacts": 0, "verification_processed_count": 0})
+            campaign["total_requests"] = req_summary["total_requests"]
+            campaign["completed_requests"] = req_summary["completed_requests"]
+            campaign["total_contacts"] = contact_summary["total_contacts"]
+            campaign["verification_processed_count"] = contact_summary["verification_processed_count"]
             metrics = email_metrics.get(campaign["id"], {"email_count": 0, "valid_email_count": 0})
             campaign["email_count"] = metrics["email_count"]
             campaign["valid_email_count"] = metrics["valid_email_count"]
