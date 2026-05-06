@@ -16,7 +16,12 @@
                 <h1 class="section-title text-3xl font-semibold text-slate-900">API Documentation</h1>
                 <p class="text-sm text-slate-600">Endpoints for campaign data, contacts, and request status.</p>
             </div>
-            <a href="/" class="app-chip hover:text-slate-900 w-fit">← Back to ScrapIQ</a>
+            <div class="flex items-center gap-2">
+                <a href="/" class="app-chip hover:text-slate-900 w-fit">← Back to ScrapIQ</a>
+                <form method="post" action="/auth/logout" class="inline">
+                    <button type="submit" class="app-chip hover:text-slate-900">Logout</button>
+                </form>
+            </div>
         </div>
 
         <div class="space-y-8">

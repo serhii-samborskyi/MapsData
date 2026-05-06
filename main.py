@@ -8,14 +8,24 @@ from email_verification import EmailVerificationManager, EmailVerificationServic
 from typing import List, Union, Any, Optional
 from psycopg2 import DataError, IntegrityError
 from psycopg2.extras import Json
+import hmac
+import hashlib
 import json
+import os
 import re
 import time
 from datetime import datetime, timedelta
 import threading
 from uuid import uuid4
+from urllib.parse import quote
 
 app = FastAPI()
+_UI_AUTH_USERNAME = str(os.environ.get("LOGIN", "")).strip()
+_UI_AUTH_PASSWORD = str(os.environ.get("PASSWORD", "")).strip()
+UI_AUTH_ENABLED = bool(_UI_AUTH_USERNAME and _UI_AUTH_PASSWORD)
+_SESSION_SECRET = str(os.environ.get("SESSION_SECRET") or os.environ.get("SECRET_KEY") or f"dev-session-{uuid4()}").strip()
+_UI_AUTH_COOKIE = "scrapiq_auth"
+_UI_AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 14
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
@@ -65,6 +75,52 @@ MAPS_SCRAPE_MODES = {"fast", "slow"}
 
 def _now_utc() -> datetime:
     return datetime.utcnow()
+
+
+def _sanitize_next_path(next_path: Any) -> str:
+    target = str(next_path or "/").strip()
+    if not target.startswith("/") or target.startswith("//"):
+        return "/"
+    return target
+
+
+def _redirect(url: str) -> HTMLResponse:
+    return HTMLResponse("", status_code=303, headers={"Location": url})
+
+
+def _build_ui_auth_cookie(username: str) -> str:
+    payload = f"{username}:{int(time.time())}"
+    signature = hmac.new(_SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{payload}:{signature}"
+
+
+def _verify_ui_auth_cookie(value: str) -> bool:
+    raw = str(value or "")
+    parts = raw.split(":")
+    if len(parts) < 3:
+        return False
+    payload = ":".join(parts[:-1])
+    signature = parts[-1]
+    expected = hmac.new(_SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature, expected)
+
+
+def _is_ui_authenticated(request: Request) -> bool:
+    if not UI_AUTH_ENABLED:
+        return True
+    cookies = getattr(request, "cookies", {}) or {}
+    token = cookies.get(_UI_AUTH_COOKIE)
+    return _verify_ui_auth_cookie(token)
+
+
+def _require_ui_auth(request: Request):
+    if _is_ui_authenticated(request):
+        return None
+    current_path = _sanitize_next_path(request.url.path)
+    if request.url.query:
+        current_path = f"{current_path}?{request.url.query}"
+    login_target = f"/auth/login?next={quote(current_path, safe='')}"
+    return _redirect(login_target)
 
 
 def _iso(value: Any) -> Optional[str]:
@@ -772,15 +828,80 @@ def _run_verification_job(job_id: str):
 
 @app.get("/docs/api", response_class=HTMLResponse)
 async def get_api_docs(request: Request):
+    auth_redirect = _require_ui_auth(request)
+    if auth_redirect:
+        return auth_redirect
     return templates.TemplateResponse("docs.html", {"request": request})
 
 @app.get("/export", response_class=HTMLResponse)
 async def get_export_page(request: Request):
+    auth_redirect = _require_ui_auth(request)
+    if auth_redirect:
+        return auth_redirect
     return templates.TemplateResponse("export.html", {"request": request})
 
 @app.get("/verify", response_class=HTMLResponse)
 async def get_verify_page(request: Request):
+    auth_redirect = _require_ui_auth(request)
+    if auth_redirect:
+        return auth_redirect
     return templates.TemplateResponse("verify.html", {"request": request})
+
+
+@app.get("/auth/login", response_class=HTMLResponse)
+async def get_login_page(request: Request, next: str = "/"):
+    next_path = _sanitize_next_path(next)
+    if _is_ui_authenticated(request):
+        return _redirect(next_path)
+    return templates.TemplateResponse("login.html", {
+        "request": request,
+        "next_path": next_path,
+        "auth_enabled": UI_AUTH_ENABLED,
+        "error": None,
+    })
+
+
+@app.post("/auth/login", response_class=HTMLResponse)
+async def submit_login(request: Request, username: str = Form(""), password: str = Form(""), next: str = Form("/")):
+    next_path = _sanitize_next_path(next)
+
+    if not UI_AUTH_ENABLED:
+        response = _redirect(next_path)
+        response.set_cookie(
+            key=_UI_AUTH_COOKIE,
+            value=_build_ui_auth_cookie("local"),
+            max_age=_UI_AUTH_COOKIE_MAX_AGE,
+            httponly=True,
+            samesite="lax",
+        )
+        return response
+
+    valid_user = hmac.compare_digest(str(username or ""), _UI_AUTH_USERNAME)
+    valid_pass = hmac.compare_digest(str(password or ""), _UI_AUTH_PASSWORD)
+    if valid_user and valid_pass:
+        response = _redirect(next_path)
+        response.set_cookie(
+            key=_UI_AUTH_COOKIE,
+            value=_build_ui_auth_cookie(_UI_AUTH_USERNAME),
+            max_age=_UI_AUTH_COOKIE_MAX_AGE,
+            httponly=True,
+            samesite="lax",
+        )
+        return response
+
+    return templates.TemplateResponse("login.html", {
+        "request": request,
+        "next_path": next_path,
+        "auth_enabled": True,
+        "error": "Invalid login or password.",
+    }, status_code=401)
+
+
+@app.post("/auth/logout")
+async def logout_ui(request: Request):
+    response = _redirect("/auth/login")
+    response.delete_cookie(_UI_AUTH_COOKIE)
+    return response
 
 @app.get("/", response_class=HTMLResponse)
 async def get_campaigns(
@@ -790,6 +911,9 @@ async def get_campaigns(
     per_page: int = 3,
     search: str = ""
 ):
+    auth_redirect = _require_ui_auth(request)
+    if auth_redirect:
+        return auth_redirect
     page = max(1, int(page or 1))
     per_page = int(per_page or 3)
     per_page = min(max(per_page, 1), 25)

@@ -27,6 +27,9 @@
                 <a href="/docs/api" class="app-chip hover:text-slate-900">API Docs</a>
                 <a href="/export" class="app-chip hover:text-slate-900">Export Manager</a>
                 <a href="/verify" class="app-chip hover:text-slate-900">Email Verification</a>
+                <form method="post" action="/auth/logout" class="inline">
+                    <button type="submit" class="app-chip hover:text-slate-900">Logout</button>
+                </form>
                 <button onclick="openDeleteAllCampaignsModal()" class="w-full sm:w-auto rounded-full border border-red-200 bg-red-50 px-5 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-100">
                     Remove All Campaigns
                 </button>

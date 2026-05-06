@@ -16,7 +16,12 @@
                 <h1 class="section-title text-3xl font-semibold text-slate-900">Export Management</h1>
                 <p class="text-sm text-slate-600">Build templates, map fields, and push to ManyReach, Smartlead, or SendRead.</p>
             </div>
-            <a href="/" class="app-chip hover:text-slate-900 w-fit">← Back to ScrapIQ</a>
+            <div class="flex items-center gap-2">
+                <a href="/" class="app-chip hover:text-slate-900 w-fit">← Back to ScrapIQ</a>
+                <form method="post" action="/auth/logout" class="inline">
+                    <button type="submit" class="app-chip hover:text-slate-900">Logout</button>
+                </form>
+            </div>
         </div>
 
         <!-- Campaign Selection -->
