@@ -3690,12 +3690,23 @@ async def preview_export(
     valid_only: bool = False,
     include_catch_all: bool = False,
     catch_all_only: bool = False,
-    exclude_public_emails: bool = False
+    exclude_public_emails: bool = False,
+    field_mappings: Optional[str] = None
 ):
     """Preview what the export will look like"""
     template = TemplateManager.get_template(template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
+
+    resolved_field_mappings = template['field_mappings']
+    if field_mappings:
+        try:
+            parsed_field_mappings = json.loads(field_mappings)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="field_mappings must be valid JSON")
+        if not isinstance(parsed_field_mappings, dict):
+            raise HTTPException(status_code=400, detail="field_mappings must be a JSON object")
+        resolved_field_mappings = parsed_field_mappings
 
     with get_db() as conn:
         cursor = conn.cursor()
@@ -3732,7 +3743,7 @@ async def preview_export(
         manyreach_campaign_id = template['api_config'].get('manyreach_campaign_id', '')
         preview_data = []
         for contact in preview_contacts:
-            transformed = integration.transform_contact(contact, template['field_mappings'], manyreach_campaign_id)
+            transformed = integration.transform_contact(contact, resolved_field_mappings, manyreach_campaign_id)
             preview_data.append(transformed)
 
         return {
@@ -3740,14 +3751,14 @@ async def preview_export(
             "service": template['service'],
             "total_contacts": len(filtered_contacts),
             "preview_data": preview_data,
-            "field_mappings": template['field_mappings']
+            "field_mappings": resolved_field_mappings
         }
 
     if template['service'] == 'smartlead':
         integration = SmartLeadIntegration("")
         preview_data = []
         for contact in preview_contacts:
-            transformed = integration.transform_contact(contact, template['field_mappings'])
+            transformed = integration.transform_contact(contact, resolved_field_mappings)
             preview_data.append(transformed)
 
         return {
@@ -3755,14 +3766,14 @@ async def preview_export(
             "service": template['service'],
             "total_contacts": len(filtered_contacts),
             "preview_data": preview_data,
-            "field_mappings": template['field_mappings']
+            "field_mappings": resolved_field_mappings
         }
 
     if template['service'] in ['sendread_campaign', 'sendread_list']:
         integration = SendReadIntegration("")
         preview_data = []
         for contact in preview_contacts:
-            transformed = integration.transform_contact(contact, template['field_mappings'])
+            transformed = integration.transform_contact(contact, resolved_field_mappings)
             preview_data.append(transformed)
 
         return {
@@ -3770,7 +3781,7 @@ async def preview_export(
             "service": template['service'],
             "total_contacts": len(filtered_contacts),
             "preview_data": preview_data,
-            "field_mappings": template['field_mappings']
+            "field_mappings": resolved_field_mappings
         }
 
     return {"error": "Service not supported"}

@@ -137,6 +137,12 @@
                     </label>
                     <div class="text-xs text-gray-500 mt-1">Excludes gmail, yahoo, outlook, and other public providers</div>
                 </div>
+                <div class="mb-4">
+                    <label for="customVariablesInput" class="block text-sm font-medium mb-2">Custom Variables</label>
+                    <textarea id="customVariablesInput" rows="3" class="w-full p-2 border border-gray-300 rounded-lg text-sm" placeholder="custom2:WI&#10;state_name:Wisconsin"></textarea>
+                    <div class="text-xs text-gray-500 mt-1">Use one <code>key:value</code> per line. Example: <code>custom2:WI</code>.</div>
+                    <div id="customVariablesStatus" class="text-xs text-gray-500 mt-1"></div>
+                </div>
                 <div class="flex flex-col sm:flex-row gap-3">
                     <button id="previewExportBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">
                         Preview Export
@@ -591,6 +597,94 @@
             };
         }
 
+        function getDefaultApiFieldSetForSelectedService() {
+            if (!selectedTemplate) {
+                return new Set();
+            }
+            return new Set(Object.keys(SERVICE_DEFAULT_MAPPINGS[selectedTemplate.service] || {}));
+        }
+
+        function setCustomVariablesStatus(message, isError = false) {
+            const statusEl = document.getElementById('customVariablesStatus');
+            if (!statusEl) return;
+            statusEl.textContent = message || '';
+            statusEl.className = `text-xs mt-1 ${isError ? 'text-red-600' : 'text-gray-500'}`;
+        }
+
+        function setCustomVariablesInputFromMappings() {
+            const input = document.getElementById('customVariablesInput');
+            if (!input || !selectedTemplate) return;
+
+            const defaultKeys = getDefaultApiFieldSetForSelectedService();
+            const lines = [];
+            Object.entries(currentFieldMappings || {}).forEach(([apiField, value]) => {
+                const normalizedValue = String(value || '').trim();
+                if (!normalizedValue) return;
+                if (!defaultKeys.has(apiField)) {
+                    lines.push(`${apiField}:${normalizedValue}`);
+                }
+            });
+
+            input.value = lines.join('\n');
+            setCustomVariablesStatus('');
+        }
+
+        function parseCustomVariablesInput() {
+            const input = document.getElementById('customVariablesInput');
+            const raw = input ? String(input.value || '') : '';
+            const customVariables = {};
+            const errors = [];
+
+            raw.split('\n').forEach((line, index) => {
+                const trimmed = line.trim();
+                if (!trimmed) return;
+
+                const colonIndex = trimmed.indexOf(':');
+                if (colonIndex <= 0) {
+                    errors.push(`Line ${index + 1}: use key:value`);
+                    return;
+                }
+
+                const key = trimmed.slice(0, colonIndex).trim();
+                const value = trimmed.slice(colonIndex + 1).trim();
+
+                if (!key) {
+                    errors.push(`Line ${index + 1}: empty key`);
+                    return;
+                }
+                if (!value) {
+                    errors.push(`Line ${index + 1}: empty value`);
+                    return;
+                }
+
+                customVariables[key] = value;
+            });
+
+            return { customVariables, errors };
+        }
+
+        function getResolvedFieldMappings() {
+            const resolved = JSON.parse(JSON.stringify(currentFieldMappings || {}));
+            const { customVariables, errors } = parseCustomVariablesInput();
+
+            if (errors.length) {
+                setCustomVariablesStatus(errors.join(' | '), true);
+                throw new Error('Invalid custom variables format');
+            }
+
+            Object.entries(customVariables).forEach(([key, value]) => {
+                resolved[key] = value;
+            });
+
+            if (Object.keys(customVariables).length > 0) {
+                setCustomVariablesStatus(`Applied ${Object.keys(customVariables).length} custom variable(s).`);
+            } else {
+                setCustomVariablesStatus('');
+            }
+
+            return resolved;
+        }
+
         function resetProviderCampaignSelector(selectId, statusId) {
             const select = document.getElementById(selectId);
             const status = document.getElementById(statusId);
@@ -819,6 +913,7 @@
             selectedTemplate = template;
             currentFieldMappings = JSON.parse(template.field_mappings);
             updateRateLimitStatus();
+            setCustomVariablesInputFromMappings();
 
             // Update UI to show selected template
             document.querySelectorAll('#templatesList > div').forEach(div => {
@@ -995,8 +1090,17 @@
             }
 
             try {
+                const resolvedMappings = getResolvedFieldMappings();
                 const { exportValidOnly, exportCatchAll, exportCatchAllOnly, excludePublicEmails } = getExportFilters();
-                const response = await fetch(`/api/campaign/${selectedCampaign}/export/preview?template_id=${selectedTemplate.id}&valid_only=${exportValidOnly}&include_catch_all=${exportCatchAll}&catch_all_only=${exportCatchAllOnly}&exclude_public_emails=${excludePublicEmails}`);
+                const params = new URLSearchParams({
+                    template_id: String(selectedTemplate.id),
+                    valid_only: String(exportValidOnly),
+                    include_catch_all: String(exportCatchAll),
+                    catch_all_only: String(exportCatchAllOnly),
+                    exclude_public_emails: String(excludePublicEmails),
+                    field_mappings: JSON.stringify(resolvedMappings)
+                });
+                const response = await fetch(`/api/campaign/${selectedCampaign}/export/preview?${params.toString()}`);
                 const data = await response.json();
 
                 const previewSection = document.getElementById('exportPreview');
@@ -1037,6 +1141,7 @@
             const { exportValidOnly, exportCatchAll, exportCatchAllOnly, excludePublicEmails } = getExportFilters();
 
             try {
+                const resolvedMappings = getResolvedFieldMappings();
                 const response = await fetch(`/api/campaign/${selectedCampaign}/export`, {
                     method: 'POST',
                     headers: {
@@ -1045,7 +1150,7 @@
                     body: JSON.stringify({
                         template_id: selectedTemplate.id,
                         batch_size: parseInt(batchSize),
-                        field_mappings: currentFieldMappings,
+                        field_mappings: resolvedMappings,
                         newListName: newListName,
                         export_valid_only: exportValidOnly,
                         export_catch_all: exportCatchAll,
@@ -1241,6 +1346,7 @@
             resultBox.textContent = 'Sending test request...';
 
             try {
+                const resolvedMappings = getResolvedFieldMappings();
                 const newListInput = document.getElementById('newListName');
                 const newListName = newListInput ? newListInput.value.trim() : '';
 
@@ -1252,7 +1358,7 @@
                     body: JSON.stringify({
                         template_id: selectedTemplate.id,
                         contact_id: parseInt(selectedLeadId, 10),
-                        field_mappings: currentFieldMappings,
+                        field_mappings: resolvedMappings,
                         newListName: newListName
                     })
                 });
@@ -1402,6 +1508,7 @@
                 const offset = (batchNumber - 1) * batchSize;
 
                 try {
+                    const resolvedMappings = getResolvedFieldMappings();
                     const newListName = document.getElementById('newListName').value.trim();
                     const { exportValidOnly, exportCatchAll, exportCatchAllOnly, excludePublicEmails } = getExportFilters();
                     
@@ -1414,7 +1521,7 @@
                             template_id: selectedTemplate.id,
                             batch_size: batchSize,
                             offset: offset,
-                            field_mappings: currentFieldMappings,
+                            field_mappings: resolvedMappings,
                             newListName: newListName,
                             export_valid_only: exportValidOnly,
                             export_catch_all: exportCatchAll,
@@ -1525,6 +1632,9 @@
         document.getElementById('exportCatchAllOnly').addEventListener('change', syncExportFilterControls);
         document.getElementById('excludePublicEmails').addEventListener('change', () => {
             updatePublicEmailCount();
+        });
+        document.getElementById('customVariablesInput').addEventListener('input', () => {
+            setCustomVariablesStatus('');
         });
         syncExportFilterControls();
         updateCreateServiceUi();
