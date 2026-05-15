@@ -5928,6 +5928,120 @@ async def start_enrichment_run(campaign_id: int, request: Request):
     }
 
 
+@app.post("/api/campaign/{campaign_id}/enrichment/test")
+async def test_enrichment_run(campaign_id: int, request: Request):
+    data = await request.json()
+    template_id = data.get("template_id")
+    if not template_id:
+        raise HTTPException(status_code=400, detail="template_id is required")
+
+    template = EnrichmentTemplateManager.get_template(int(template_id))
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    template_api_config = template.get("api_config") or {}
+    api_url = str(data.get("api_url") or template_api_config.get("api_url") or DEFAULT_ENRICHMENT_API_URL).strip()
+    api_key = str(data.get("api_key") or template_api_config.get("api_key") or "").strip()
+    input_mapping = data.get("input_mapping") if isinstance(data.get("input_mapping"), dict) else template.get("input_mapping", {})
+    output_mapping = data.get("output_mapping") if isinstance(data.get("output_mapping"), dict) else template.get("output_mapping", {})
+    schema_cache = template.get("schema_cache") or {}
+    required_inputs = data.get("required_inputs")
+    if not isinstance(required_inputs, list):
+        required_inputs = schema_cache.get("required_input_fields") or []
+    required_inputs = [str(field).strip() for field in required_inputs if str(field).strip()]
+
+    if not api_url:
+        raise HTTPException(status_code=400, detail="api_url is required")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="api_key is required")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        _ensure_campaign_exists(cursor, campaign_id)
+        cursor.execute(
+            """
+            SELECT *
+            FROM contacts
+            WHERE campaign_id = %s
+            ORDER BY random()
+            LIMIT 25
+            """,
+            (campaign_id,),
+        )
+        sample_contacts = [dict(row) for row in cursor.fetchall()]
+
+    if not sample_contacts:
+        raise HTTPException(status_code=404, detail="No contacts found in campaign")
+
+    selected_contact = None
+    selected_payload = {}
+    selected_missing_inputs = []
+
+    for candidate in sample_contacts:
+        payload, missing_required = _build_enrichment_payload(candidate, input_mapping, required_inputs)
+        if payload and not missing_required:
+            selected_contact = candidate
+            selected_payload = payload
+            selected_missing_inputs = []
+            break
+
+    if selected_contact is None:
+        selected_contact = sample_contacts[0]
+        selected_payload, selected_missing_inputs = _build_enrichment_payload(selected_contact, input_mapping, required_inputs)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "No random contact had all required mapped inputs",
+                "contact_id": selected_contact.get("id"),
+                "contact_name": selected_contact.get("business_name"),
+                "missing_required_inputs": selected_missing_inputs,
+                "payload_preview": selected_payload,
+            },
+        )
+
+    headers = {"Content-Type": "application/json", "x-api-key": api_key}
+    start_time = time.time()
+    try:
+        response = requests.post(api_url, headers=headers, json=selected_payload, timeout=45)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Enrichment test request failed: {str(exc)}")
+
+    latency_ms = int((time.time() - start_time) * 1000)
+
+    response_text = response.text[:2000] if response.text else ""
+    response_json = None
+    try:
+        response_json = response.json() if response.content else {}
+    except Exception:
+        response_json = None
+
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": f"Enrichment test failed with HTTP {response.status_code}",
+                "status_code": response.status_code,
+                "latency_ms": latency_ms,
+                "contact_id": selected_contact.get("id"),
+                "contact_name": selected_contact.get("business_name"),
+                "request_payload": selected_payload,
+                "response_text": response_text,
+                "response_json": response_json,
+            },
+        )
+
+    mapped_preview = _apply_enrichment_output_mapping(response_json if isinstance(response_json, dict) else {}, output_mapping)
+    return {
+        "status": "ok",
+        "latency_ms": latency_ms,
+        "contact_id": selected_contact.get("id"),
+        "contact_name": selected_contact.get("business_name"),
+        "request_payload": selected_payload,
+        "response_json": response_json,
+        "mapped_local_updates_preview": mapped_preview,
+    }
+
+
 @app.get("/api/enrichment/runs/{run_id}")
 async def get_enrichment_run_status(run_id: int, log_limit: int = 200):
     with get_db() as conn:

@@ -72,10 +72,15 @@
             </div>
 
             <div class="mt-6 flex flex-wrap gap-3">
+                <button id="testEnrichmentBtn" class="bg-sky-100 text-sky-700 px-4 py-2 rounded-lg hover:bg-sky-200">Test Enrichment (1 random lead)</button>
                 <button id="startEnrichmentBtn" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">Start Enrichment</button>
                 <button id="pauseEnrichmentBtn" class="bg-amber-100 text-amber-700 px-4 py-2 rounded-lg hover:bg-amber-200" disabled>Pause</button>
                 <button id="resumeEnrichmentBtn" class="bg-emerald-100 text-emerald-700 px-4 py-2 rounded-lg hover:bg-emerald-200" disabled>Resume</button>
                 <button id="cancelEnrichmentBtn" class="bg-red-100 text-red-700 px-4 py-2 rounded-lg hover:bg-red-200" disabled>Cancel</button>
+            </div>
+            <div id="testResultBox" class="mt-4 hidden rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div class="text-sm font-semibold text-slate-700 mb-2">Test Enrichment Result</div>
+                <pre id="testResultContent" class="text-xs text-slate-700 whitespace-pre-wrap break-all"></pre>
             </div>
         </div>
 
@@ -567,6 +572,48 @@
             }
         }
 
+        async function testEnrichment() {
+            if (!selectedCampaign || !selectedTemplate) {
+                alert('Select campaign and template first.');
+                return;
+            }
+
+            const apiUrl = String(document.getElementById('runApiUrl').value || '').trim();
+            const apiKey = String(document.getElementById('runApiKey').value || '').trim();
+            const resultBox = document.getElementById('testResultBox');
+            const resultContent = document.getElementById('testResultContent');
+            const testBtn = document.getElementById('testEnrichmentBtn');
+
+            testBtn.disabled = true;
+            resultBox.classList.remove('hidden');
+            resultContent.textContent = 'Running test enrichment...';
+
+            try {
+                const response = await fetch(`/api/campaign/${selectedCampaign}/enrichment/test`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        template_id: selectedTemplate.id,
+                        api_url: apiUrl,
+                        api_key: apiKey
+                    })
+                });
+
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    const detail = data.detail || data || `HTTP ${response.status}`;
+                    resultContent.textContent = JSON.stringify({ status: 'error', detail }, null, 2);
+                    return;
+                }
+
+                resultContent.textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                resultContent.textContent = JSON.stringify({ status: 'error', message: error.message }, null, 2);
+            } finally {
+                testBtn.disabled = false;
+            }
+        }
+
         async function loadActiveRunForCampaign() {
             if (!selectedCampaign) return;
             try {
@@ -765,6 +812,7 @@
             document.getElementById('createTemplateForm').addEventListener('submit', createTemplate);
 
             document.getElementById('startEnrichmentBtn').addEventListener('click', startEnrichment);
+            document.getElementById('testEnrichmentBtn').addEventListener('click', testEnrichment);
             document.getElementById('pauseEnrichmentBtn').addEventListener('click', () => runAction('pause'));
             document.getElementById('resumeEnrichmentBtn').addEventListener('click', () => runAction('resume'));
             document.getElementById('cancelEnrichmentBtn').addEventListener('click', () => runAction('cancel'));
