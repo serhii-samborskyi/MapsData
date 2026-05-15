@@ -5785,9 +5785,6 @@ async def start_enrichment_run(campaign_id: int, request: Request):
     timeout_seconds = _normalize_enrichment_timeout(
         data.get("timeout_seconds") if data.get("timeout_seconds") is not None else template_api_config.get("timeout_seconds")
     )
-    timeout_seconds = _normalize_enrichment_timeout(
-        data.get("timeout_seconds") if data.get("timeout_seconds") is not None else template_api_config.get("timeout_seconds")
-    )
 
     if not api_url:
         raise HTTPException(status_code=400, detail="api_url is required")
@@ -5976,6 +5973,9 @@ async def test_enrichment_run(campaign_id: int, request: Request):
     template_api_config = template.get("api_config") or {}
     api_url = str(data.get("api_url") or template_api_config.get("api_url") or DEFAULT_ENRICHMENT_API_URL).strip()
     api_key = str(data.get("api_key") or template_api_config.get("api_key") or "").strip()
+    timeout_seconds = _normalize_enrichment_timeout(
+        data.get("timeout_seconds") if data.get("timeout_seconds") is not None else template_api_config.get("timeout_seconds")
+    )
     input_mapping = data.get("input_mapping") if isinstance(data.get("input_mapping"), dict) else template.get("input_mapping", {})
     output_mapping = data.get("output_mapping") if isinstance(data.get("output_mapping"), dict) else template.get("output_mapping", {})
     schema_cache = template.get("schema_cache") or {}
