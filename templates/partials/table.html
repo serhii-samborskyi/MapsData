@@ -31,6 +31,10 @@
         {% set verification_processed = campaign.verification_processed_emails or 0 %}
         {% set verification_percent = campaign.verification_progress_percent or 0 %}
         {% set verification_status = campaign.verification_status or 'idle' %}
+        {% set enrichment_total = campaign.enrichment_total_contacts or 0 %}
+        {% set enrichment_processed = campaign.enrichment_processed_contacts or 0 %}
+        {% set enrichment_percent = campaign.enrichment_progress_percent or 0 %}
+        {% set enrichment_status = campaign.enrichment_status or 'idle' %}
         <tr id="campaign-row-{{ campaign.id }}" class="campaign-row hover:bg-slate-50/80 transition-all">
             <td data-label="ID" class="text-sm text-slate-700">{{ campaign.id }}</td>
             <td data-label="Name" class="text-sm text-slate-700 font-medium">{{ campaign.name }}</td>
@@ -65,6 +69,16 @@
                         <div id="verification-progress-bar-{{ campaign.id }}" class="h-1.5 rounded-full transition-all duration-500 {% if verification_status in ['queued', 'running'] %}bg-blue-500{% elif verification_status == 'completed' %}bg-green-500{% elif verification_status in ['failed', 'cancelled'] %}bg-red-500{% else %}bg-slate-400{% endif %}" style="width: {{ verification_percent }}%"></div>
                     </div>
                     <div id="verification-progress-note-{{ campaign.id }}" class="mt-1 text-[11px] text-slate-500 truncate">{{ campaign.verification_message or '' }}</div>
+                </div>
+                <div class="mt-2 rounded-lg border border-slate-200 bg-white/80 px-2 py-2">
+                    <div id="enrichment-progress-label-{{ campaign.id }}" class="flex items-center justify-between text-[11px]">
+                        <span class="font-medium text-slate-600">Enrichment: {{ enrichment_status }}</span>
+                        <span class="text-slate-500">{{ enrichment_processed }}/{{ enrichment_total }}</span>
+                    </div>
+                    <div class="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+                        <div id="enrichment-progress-bar-{{ campaign.id }}" class="h-1.5 rounded-full transition-all duration-500 {% if enrichment_status in ['queued', 'running', 'paused'] %}bg-indigo-500{% elif enrichment_status == 'completed' %}bg-green-500{% elif enrichment_status in ['failed', 'cancelled'] %}bg-red-500{% else %}bg-slate-400{% endif %}" style="width: {{ enrichment_percent }}%"></div>
+                    </div>
+                    <div id="enrichment-progress-note-{{ campaign.id }}" class="mt-1 text-[11px] text-slate-500 truncate">{{ campaign.enrichment_message or '' }}</div>
                 </div>
             </td>
             <td data-label="Total Requests" class="text-sm text-slate-700">{{ campaign.total_requests or 0 }}</td>

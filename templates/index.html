@@ -27,6 +27,7 @@
                 <a href="/docs/api" class="app-chip hover:text-slate-900">API Docs</a>
                 <a href="/export" class="app-chip hover:text-slate-900">Export Manager</a>
                 <a href="/verify" class="app-chip hover:text-slate-900">Email Verification</a>
+                <a href="/enrichment" class="app-chip hover:text-slate-900">Enrichment Manager</a>
                 <form method="post" action="/auth/logout" class="inline">
                     <button type="submit" class="app-chip hover:text-slate-900">Logout</button>
                 </form>
@@ -119,6 +120,10 @@
                         {% set verification_processed = campaign.verification_processed_emails or 0 %}
                         {% set verification_percent = campaign.verification_progress_percent or 0 %}
                         {% set verification_status = campaign.verification_status or 'idle' %}
+                        {% set enrichment_total = campaign.enrichment_total_contacts or 0 %}
+                        {% set enrichment_processed = campaign.enrichment_processed_contacts or 0 %}
+                        {% set enrichment_percent = campaign.enrichment_progress_percent or 0 %}
+                        {% set enrichment_status = campaign.enrichment_status or 'idle' %}
                         <tr id="campaign-row-{{ campaign.id }}" class="campaign-row hover:bg-slate-50/80 transition-all">
                             <td data-label="ID" class="text-sm text-slate-700">{{ campaign.id }}</td>
                             <td data-label="Name" class="text-sm text-slate-700 font-medium">{{ campaign.name }}</td>
@@ -153,6 +158,16 @@
                                         <div id="verification-progress-bar-{{ campaign.id }}" class="h-1.5 rounded-full transition-all duration-500 {% if verification_status in ['queued', 'running'] %}bg-blue-500{% elif verification_status == 'completed' %}bg-green-500{% elif verification_status in ['failed', 'cancelled'] %}bg-red-500{% else %}bg-slate-400{% endif %}" style="width: {{ verification_percent }}%"></div>
                                     </div>
                                     <div id="verification-progress-note-{{ campaign.id }}" class="mt-1 text-[11px] text-slate-500 truncate">{{ campaign.verification_message or '' }}</div>
+                                </div>
+                                <div class="mt-2 rounded-lg border border-slate-200 bg-white/80 px-2 py-2">
+                                    <div id="enrichment-progress-label-{{ campaign.id }}" class="flex items-center justify-between text-[11px]">
+                                        <span class="font-medium text-slate-600">Enrichment: {{ enrichment_status }}</span>
+                                        <span class="text-slate-500">{{ enrichment_processed }}/{{ enrichment_total }}</span>
+                                    </div>
+                                    <div class="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+                                        <div id="enrichment-progress-bar-{{ campaign.id }}" class="h-1.5 rounded-full transition-all duration-500 {% if enrichment_status in ['queued', 'running', 'paused'] %}bg-indigo-500{% elif enrichment_status == 'completed' %}bg-green-500{% elif enrichment_status in ['failed', 'cancelled'] %}bg-red-500{% else %}bg-slate-400{% endif %}" style="width: {{ enrichment_percent }}%"></div>
+                                    </div>
+                                    <div id="enrichment-progress-note-{{ campaign.id }}" class="mt-1 text-[11px] text-slate-500 truncate">{{ campaign.enrichment_message or '' }}</div>
                                 </div>
                             </td>
                             <td data-label="Total Requests" class="text-sm text-slate-700">{{ campaign.total_requests or 0 }}</td>
@@ -960,6 +975,13 @@
             return 'bg-slate-400';
         }
 
+        function getEnrichmentBarClass(status) {
+            if (status === 'running' || status === 'queued' || status === 'paused') return 'bg-indigo-500';
+            if (status === 'completed') return 'bg-green-500';
+            if (status === 'failed' || status === 'cancelled') return 'bg-red-500';
+            return 'bg-slate-400';
+        }
+
         function renderPipelineTimeline(campaignId, pipeline) {
             const timelineContainer = document.getElementById(`pipeline-timeline-${campaignId}`);
             if (!timelineContainer) return;
@@ -1098,6 +1120,7 @@
                     if (!item) return;
                     renderPipelineState(campaignId, item.pipeline || {}, item.stats || {});
                     renderVerificationProgress(campaignId, item.verification || {});
+                    renderEnrichmentProgress(campaignId, item.enrichment || {});
                 });
             } catch (error) {
                 console.error('Error loading runtime statuses:', error);
@@ -1128,6 +1151,28 @@
             bar.style.width = `${safePercent}%`;
             note.textContent = progress.message || '';
             note.title = progress.current_email && progress.current_email !== '-' ? `Current: ${progress.current_email}` : '';
+        }
+
+        function renderEnrichmentProgress(campaignId, progress) {
+            const label = document.getElementById(`enrichment-progress-label-${campaignId}`);
+            const bar = document.getElementById(`enrichment-progress-bar-${campaignId}`);
+            const note = document.getElementById(`enrichment-progress-note-${campaignId}`);
+            if (!label || !bar || !note || !progress) return;
+
+            const status = progress.status || 'idle';
+            const total = Number(progress.total_contacts || 0);
+            const processed = Number(progress.processed_contacts || 0);
+            const percent = Number(progress.progress_percent || 0);
+            const safePercent = Math.max(0, Math.min(100, percent));
+
+            label.innerHTML = `
+                <span class="font-medium text-slate-600">Enrichment: ${status}</span>
+                <span class="text-slate-500">${processed}/${total}</span>
+            `;
+            bar.className = `h-1.5 rounded-full transition-all duration-500 ${getEnrichmentBarClass(status)}`;
+            bar.style.width = `${safePercent}%`;
+            note.textContent = progress.message || '';
+            note.title = progress.current_contact_name ? `Current: ${progress.current_contact_name}` : '';
         }
 
         async function refreshVerificationStatus(campaignId) {
@@ -1214,7 +1259,7 @@
                 }
 
                 const data = await response.json();
-                alert(`Deleted ${data.deleted.campaigns} campaigns, ${data.deleted.requests} requests, ${data.deleted.contacts} contacts, ${data.deleted.export_templates} export templates, and ${data.deleted.verification_templates} verification templates.`);
+                alert(`Deleted ${data.deleted.campaigns} campaigns, ${data.deleted.requests} requests, ${data.deleted.contacts} contacts, ${data.deleted.export_templates} export templates, ${data.deleted.verification_templates} verification templates, and ${data.deleted.enrichment_templates || 0} enrichment templates.`);
                 closeDeleteAllCampaignsModal();
                 await refreshCampaigns();
             } catch (error) {

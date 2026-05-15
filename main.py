@@ -5,9 +5,10 @@ from fastapi.templating import Jinja2Templates
 from database import init_db, get_db
 from templates import TemplateManager, ManyReachIntegration, SmartLeadIntegration, SendReadIntegration, extract_city_from_address
 from email_verification import EmailVerificationManager, EmailVerificationService, MyEmailVerifierIntegration
-from typing import List, Union, Any, Optional
+from typing import List, Union, Any, Optional, Dict
 from psycopg2 import DataError, IntegrityError
 from psycopg2.extras import Json
+import requests
 import hmac
 import hashlib
 import json
@@ -16,6 +17,7 @@ import re
 import time
 from datetime import datetime, timedelta
 import threading
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from uuid import uuid4
 from urllib.parse import quote
 
@@ -71,6 +73,12 @@ PIPELINE_MAX_LEASE_SECONDS = 900
 PIPELINE_RECLAIM_HEARTBEAT_GRACE_SECONDS = 75
 PIPELINE_ALLOWED_CLAIM_ACTORS = {"daemon", "dashboard", "system", "worker"}
 MAPS_SCRAPE_MODES = {"fast", "slow"}
+ENRICHMENT_RUN_STATUSES = {"queued", "running", "paused", "completed", "failed", "cancelled"}
+ENRICHMENT_ACTIVE_STATUSES = {"queued", "running", "paused"}
+MAX_ENRICHMENT_LOGS = 300
+MAX_ENRICHMENT_CONCURRENCY = 20
+DEFAULT_ENRICHMENT_API_URL = "https://promising-investments-complexity-municipal.trycloudflare.com/api/public/enrich"
+DEFAULT_ENRICHMENT_SCHEMA_URL = "https://promising-investments-complexity-municipal.trycloudflare.com/api/public/schema/enrichment"
 
 
 def _now_utc() -> datetime:
@@ -567,6 +575,392 @@ def _compute_campaign_email_metrics(cursor, campaign_ids: Optional[List[int]] = 
         }
     return metrics
 
+
+ENRICHMENT_LOCAL_FIELDS = [
+    "business_name",
+    "email",
+    "phone",
+    "domain",
+    "address",
+    "category",
+    "rating",
+    "review_count",
+    "facebook",
+    "instagram",
+    "twitter",
+    "yelp",
+    "full_name",
+    "firstname",
+    "lastname",
+    "industry",
+    "city",
+    "state",
+    "country",
+    "personal_job_position",
+    "personal_prospect_location",
+    "personal_user_social",
+    "company",
+    "company_social",
+    "company_size",
+    "www",
+    "icebreaker",
+    "time_zone_offset_min",
+    "notes",
+    "tags_import",
+    "screenshot",
+    "logo",
+    "place_id",
+    "request_id",
+    "campaign_id",
+]
+for _idx in range(1, 21):
+    ENRICHMENT_LOCAL_FIELDS.append(f"custom_{_idx}")
+ENRICHMENT_LOCAL_FIELD_SET = set(ENRICHMENT_LOCAL_FIELDS)
+
+
+class EnrichmentTemplateManager:
+    @staticmethod
+    def get_all_templates() -> List[dict]:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM enrichment_templates ORDER BY name")
+            rows = [dict(row) for row in cursor.fetchall()]
+
+        result = []
+        for row in rows:
+            row["api_config"] = json.loads(row.get("api_config") or "{}")
+            row["input_mapping"] = json.loads(row.get("input_mapping") or "{}")
+            row["output_mapping"] = json.loads(row.get("output_mapping") or "{}")
+            row["schema_cache"] = json.loads(row.get("schema_cache") or "{}")
+            result.append(row)
+        return result
+
+    @staticmethod
+    def get_template(template_id: int) -> Optional[dict]:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM enrichment_templates WHERE id = %s", (template_id,))
+            row = cursor.fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        item["api_config"] = json.loads(item.get("api_config") or "{}")
+        item["input_mapping"] = json.loads(item.get("input_mapping") or "{}")
+        item["output_mapping"] = json.loads(item.get("output_mapping") or "{}")
+        item["schema_cache"] = json.loads(item.get("schema_cache") or "{}")
+        return item
+
+    @staticmethod
+    def create_template(
+        name: str,
+        service: str,
+        api_config: dict,
+        input_mapping: dict,
+        output_mapping: dict,
+        schema_cache: Optional[dict] = None
+    ) -> int:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO enrichment_templates (name, service, api_config, input_mapping, output_mapping, schema_cache)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (
+                    name,
+                    service,
+                    json.dumps(api_config or {}),
+                    json.dumps(input_mapping or {}),
+                    json.dumps(output_mapping or {}),
+                    json.dumps(schema_cache or {}),
+                ),
+            )
+            template_id = int(cursor.fetchone()["id"])
+            conn.commit()
+            return template_id
+
+    @staticmethod
+    def update_template(
+        template_id: int,
+        name: str,
+        service: str,
+        api_config: dict,
+        input_mapping: dict,
+        output_mapping: dict,
+        schema_cache: Optional[dict] = None
+    ) -> None:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE enrichment_templates
+                SET name = %s,
+                    service = %s,
+                    api_config = %s,
+                    input_mapping = %s,
+                    output_mapping = %s,
+                    schema_cache = %s
+                WHERE id = %s
+                """,
+                (
+                    name,
+                    service,
+                    json.dumps(api_config or {}),
+                    json.dumps(input_mapping or {}),
+                    json.dumps(output_mapping or {}),
+                    json.dumps(schema_cache or {}),
+                    template_id,
+                ),
+            )
+            conn.commit()
+
+    @staticmethod
+    def delete_template(template_id: int) -> None:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM enrichment_templates WHERE id = %s", (template_id,))
+            conn.commit()
+
+
+def _safe_json_loads(value: Any, default: Any):
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except Exception:
+        return default
+
+
+def _serialize_enrichment_run(run: Optional[dict]) -> dict:
+    if not run:
+        return {
+            "run_id": None,
+            "campaign_id": None,
+            "template_id": None,
+            "status": "idle",
+            "active": False,
+            "total_contacts": 0,
+            "processed_contacts": 0,
+            "enriched_contacts": 0,
+            "failed_contacts": 0,
+            "skipped_contacts": 0,
+            "progress_percent": 0,
+            "current_contact_id": None,
+            "current_contact_name": None,
+            "latest_error": None,
+            "pause_requested": False,
+            "cancel_requested": False,
+            "created_at": None,
+            "started_at": None,
+            "completed_at": None,
+            "updated_at": None,
+            "api_url": None,
+            "concurrency": 0,
+            "max_retries": 0,
+            "overwrite_existing": False,
+            "skip_missing_input": True,
+        }
+
+    total = int(run.get("total_contacts") or 0)
+    processed = int(run.get("processed_contacts") or 0)
+    progress_percent = round(min(100, (processed / total) * 100), 2) if total > 0 else 0
+    status = str(run.get("status") or "idle")
+    return {
+        "run_id": int(run.get("id")),
+        "campaign_id": int(run.get("campaign_id")),
+        "template_id": int(run.get("template_id")),
+        "status": status,
+        "active": status in ENRICHMENT_ACTIVE_STATUSES,
+        "total_contacts": total,
+        "processed_contacts": processed,
+        "enriched_contacts": int(run.get("enriched_contacts") or 0),
+        "failed_contacts": int(run.get("failed_contacts") or 0),
+        "skipped_contacts": int(run.get("skipped_contacts") or 0),
+        "progress_percent": progress_percent,
+        "current_contact_id": run.get("current_contact_id"),
+        "current_contact_name": run.get("current_contact_name"),
+        "latest_error": run.get("latest_error"),
+        "pause_requested": bool(run.get("pause_requested")),
+        "cancel_requested": bool(run.get("cancel_requested")),
+        "created_at": _iso(run.get("created_at")),
+        "started_at": _iso(run.get("started_at")),
+        "completed_at": _iso(run.get("completed_at")),
+        "updated_at": _iso(run.get("updated_at")),
+        "api_url": run.get("api_url"),
+        "concurrency": int(run.get("concurrency") or 1),
+        "max_retries": int(run.get("max_retries") or 1),
+        "overwrite_existing": bool(run.get("overwrite_existing")),
+        "skip_missing_input": bool(run.get("skip_missing_input")),
+    }
+
+
+def _append_enrichment_log(cursor, run_id: int, campaign_id: int, message: str, level: str = "info", contact_id: Optional[int] = None):
+    cursor.execute(
+        """
+        INSERT INTO enrichment_run_logs (run_id, campaign_id, contact_id, level, message)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        (run_id, campaign_id, contact_id, level, message),
+    )
+
+
+def _load_enrichment_run(cursor, run_id: int) -> Optional[dict]:
+    cursor.execute("SELECT * FROM enrichment_runs WHERE id = %s", (run_id,))
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def _load_latest_enrichment_run(cursor, campaign_id: int) -> Optional[dict]:
+    cursor.execute(
+        """
+        SELECT *
+        FROM enrichment_runs
+        WHERE campaign_id = %s
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (campaign_id,),
+    )
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def _load_active_enrichment_run(cursor, campaign_id: int) -> Optional[dict]:
+    cursor.execute(
+        """
+        SELECT *
+        FROM enrichment_runs
+        WHERE campaign_id = %s
+          AND status IN ('queued', 'running', 'paused')
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (campaign_id,),
+    )
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def _load_enrichment_logs(cursor, run_id: int, limit: int = MAX_ENRICHMENT_LOGS) -> List[dict]:
+    safe_limit = max(1, min(int(limit or MAX_ENRICHMENT_LOGS), MAX_ENRICHMENT_LOGS))
+    cursor.execute(
+        """
+        SELECT id, contact_id, level, message, created_at
+        FROM enrichment_run_logs
+        WHERE run_id = %s
+        ORDER BY id DESC
+        LIMIT %s
+        """,
+        (run_id, safe_limit),
+    )
+    rows = [dict(row) for row in cursor.fetchall()]
+    rows.reverse()
+    for row in rows:
+        row["created_at"] = _iso(row.get("created_at"))
+    return rows
+
+
+def _normalize_mapping_value(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _resolve_enrichment_input_value(contact: dict, mapping_value: Any) -> str:
+    normalized = _normalize_mapping_value(mapping_value)
+    if not normalized:
+        return ""
+    if normalized.startswith("literal:"):
+        return normalized[len("literal:"):].strip()
+    if normalized in ENRICHMENT_LOCAL_FIELD_SET:
+        raw = contact.get(normalized)
+        return str(raw).strip() if raw is not None else ""
+    raw = contact.get(normalized)
+    if raw is not None:
+        raw_str = str(raw).strip()
+        if raw_str:
+            return raw_str
+    return normalized
+
+
+def _contact_has_existing_output(contact: dict, output_mapping: dict) -> bool:
+    for local_field in output_mapping.values():
+        normalized = _normalize_mapping_value(local_field)
+        if not normalized or normalized not in ENRICHMENT_LOCAL_FIELD_SET:
+            continue
+        value = contact.get(normalized)
+        if value is None:
+            continue
+        if str(value).strip():
+            return True
+    return False
+
+
+def _build_enrichment_payload(contact: dict, input_mapping: dict, required_inputs: List[str]) -> tuple[dict, List[str]]:
+    payload = {}
+    missing_required = []
+    required_set = set(required_inputs or [])
+
+    for api_field, mapping_value in (input_mapping or {}).items():
+        key = _normalize_mapping_value(api_field)
+        if not key:
+            continue
+        resolved = _resolve_enrichment_input_value(contact, mapping_value)
+        if resolved:
+            payload[key] = resolved
+        elif key in required_set:
+            missing_required.append(key)
+
+    for required_field in required_set:
+        if required_field not in payload:
+            missing_required.append(required_field)
+
+    return payload, sorted(set(missing_required))
+
+
+def _recompute_enrichment_run_counters(cursor, run_id: int):
+    cursor.execute(
+        """
+        SELECT
+            COUNT(*) AS total_contacts,
+            COUNT(*) FILTER (WHERE status IN ('enriched', 'failed', 'skipped')) AS processed_contacts,
+            COUNT(*) FILTER (WHERE status = 'enriched') AS enriched_contacts,
+            COUNT(*) FILTER (WHERE status = 'failed') AS failed_contacts,
+            COUNT(*) FILTER (WHERE status = 'skipped') AS skipped_contacts
+        FROM enrichment_run_contacts
+        WHERE run_id = %s
+        """,
+        (run_id,),
+    )
+    counts = cursor.fetchone() or {}
+    cursor.execute(
+        """
+        UPDATE enrichment_runs
+        SET total_contacts = %s,
+            processed_contacts = %s,
+            enriched_contacts = %s,
+            failed_contacts = %s,
+            skipped_contacts = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+        """,
+        (
+            int(counts.get("total_contacts") or 0),
+            int(counts.get("processed_contacts") or 0),
+            int(counts.get("enriched_contacts") or 0),
+            int(counts.get("failed_contacts") or 0),
+            int(counts.get("skipped_contacts") or 0),
+            run_id,
+        ),
+    )
+
+
+enrichment_workers: Dict[int, dict] = {}
+enrichment_workers_lock = threading.Lock()
+
 # Initialize database
 init_db()
 
@@ -826,6 +1220,482 @@ def _run_verification_job(job_id: str):
                 ))
                 conn.commit()
 
+
+def _set_enrichment_run_status(
+    cursor,
+    run_id: int,
+    status: str,
+    message: Optional[str] = None,
+    completed: bool = False,
+):
+    latest_error = message if status == "failed" and message else None
+    cursor.execute(
+        """
+        UPDATE enrichment_runs
+        SET status = %s,
+            latest_error = COALESCE(%s, latest_error),
+            completed_at = CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE completed_at END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+        """,
+        (status, latest_error, bool(completed), run_id),
+    )
+
+
+def _claim_enrichment_pending_contacts(cursor, run_id: int, limit: int) -> List[dict]:
+    claimed: List[dict] = []
+    safe_limit = max(0, int(limit or 0))
+    for _ in range(safe_limit):
+        cursor.execute(
+            """
+            WITH next_item AS (
+                SELECT id, contact_id
+                FROM enrichment_run_contacts
+                WHERE run_id = %s
+                  AND status = 'pending'
+                ORDER BY id
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE enrichment_run_contacts rc
+            SET status = 'processing',
+                attempts = attempts + 1,
+                updated_at = CURRENT_TIMESTAMP
+            FROM next_item
+            WHERE rc.id = next_item.id
+            RETURNING rc.id, rc.contact_id, rc.attempts
+            """,
+            (run_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            break
+        claimed.append(dict(row))
+    return claimed
+
+
+def _apply_enrichment_output_mapping(response_data: dict, output_mapping: dict) -> dict:
+    updates = {}
+    for response_key, local_field in (output_mapping or {}).items():
+        resp_key = _normalize_mapping_value(response_key)
+        target_field = _normalize_mapping_value(local_field)
+        if not resp_key or not target_field:
+            continue
+        if target_field not in ENRICHMENT_LOCAL_FIELD_SET:
+            continue
+        if resp_key not in response_data:
+            continue
+        value = response_data.get(resp_key)
+        if value is None:
+            continue
+        clean_value = str(value).strip()
+        if not clean_value:
+            continue
+        updates[target_field] = clean_value
+    return updates
+
+
+def _update_contact_fields(cursor, campaign_id: int, contact_id: int, field_values: dict):
+    if not field_values:
+        return
+    assignments = []
+    params: List[Any] = []
+    for field_name, value in field_values.items():
+        if field_name not in ENRICHMENT_LOCAL_FIELD_SET:
+            continue
+        assignments.append(f"{field_name} = %s")
+        params.append(value)
+    if not assignments:
+        return
+    params.extend([contact_id, campaign_id])
+    query = f"""
+        UPDATE contacts
+        SET {', '.join(assignments)}
+        WHERE id = %s AND campaign_id = %s
+    """
+    cursor.execute(query, tuple(params))
+
+
+def _finalize_enrichment_contact_result(
+    cursor,
+    run_id: int,
+    campaign_id: int,
+    run_contact_row_id: int,
+    contact_id: int,
+    contact_name: str,
+    status: str,
+    attempts: int,
+    message: str,
+    response_payload: Optional[dict] = None,
+):
+    cursor.execute(
+        """
+        UPDATE enrichment_run_contacts
+        SET status = %s,
+            attempts = GREATEST(attempts, %s),
+            last_error = %s,
+            response_payload = %s,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+        """,
+        (
+            status,
+            attempts,
+            None if status in {"enriched", "skipped"} else message,
+            Json(response_payload) if response_payload is not None else None,
+            run_contact_row_id,
+        ),
+    )
+
+    enriched_inc = 1 if status == "enriched" else 0
+    failed_inc = 1 if status == "failed" else 0
+    skipped_inc = 1 if status == "skipped" else 0
+
+    cursor.execute(
+        """
+        UPDATE enrichment_runs
+        SET processed_contacts = processed_contacts + 1,
+            enriched_contacts = enriched_contacts + %s,
+            failed_contacts = failed_contacts + %s,
+            skipped_contacts = skipped_contacts + %s,
+            latest_error = CASE WHEN %s = 'failed' THEN %s ELSE latest_error END,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+        """,
+        (enriched_inc, failed_inc, skipped_inc, status, message if status == "failed" else None, run_id),
+    )
+
+    display_name = contact_name or f"contact#{contact_id}"
+    if status == "enriched":
+        _append_enrichment_log(cursor, run_id, campaign_id, f"Enriched {display_name}: {message}", "info", contact_id=contact_id)
+    elif status == "skipped":
+        _append_enrichment_log(cursor, run_id, campaign_id, f"Skipped {display_name}: {message}", "warning", contact_id=contact_id)
+    else:
+        _append_enrichment_log(cursor, run_id, campaign_id, f"Failed {display_name}: {message}", "error", contact_id=contact_id)
+
+
+def _process_enrichment_contact_task(
+    run_id: int,
+    campaign_id: int,
+    run_contact_row_id: int,
+    contact_id: int,
+    api_url: str,
+    api_key: str,
+    input_mapping: dict,
+    output_mapping: dict,
+    required_inputs: List[str],
+    max_retries: int,
+):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT *
+            FROM contacts
+            WHERE id = %s AND campaign_id = %s
+            """,
+            (contact_id, campaign_id),
+        )
+        contact_row = cursor.fetchone()
+        if not contact_row:
+            _finalize_enrichment_contact_result(
+                cursor=cursor,
+                run_id=run_id,
+                campaign_id=campaign_id,
+                run_contact_row_id=run_contact_row_id,
+                contact_id=contact_id,
+                contact_name="",
+                status="failed",
+                attempts=1,
+                message="Contact not found",
+            )
+            conn.commit()
+            return
+
+        contact = dict(contact_row)
+        contact_name = str(contact.get("business_name") or "").strip()
+        payload, missing_required = _build_enrichment_payload(contact, input_mapping, required_inputs)
+
+        if missing_required:
+            _finalize_enrichment_contact_result(
+                cursor=cursor,
+                run_id=run_id,
+                campaign_id=campaign_id,
+                run_contact_row_id=run_contact_row_id,
+                contact_id=contact_id,
+                contact_name=contact_name,
+                status="skipped",
+                attempts=1,
+                message=f"Missing required input fields: {', '.join(missing_required)}",
+            )
+            conn.commit()
+            return
+
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["x-api-key"] = api_key
+
+        attempts = 0
+        last_error = "Unknown enrichment error"
+        for attempts in range(1, max(1, int(max_retries)) + 1):
+            try:
+                response = requests.post(api_url, headers=headers, json=payload, timeout=45)
+                if response.status_code >= 400:
+                    raise RuntimeError(f"HTTP {response.status_code}: {response.text[:300]}")
+                response_data = response.json() if response.content else {}
+                if not isinstance(response_data, dict):
+                    response_data = {}
+
+                updates = _apply_enrichment_output_mapping(response_data, output_mapping)
+                _update_contact_fields(cursor, campaign_id, contact_id, updates)
+
+                updated_fields = ", ".join(sorted(updates.keys())) if updates else "no mapped fields updated"
+                response_preview = json.dumps(response_data, ensure_ascii=True)[:220]
+                _finalize_enrichment_contact_result(
+                    cursor=cursor,
+                    run_id=run_id,
+                    campaign_id=campaign_id,
+                    run_contact_row_id=run_contact_row_id,
+                    contact_id=contact_id,
+                    contact_name=contact_name,
+                    status="enriched",
+                    attempts=attempts,
+                    message=f"{updated_fields} | response={response_preview}",
+                    response_payload=response_data,
+                )
+                conn.commit()
+                return
+            except Exception as exc:
+                last_error = str(exc)
+                if attempts >= max(1, int(max_retries)):
+                    _finalize_enrichment_contact_result(
+                        cursor=cursor,
+                        run_id=run_id,
+                        campaign_id=campaign_id,
+                        run_contact_row_id=run_contact_row_id,
+                        contact_id=contact_id,
+                        contact_name=contact_name,
+                        status="failed",
+                        attempts=attempts,
+                        message=last_error,
+                    )
+                    conn.commit()
+                    return
+                time.sleep(0.15)
+
+
+def _run_enrichment_job(run_id: int):
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            run = _load_enrichment_run(cursor, run_id)
+            if not run:
+                return
+            if str(run.get("status")) not in {"queued", "running", "paused"}:
+                return
+
+            input_mapping = _safe_json_loads(run.get("input_mapping"), {})
+            output_mapping = _safe_json_loads(run.get("output_mapping"), {})
+            required_inputs = _safe_json_loads(run.get("required_inputs"), [])
+            api_url = str(run.get("api_url") or "").strip()
+            api_key = str(run.get("api_key") or "").strip()
+            concurrency = max(1, min(int(run.get("concurrency") or 1), MAX_ENRICHMENT_CONCURRENCY))
+            max_retries = max(1, min(int(run.get("max_retries") or 1), 10))
+            campaign_id = int(run.get("campaign_id"))
+
+            cursor.execute(
+                """
+                UPDATE enrichment_run_contacts
+                SET status = 'pending',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE run_id = %s
+                  AND status = 'processing'
+                """,
+                (run_id,),
+            )
+            if cursor.rowcount:
+                _append_enrichment_log(cursor, run_id, campaign_id, f"Recovered {cursor.rowcount} in-flight contact(s) after restart", "warning")
+
+            cursor.execute(
+                """
+                UPDATE enrichment_runs
+                SET status = CASE WHEN pause_requested THEN 'paused' ELSE 'running' END,
+                    started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                """,
+                (run_id,),
+            )
+            _append_enrichment_log(cursor, run_id, campaign_id, "Enrichment run started", "info")
+            conn.commit()
+
+        executor = ThreadPoolExecutor(max_workers=concurrency)
+        inflight: Dict[Any, dict] = {}
+
+        while True:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                run = _load_enrichment_run(cursor, run_id)
+                if not run:
+                    conn.commit()
+                    break
+
+                status = str(run.get("status") or "")
+                if status in {"completed", "failed", "cancelled"}:
+                    conn.commit()
+                    break
+
+                pause_requested = bool(run.get("pause_requested"))
+                cancel_requested = bool(run.get("cancel_requested"))
+
+                if cancel_requested and not inflight:
+                    _set_enrichment_run_status(cursor, run_id, "cancelled", completed=True)
+                    _append_enrichment_log(cursor, run_id, campaign_id, "Run cancelled by user", "warning")
+                    conn.commit()
+                    break
+
+                if pause_requested:
+                    if status != "paused":
+                        cursor.execute(
+                            "UPDATE enrichment_runs SET status = 'paused', updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                            (run_id,),
+                        )
+                        _append_enrichment_log(cursor, run_id, campaign_id, "Run paused", "warning")
+                    conn.commit()
+                    if not inflight:
+                        time.sleep(0.4)
+                        continue
+                else:
+                    if status != "running":
+                        cursor.execute(
+                            "UPDATE enrichment_runs SET status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                            (run_id,),
+                        )
+                    conn.commit()
+
+                slots = max(0, concurrency - len(inflight))
+                if slots > 0 and not cancel_requested and not pause_requested:
+                    with get_db() as claim_conn:
+                        claim_cursor = claim_conn.cursor()
+                        claimed_rows = _claim_enrichment_pending_contacts(claim_cursor, run_id, slots)
+                        claim_conn.commit()
+
+                    for claimed in claimed_rows:
+                        with get_db() as metadata_conn:
+                            metadata_cursor = metadata_conn.cursor()
+                            metadata_cursor.execute(
+                                """
+                                SELECT business_name
+                                FROM contacts
+                                WHERE id = %s AND campaign_id = %s
+                                """,
+                                (claimed["contact_id"], campaign_id),
+                            )
+                            meta = metadata_cursor.fetchone() or {}
+                            business_name = str(meta.get("business_name") or "").strip()
+                            metadata_cursor.execute(
+                                """
+                                UPDATE enrichment_runs
+                                SET current_contact_id = %s,
+                                    current_contact_name = %s,
+                                    updated_at = CURRENT_TIMESTAMP
+                                WHERE id = %s
+                                """,
+                                (claimed["contact_id"], business_name, run_id),
+                            )
+                            metadata_conn.commit()
+
+                        fut = executor.submit(
+                            _process_enrichment_contact_task,
+                            run_id,
+                            campaign_id,
+                            int(claimed["id"]),
+                            int(claimed["contact_id"]),
+                            api_url,
+                            api_key,
+                            input_mapping,
+                            output_mapping,
+                            required_inputs,
+                            max_retries,
+                        )
+                        inflight[fut] = claimed
+
+                if not inflight:
+                    with get_db() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            """
+                            SELECT
+                                COUNT(*) FILTER (WHERE status = 'pending') AS pending_count,
+                                COUNT(*) FILTER (WHERE status = 'processing') AS processing_count
+                            FROM enrichment_run_contacts
+                            WHERE run_id = %s
+                            """,
+                            (run_id,),
+                        )
+                        counts = cursor.fetchone() or {}
+                        pending_count = int(counts.get("pending_count") or 0)
+                        processing_count = int(counts.get("processing_count") or 0)
+                        if pending_count == 0 and processing_count == 0:
+                            run_now = _load_enrichment_run(cursor, run_id) or {}
+                            if bool(run_now.get("cancel_requested")):
+                                _set_enrichment_run_status(cursor, run_id, "cancelled", completed=True)
+                                _append_enrichment_log(cursor, run_id, campaign_id, "Run cancelled by user", "warning")
+                            else:
+                                _set_enrichment_run_status(cursor, run_id, "completed", completed=True)
+                                _append_enrichment_log(cursor, run_id, campaign_id, "Enrichment run completed", "info")
+                            conn.commit()
+                            break
+                        conn.commit()
+                    time.sleep(0.25)
+                    continue
+
+                done, _pending = wait(list(inflight.keys()), timeout=0.6, return_when=FIRST_COMPLETED)
+                for fut in done:
+                    inflight.pop(fut, None)
+                    try:
+                        fut.result()
+                    except Exception as exc:
+                        with get_db() as conn:
+                            cursor = conn.cursor()
+                            cursor.execute(
+                                """
+                                UPDATE enrichment_runs
+                                SET latest_error = %s,
+                                    failed_contacts = failed_contacts + 1,
+                                    processed_contacts = processed_contacts + 1,
+                                    updated_at = CURRENT_TIMESTAMP
+                                WHERE id = %s
+                                """,
+                                (str(exc), run_id),
+                            )
+                            _append_enrichment_log(cursor, run_id, campaign_id, f"Worker failure: {str(exc)}", "error")
+                            conn.commit()
+
+        executor.shutdown(wait=True, cancel_futures=False)
+    except Exception as exc:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            run = _load_enrichment_run(cursor, run_id)
+            if run and str(run.get("status")) not in {"completed", "cancelled"}:
+                _set_enrichment_run_status(cursor, run_id, "failed", message=str(exc), completed=True)
+                _append_enrichment_log(cursor, run_id, int(run.get("campaign_id")), f"Run failed: {str(exc)}", "error")
+            conn.commit()
+    finally:
+        with enrichment_workers_lock:
+            enrichment_workers.pop(run_id, None)
+
+
+def _ensure_enrichment_worker(run_id: int):
+    with enrichment_workers_lock:
+        existing = enrichment_workers.get(run_id)
+        if existing and existing.get("thread") and existing["thread"].is_alive():
+            return
+        worker_thread = threading.Thread(target=_run_enrichment_job, args=(run_id,), daemon=True)
+        enrichment_workers[run_id] = {"thread": worker_thread}
+        worker_thread.start()
+
+
 @app.get("/docs/api", response_class=HTMLResponse)
 async def get_api_docs(request: Request):
     auth_redirect = _require_ui_auth(request)
@@ -846,6 +1716,14 @@ async def get_verify_page(request: Request):
     if auth_redirect:
         return auth_redirect
     return templates.TemplateResponse("verify.html", {"request": request})
+
+
+@app.get("/enrichment", response_class=HTMLResponse)
+async def get_enrichment_page(request: Request):
+    auth_redirect = _require_ui_auth(request)
+    if auth_redirect:
+        return auth_redirect
+    return templates.TemplateResponse("enrichment.html", {"request": request})
 
 
 @app.get("/auth/login", response_class=HTMLResponse)
@@ -1000,6 +1878,33 @@ async def get_campaigns(
             }
 
         email_metrics = _compute_campaign_email_metrics(cursor, campaign_ids)
+        latest_enrichment_runs = {}
+        active_enrichment_runs = {}
+
+        if campaign_ids:
+            placeholders = ",".join(["%s"] * len(campaign_ids))
+            cursor.execute(f"""
+                SELECT DISTINCT ON (campaign_id) *
+                FROM enrichment_runs
+                WHERE campaign_id IN ({placeholders})
+                ORDER BY campaign_id, created_at DESC, id DESC
+            """, tuple(campaign_ids))
+            latest_enrichment_runs = {
+                int(row["campaign_id"]): dict(row)
+                for row in cursor.fetchall()
+            }
+
+            cursor.execute(f"""
+                SELECT DISTINCT ON (campaign_id) *
+                FROM enrichment_runs
+                WHERE campaign_id IN ({placeholders})
+                  AND status IN ('queued', 'running', 'paused')
+                ORDER BY campaign_id, created_at DESC, id DESC
+            """, tuple(campaign_ids))
+            active_enrichment_runs = {
+                int(row["campaign_id"]): dict(row)
+                for row in cursor.fetchall()
+            }
 
         with verification_jobs_lock:
             active_verification_jobs = {}
@@ -1071,6 +1976,16 @@ async def get_campaigns(
             campaign["verification_processed_emails"] = verification_processed
             campaign["verification_progress_percent"] = verification_percent
             campaign["verification_message"] = verification_message
+            enrichment = _compute_enrichment_progress_payload(
+                campaign_id=campaign["id"],
+                active_run=active_enrichment_runs.get(campaign["id"]),
+                latest_run=latest_enrichment_runs.get(campaign["id"]),
+            )
+            campaign["enrichment_status"] = enrichment["status"]
+            campaign["enrichment_total_contacts"] = enrichment["total_contacts"]
+            campaign["enrichment_processed_contacts"] = enrichment["processed_contacts"]
+            campaign["enrichment_progress_percent"] = enrichment["progress_percent"]
+            campaign["enrichment_message"] = enrichment["message"]
             
             # Dashboard details are lazy-loaded via dedicated endpoints.
             campaign['requests'] = []
@@ -1148,6 +2063,33 @@ def _compute_verification_progress_payload(
         "current_email": current_email,
         "message": message
     }
+
+
+def _compute_enrichment_progress_payload(
+    campaign_id: int,
+    active_run: Optional[dict],
+    latest_run: Optional[dict]
+) -> dict:
+    run = active_run or latest_run
+    serialized = _serialize_enrichment_run(run)
+    message = "Not started"
+    if run:
+        status = serialized["status"]
+        if status == "completed":
+            message = "Enrichment completed"
+        elif status == "paused":
+            message = "Enrichment paused"
+        elif status == "running":
+            message = "Enrichment in progress"
+        elif status == "queued":
+            message = "Enrichment queued"
+        elif status == "cancelled":
+            message = "Enrichment cancelled"
+        elif status == "failed":
+            message = serialized.get("latest_error") or "Enrichment failed"
+    serialized["message"] = message
+    serialized["campaign_id"] = campaign_id
+    return serialized
 
 
 @app.get("/api/campaign/{campaign_id}/details")
@@ -1286,6 +2228,29 @@ async def get_dashboard_runtime_status(campaign_ids: str = ""):
             for row in cursor.fetchall()
         }
 
+        cursor.execute(f"""
+            SELECT DISTINCT ON (campaign_id) *
+            FROM enrichment_runs
+            WHERE campaign_id IN ({placeholders})
+            ORDER BY campaign_id, created_at DESC, id DESC
+        """, tuple(campaign_id_list))
+        latest_enrichment_runs = {
+            int(row["campaign_id"]): dict(row)
+            for row in cursor.fetchall()
+        }
+
+        cursor.execute(f"""
+            SELECT DISTINCT ON (campaign_id) *
+            FROM enrichment_runs
+            WHERE campaign_id IN ({placeholders})
+              AND status IN ('queued', 'running', 'paused')
+            ORDER BY campaign_id, created_at DESC, id DESC
+        """, tuple(campaign_id_list))
+        active_enrichment_runs = {
+            int(row["campaign_id"]): dict(row)
+            for row in cursor.fetchall()
+        }
+
     with verification_jobs_lock:
         active_jobs = {}
         latest_jobs = {}
@@ -1350,6 +2315,11 @@ async def get_dashboard_runtime_status(campaign_ids: str = ""):
             "pipeline": pipeline,
             "stats": stats,
             "verification": verification,
+            "enrichment": _compute_enrichment_progress_payload(
+                campaign_id=campaign_id,
+                active_run=active_enrichment_runs.get(campaign_id),
+                latest_run=latest_enrichment_runs.get(campaign_id),
+            ),
         }
 
     return {"campaigns": result}
@@ -1366,6 +2336,9 @@ async def delete_campaign(campaign_id: int):
         cursor.execute("DELETE FROM pipeline_run_locks WHERE campaign_id = %s", (campaign_id,))
         cursor.execute("DELETE FROM pipeline_run_stages WHERE campaign_id = %s", (campaign_id,))
         cursor.execute("DELETE FROM pipeline_runs WHERE campaign_id = %s", (campaign_id,))
+        cursor.execute("DELETE FROM enrichment_run_logs WHERE campaign_id = %s", (campaign_id,))
+        cursor.execute("DELETE FROM enrichment_run_contacts WHERE campaign_id = %s", (campaign_id,))
+        cursor.execute("DELETE FROM enrichment_runs WHERE campaign_id = %s", (campaign_id,))
         cursor.execute("DELETE FROM export_logs WHERE campaign_id = %s", (campaign_id,))
         cursor.execute("DELETE FROM email_verification_logs WHERE campaign_id = %s", (campaign_id,))
         cursor.execute("DELETE FROM contacts WHERE campaign_id = %s", (campaign_id,))
@@ -1377,6 +2350,11 @@ async def delete_campaign(campaign_id: int):
         for job_id, job in list(verification_jobs.items()):
             if job.get("campaign_id") == campaign_id:
                 verification_jobs.pop(job_id, None)
+    with enrichment_workers_lock:
+        for run_id, state in list(enrichment_workers.items()):
+            thread = state.get("thread")
+            if thread and not thread.is_alive():
+                enrichment_workers.pop(run_id, None)
 
     return {"status": "Campaign deleted successfully"}
 
@@ -1394,11 +2372,16 @@ async def delete_all_campaigns():
         export_templates_count = cursor.fetchone()["count"]
         cursor.execute("SELECT COUNT(*) AS count FROM email_verification_templates")
         verification_templates_count = cursor.fetchone()["count"]
+        cursor.execute("SELECT COUNT(*) AS count FROM enrichment_templates")
+        enrichment_templates_count = cursor.fetchone()["count"]
 
         # Delete campaign-related records in FK-safe order.
         cursor.execute("DELETE FROM pipeline_run_locks")
         cursor.execute("DELETE FROM pipeline_run_stages")
         cursor.execute("DELETE FROM pipeline_runs")
+        cursor.execute("DELETE FROM enrichment_run_logs")
+        cursor.execute("DELETE FROM enrichment_run_contacts")
+        cursor.execute("DELETE FROM enrichment_runs")
         cursor.execute("DELETE FROM contacts")
         cursor.execute("DELETE FROM requests")
         cursor.execute("DELETE FROM export_logs")
@@ -1406,10 +2389,13 @@ async def delete_all_campaigns():
         cursor.execute("DELETE FROM search_campaigns")
         cursor.execute("DELETE FROM export_templates")
         cursor.execute("DELETE FROM email_verification_templates")
+        cursor.execute("DELETE FROM enrichment_templates")
         conn.commit()
 
     with verification_jobs_lock:
         verification_jobs.clear()
+    with enrichment_workers_lock:
+        enrichment_workers.clear()
 
     return {
         "status": "All campaigns and related data deleted successfully",
@@ -1418,7 +2404,8 @@ async def delete_all_campaigns():
             "requests": requests_count,
             "contacts": contacts_count,
             "export_templates": export_templates_count,
-            "verification_templates": verification_templates_count
+            "verification_templates": verification_templates_count,
+            "enrichment_templates": enrichment_templates_count
         }
     }
 
@@ -4626,6 +5613,468 @@ async def get_verification_history(campaign_id: int):
         """, (campaign_id,))
         return {"history": [dict(row) for row in cursor.fetchall()]}
 
+
+@app.get("/api/enrichment/templates")
+async def get_enrichment_templates():
+    return {"templates": EnrichmentTemplateManager.get_all_templates()}
+
+
+@app.get("/api/enrichment/templates/{template_id}")
+async def get_enrichment_template(template_id: int):
+    template = EnrichmentTemplateManager.get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return template
+
+
+@app.post("/api/enrichment/templates")
+async def create_enrichment_template(request: Request):
+    data = await request.json()
+    name = str(data.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Template name is required")
+
+    service = str(data.get("service") or "http_enrichment").strip() or "http_enrichment"
+    api_config = data.get("api_config") or {}
+    input_mapping = data.get("input_mapping") or {}
+    output_mapping = data.get("output_mapping") or {}
+    schema_cache = data.get("schema_cache") or {}
+
+    if not isinstance(input_mapping, dict) or not isinstance(output_mapping, dict):
+        raise HTTPException(status_code=400, detail="input_mapping and output_mapping must be objects")
+
+    for output_key, local_field in output_mapping.items():
+        normalized_output_key = _normalize_mapping_value(output_key)
+        if not normalized_output_key:
+            continue
+        normalized_local_field = _normalize_mapping_value(local_field)
+        if normalized_local_field and normalized_local_field not in ENRICHMENT_LOCAL_FIELD_SET:
+            raise HTTPException(status_code=400, detail=f"Invalid local output field: {normalized_local_field}")
+
+    template_id = EnrichmentTemplateManager.create_template(
+        name=name,
+        service=service,
+        api_config=api_config,
+        input_mapping=input_mapping,
+        output_mapping=output_mapping,
+        schema_cache=schema_cache,
+    )
+    return {"status": "Template created", "template_id": template_id}
+
+
+@app.delete("/api/enrichment/templates/{template_id}")
+async def delete_enrichment_template(template_id: int):
+    template = EnrichmentTemplateManager.get_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    EnrichmentTemplateManager.delete_template(template_id)
+    return {"status": "Template deleted"}
+
+
+@app.put("/api/enrichment/templates/{template_id}")
+async def update_enrichment_template(template_id: int, request: Request):
+    existing = EnrichmentTemplateManager.get_template(template_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    data = await request.json()
+    name = str(data.get("name") or existing.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Template name is required")
+
+    service = str(data.get("service") or existing.get("service") or "http_enrichment").strip() or "http_enrichment"
+    api_config = data.get("api_config") if isinstance(data.get("api_config"), dict) else existing.get("api_config", {})
+    input_mapping = data.get("input_mapping") if isinstance(data.get("input_mapping"), dict) else existing.get("input_mapping", {})
+    output_mapping = data.get("output_mapping") if isinstance(data.get("output_mapping"), dict) else existing.get("output_mapping", {})
+    schema_cache = data.get("schema_cache") if isinstance(data.get("schema_cache"), dict) else existing.get("schema_cache", {})
+
+    for output_key, local_field in output_mapping.items():
+        normalized_output_key = _normalize_mapping_value(output_key)
+        if not normalized_output_key:
+            continue
+        normalized_local_field = _normalize_mapping_value(local_field)
+        if normalized_local_field and normalized_local_field not in ENRICHMENT_LOCAL_FIELD_SET:
+            raise HTTPException(status_code=400, detail=f"Invalid local output field: {normalized_local_field}")
+
+    EnrichmentTemplateManager.update_template(
+        template_id=template_id,
+        name=name,
+        service=service,
+        api_config=api_config,
+        input_mapping=input_mapping,
+        output_mapping=output_mapping,
+        schema_cache=schema_cache,
+    )
+    return {"status": "Template updated"}
+
+
+@app.post("/api/enrichment/schema")
+async def fetch_enrichment_schema(request: Request):
+    data = await request.json()
+    api_key = str(data.get("api_key") or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="api_key is required")
+
+    schema_url = str(data.get("schema_url") or DEFAULT_ENRICHMENT_SCHEMA_URL).strip()
+    if not schema_url:
+        raise HTTPException(status_code=400, detail="schema_url is required")
+
+    headers = {"x-api-key": api_key, "Accept": "application/json"}
+    try:
+        response = requests.get(schema_url, headers=headers, timeout=30)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Schema fetch failed: {str(exc)}")
+
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"Schema fetch failed: HTTP {response.status_code} - {response.text[:300]}")
+
+    try:
+        payload = response.json()
+    except Exception:
+        raise HTTPException(status_code=502, detail="Schema endpoint did not return JSON")
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="Schema endpoint returned invalid payload")
+
+    return payload
+
+
+@app.post("/api/campaign/{campaign_id}/enrichment/start")
+async def start_enrichment_run(campaign_id: int, request: Request):
+    data = await request.json()
+    template_id = data.get("template_id")
+    if not template_id:
+        raise HTTPException(status_code=400, detail="template_id is required")
+
+    template = EnrichmentTemplateManager.get_template(int(template_id))
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    concurrency = max(1, min(int(data.get("concurrency") or 1), MAX_ENRICHMENT_CONCURRENCY))
+    max_retries = max(1, min(int(data.get("max_retries") or 1), 10))
+    overwrite_existing = bool(data.get("overwrite_existing", False))
+    skip_missing_input = bool(data.get("skip_missing_input", True))
+
+    template_api_config = template.get("api_config") or {}
+    api_url = str(data.get("api_url") or template_api_config.get("api_url") or DEFAULT_ENRICHMENT_API_URL).strip()
+    api_key = str(data.get("api_key") or template_api_config.get("api_key") or "").strip()
+
+    if not api_url:
+        raise HTTPException(status_code=400, detail="api_url is required")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="api_key is required")
+
+    input_mapping = data.get("input_mapping") if isinstance(data.get("input_mapping"), dict) else template.get("input_mapping", {})
+    output_mapping = data.get("output_mapping") if isinstance(data.get("output_mapping"), dict) else template.get("output_mapping", {})
+    schema_cache = template.get("schema_cache") or {}
+    required_inputs = data.get("required_inputs")
+    if not isinstance(required_inputs, list):
+        required_inputs = schema_cache.get("required_input_fields") or []
+    required_inputs = [str(field).strip() for field in required_inputs if str(field).strip()]
+
+    for output_key, local_field in output_mapping.items():
+        normalized_output_key = _normalize_mapping_value(output_key)
+        if not normalized_output_key:
+            continue
+        normalized_local_field = _normalize_mapping_value(local_field)
+        if normalized_local_field and normalized_local_field not in ENRICHMENT_LOCAL_FIELD_SET:
+            raise HTTPException(status_code=400, detail=f"Invalid local output field: {normalized_local_field}")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        _ensure_campaign_exists(cursor, campaign_id)
+
+        active_run = _load_active_enrichment_run(cursor, campaign_id)
+        if active_run:
+            logs = _load_enrichment_logs(cursor, int(active_run["id"]), limit=150)
+            return {
+                "idempotent": True,
+                "run": _serialize_enrichment_run(active_run),
+                "logs": logs,
+            }
+
+        cursor.execute(
+            """
+            INSERT INTO enrichment_runs (
+                campaign_id,
+                template_id,
+                status,
+                api_url,
+                api_key,
+                concurrency,
+                max_retries,
+                overwrite_existing,
+                skip_missing_input,
+                input_mapping,
+                output_mapping,
+                required_inputs,
+                created_by
+            )
+            VALUES (%s, %s, 'queued', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                campaign_id,
+                int(template_id),
+                api_url,
+                api_key,
+                concurrency,
+                max_retries,
+                overwrite_existing,
+                skip_missing_input,
+                json.dumps(input_mapping or {}),
+                json.dumps(output_mapping or {}),
+                json.dumps(required_inputs or []),
+                "dashboard",
+            ),
+        )
+        run_id = int(cursor.fetchone()["id"])
+
+        cursor.execute("SELECT * FROM contacts WHERE campaign_id = %s ORDER BY id ASC", (campaign_id,))
+        contacts = [dict(row) for row in cursor.fetchall()]
+        pending_count = 0
+        skipped_count = 0
+        skipped_reason_aggregate = {"output_already_present": 0, "missing_required_input": 0}
+
+        for contact in contacts:
+            contact_id = int(contact["id"])
+            status = "pending"
+            last_error = None
+            if not overwrite_existing and _contact_has_existing_output(contact, output_mapping):
+                status = "skipped"
+                skipped_count += 1
+                skipped_reason_aggregate["output_already_present"] += 1
+                last_error = "Output fields already populated"
+            else:
+                payload_preview, missing_required = _build_enrichment_payload(contact, input_mapping, required_inputs)
+                if skip_missing_input and missing_required:
+                    status = "skipped"
+                    skipped_count += 1
+                    skipped_reason_aggregate["missing_required_input"] += 1
+                    last_error = f"Missing required inputs: {', '.join(missing_required)}"
+                elif not payload_preview:
+                    status = "skipped"
+                    skipped_count += 1
+                    skipped_reason_aggregate["missing_required_input"] += 1
+                    last_error = "No mapped input values"
+                else:
+                    pending_count += 1
+
+            cursor.execute(
+                """
+                INSERT INTO enrichment_run_contacts (run_id, campaign_id, contact_id, status, attempts, last_error)
+                VALUES (%s, %s, %s, %s, 0, %s)
+                """,
+                (run_id, campaign_id, contact_id, status, last_error),
+            )
+
+        cursor.execute(
+            """
+            UPDATE enrichment_runs
+            SET total_contacts = %s,
+                processed_contacts = %s,
+                skipped_contacts = %s,
+                status = CASE WHEN %s = 0 THEN 'completed' ELSE 'queued' END,
+                started_at = CASE WHEN %s = 0 THEN CURRENT_TIMESTAMP ELSE started_at END,
+                completed_at = CASE WHEN %s = 0 THEN CURRENT_TIMESTAMP ELSE completed_at END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (
+                len(contacts),
+                skipped_count,
+                skipped_count,
+                pending_count,
+                pending_count,
+                pending_count,
+                run_id,
+            ),
+        )
+        _append_enrichment_log(
+            cursor,
+            run_id,
+            campaign_id,
+            f"Run created: total={len(contacts)}, pending={pending_count}, skipped={skipped_count}, concurrency={concurrency}, retries={max_retries}",
+            "info",
+        )
+        if skipped_reason_aggregate["output_already_present"]:
+            _append_enrichment_log(
+                cursor,
+                run_id,
+                campaign_id,
+                f"Skipped existing outputs: {skipped_reason_aggregate['output_already_present']}",
+                "warning",
+            )
+        if skipped_reason_aggregate["missing_required_input"]:
+            _append_enrichment_log(
+                cursor,
+                run_id,
+                campaign_id,
+                f"Skipped missing inputs: {skipped_reason_aggregate['missing_required_input']}",
+                "warning",
+            )
+
+        run = _load_enrichment_run(cursor, run_id)
+        logs = _load_enrichment_logs(cursor, run_id, limit=150)
+        conn.commit()
+
+    if pending_count > 0:
+        _ensure_enrichment_worker(run_id)
+
+    return {
+        "idempotent": False,
+        "run": _serialize_enrichment_run(run),
+        "logs": logs,
+    }
+
+
+@app.get("/api/enrichment/runs/{run_id}")
+async def get_enrichment_run_status(run_id: int, log_limit: int = 200):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        run = _load_enrichment_run(cursor, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        logs = _load_enrichment_logs(cursor, run_id, limit=log_limit)
+        return {"run": _serialize_enrichment_run(run), "logs": logs}
+
+
+@app.get("/api/campaign/{campaign_id}/enrichment-run/active")
+async def get_active_enrichment_run(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        _ensure_campaign_exists(cursor, campaign_id)
+        active_run = _load_active_enrichment_run(cursor, campaign_id)
+        if not active_run:
+            return {"run": None}
+        logs = _load_enrichment_logs(cursor, int(active_run["id"]), limit=100)
+        return {"run": _serialize_enrichment_run(active_run), "logs": logs}
+
+
+@app.get("/api/campaign/{campaign_id}/enrichment-progress")
+async def get_campaign_enrichment_progress(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        _ensure_campaign_exists(cursor, campaign_id)
+        run = _load_active_enrichment_run(cursor, campaign_id) or _load_latest_enrichment_run(cursor, campaign_id)
+        return _serialize_enrichment_run(run)
+
+
+@app.post("/api/enrichment/runs/{run_id}/pause")
+async def pause_enrichment_run(run_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        run = _load_enrichment_run(cursor, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        status = str(run.get("status") or "")
+        if status in {"completed", "failed", "cancelled"}:
+            return {"run": _serialize_enrichment_run(run), "logs": _load_enrichment_logs(cursor, run_id, 120)}
+
+        cursor.execute(
+            """
+            UPDATE enrichment_runs
+            SET pause_requested = TRUE,
+                status = CASE WHEN status = 'queued' THEN 'paused' ELSE status END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (run_id,),
+        )
+        _append_enrichment_log(cursor, run_id, int(run["campaign_id"]), "Pause requested", "warning")
+        run = _load_enrichment_run(cursor, run_id)
+        logs = _load_enrichment_logs(cursor, run_id, 120)
+        conn.commit()
+        return {"run": _serialize_enrichment_run(run), "logs": logs}
+
+
+@app.post("/api/enrichment/runs/{run_id}/resume")
+async def resume_enrichment_run(run_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        run = _load_enrichment_run(cursor, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        status = str(run.get("status") or "")
+        if status in {"completed", "failed", "cancelled"}:
+            return {"run": _serialize_enrichment_run(run), "logs": _load_enrichment_logs(cursor, run_id, 120)}
+
+        cursor.execute(
+            """
+            UPDATE enrichment_runs
+            SET pause_requested = FALSE,
+                cancel_requested = FALSE,
+                status = 'running',
+                started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (run_id,),
+        )
+        _append_enrichment_log(cursor, run_id, int(run["campaign_id"]), "Resume requested", "info")
+        run = _load_enrichment_run(cursor, run_id)
+        logs = _load_enrichment_logs(cursor, run_id, 120)
+        conn.commit()
+
+    _ensure_enrichment_worker(run_id)
+    return {"run": _serialize_enrichment_run(run), "logs": logs}
+
+
+@app.post("/api/enrichment/runs/{run_id}/cancel")
+async def cancel_enrichment_run(run_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        run = _load_enrichment_run(cursor, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        status = str(run.get("status") or "")
+        if status in {"completed", "failed", "cancelled"}:
+            return {"run": _serialize_enrichment_run(run), "logs": _load_enrichment_logs(cursor, run_id, 120)}
+
+        cursor.execute(
+            """
+            UPDATE enrichment_runs
+            SET cancel_requested = TRUE,
+                pause_requested = FALSE,
+                status = CASE WHEN status IN ('queued', 'paused') THEN 'cancelled' ELSE status END,
+                completed_at = CASE WHEN status IN ('queued', 'paused') THEN CURRENT_TIMESTAMP ELSE completed_at END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (run_id,),
+        )
+        updated_run = _load_enrichment_run(cursor, run_id)
+        _append_enrichment_log(cursor, run_id, int(run["campaign_id"]), "Cancel requested", "warning")
+        logs = _load_enrichment_logs(cursor, run_id, 120)
+        conn.commit()
+        return {"run": _serialize_enrichment_run(updated_run), "logs": logs}
+
+
+@app.get("/api/campaign/{campaign_id}/enrichment-history")
+async def get_campaign_enrichment_history(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                er.*,
+                et.name AS template_name
+            FROM enrichment_runs er
+            JOIN enrichment_templates et ON et.id = er.template_id
+            WHERE er.campaign_id = %s
+            ORDER BY er.created_at DESC, er.id DESC
+            LIMIT 50
+            """,
+            (campaign_id,),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        history = []
+        for row in rows:
+            item = _serialize_enrichment_run(row)
+            item["template_name"] = row.get("template_name")
+            history.append(item)
+        return {"history": history}
+
 @app.delete("/api/campaign/{campaign_id}/contact/{contact_id}")
 async def remove_contact(campaign_id: int, contact_id: int):
     with get_db() as conn:
@@ -4889,4 +6338,41 @@ async def create_default_templates():
                     "api_key": "XbK0x309Xoe06IU1"
                 },
                 default_status_mapping
+            )
+
+        cursor.execute("SELECT id FROM enrichment_templates WHERE service = 'http_enrichment'")
+        if not cursor.fetchone():
+            EnrichmentTemplateManager.create_template(
+                "Promising Enrichment Default",
+                "http_enrichment",
+                {
+                    "api_url": DEFAULT_ENRICHMENT_API_URL,
+                    "api_key": "",
+                    "schema_url": DEFAULT_ENRICHMENT_SCHEMA_URL,
+                },
+                {
+                    "company": "business_name",
+                    "city": "city",
+                    "state": "state",
+                    "website": "domain",
+                },
+                {
+                    "owner_firstname": "firstname",
+                    "closest_competitor": "custom_1",
+                    "top_service": "custom_2",
+                },
+                {
+                    "input_fields": [
+                        {"key": "company", "label": "Company", "required": True, "placeholder": ""},
+                        {"key": "city", "label": "City", "required": True, "placeholder": ""},
+                        {"key": "state", "label": "State", "required": True, "placeholder": ""},
+                        {"key": "website", "label": "Website", "required": False, "placeholder": ""},
+                    ],
+                    "required_input_fields": ["company", "city", "state"],
+                    "enrichment_fields": [
+                        {"key": "owner_firstname", "label": "Owner First Name", "enabled": True},
+                        {"key": "closest_competitor", "label": "Closest Competitor", "enabled": True},
+                        {"key": "top_service", "label": "Top Service", "enabled": True},
+                    ],
+                },
             )

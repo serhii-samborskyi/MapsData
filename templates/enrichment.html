@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enrichment Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="app-shell">
+    <div class="app-container">
+        <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-6">
+            <div>
+                <p class="app-chip">ScrapIQ</p>
+                <h1 class="section-title text-3xl font-semibold text-slate-900">Enrichment Manager</h1>
+                <p class="text-sm text-slate-600">Run contact enrichment on server with mapping templates, retries, and live progress.</p>
+            </div>
+            <div class="flex items-center gap-2">
+                <a href="/" class="app-chip hover:text-slate-900 w-fit">← Back to ScrapIQ</a>
+                <form method="post" action="/auth/logout" class="inline">
+                    <button type="submit" class="app-chip hover:text-slate-900">Logout</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="app-card p-6 mb-6">
+            <h2 class="text-xl font-semibold mb-4">Select Campaign</h2>
+            <select id="campaignSelect" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500">
+                <option value="">Select a campaign...</option>
+            </select>
+            <div id="campaignHint" class="mt-2 text-xs text-gray-500">Choose campaign first, then select enrichment template.</div>
+        </div>
+
+        <div class="app-card p-6 mb-6">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
+                <h2 class="text-xl font-semibold">Enrichment Templates</h2>
+                <button id="createTemplateBtn" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">Create Template</button>
+            </div>
+            <div id="templatesList" class="space-y-3"></div>
+        </div>
+
+        <div id="runControlsSection" class="app-card p-6 mb-6 hidden">
+            <h2 class="text-xl font-semibold mb-4">Run Controls</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium mb-2">API URL (override optional)</label>
+                    <input id="runApiUrl" type="text" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="https://.../api/public/enrich">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-2">API Key (override optional)</label>
+                    <input id="runApiKey" type="password" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="x-api-key">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-2">Concurrency (1-20)</label>
+                    <input id="runConcurrency" type="number" min="1" max="20" value="1" class="w-full p-2 border border-gray-300 rounded-lg">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium mb-2">Max Retries</label>
+                    <input id="runRetries" type="number" min="1" max="10" value="1" class="w-full p-2 border border-gray-300 rounded-lg">
+                </div>
+            </div>
+            <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                <label class="flex items-center text-sm text-gray-700">
+                    <input id="runOverwrite" type="checkbox" class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                    <span class="ml-2">Overwrite existing output fields</span>
+                </label>
+                <label class="flex items-center text-sm text-gray-700">
+                    <input id="runSkipMissing" type="checkbox" checked class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                    <span class="ml-2">Skip contacts missing required inputs</span>
+                </label>
+            </div>
+
+            <div class="mt-6 flex flex-wrap gap-3">
+                <button id="startEnrichmentBtn" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">Start Enrichment</button>
+                <button id="pauseEnrichmentBtn" class="bg-amber-100 text-amber-700 px-4 py-2 rounded-lg hover:bg-amber-200" disabled>Pause</button>
+                <button id="resumeEnrichmentBtn" class="bg-emerald-100 text-emerald-700 px-4 py-2 rounded-lg hover:bg-emerald-200" disabled>Resume</button>
+                <button id="cancelEnrichmentBtn" class="bg-red-100 text-red-700 px-4 py-2 rounded-lg hover:bg-red-200" disabled>Cancel</button>
+            </div>
+        </div>
+
+        <div id="progressSection" class="app-card p-6 mb-6 hidden">
+            <div class="flex items-start justify-between gap-3 mb-3">
+                <h2 class="text-xl font-semibold">Run Progress</h2>
+                <span id="runStatusBadge" class="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">idle</span>
+            </div>
+            <div class="text-sm text-slate-700 mb-2">
+                <span id="runProgressSummary">0 / 0</span>
+            </div>
+            <div class="w-full bg-slate-200 rounded-full h-2.5 mb-3">
+                <div id="runProgressBar" class="bg-indigo-500 h-2.5 rounded-full" style="width: 0%"></div>
+            </div>
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm mb-3">
+                <div class="rounded border border-slate-200 bg-white px-2 py-2">Total: <span id="runTotal">0</span></div>
+                <div class="rounded border border-slate-200 bg-white px-2 py-2">Enriched: <span id="runEnriched">0</span></div>
+                <div class="rounded border border-slate-200 bg-white px-2 py-2">Failed: <span id="runFailed">0</span></div>
+                <div class="rounded border border-slate-200 bg-white px-2 py-2">Skipped: <span id="runSkipped">0</span></div>
+                <div class="rounded border border-slate-200 bg-white px-2 py-2">Current: <span id="runCurrent">-</span></div>
+            </div>
+            <div id="runError" class="hidden rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 mb-3"></div>
+            <div class="bg-gray-50 rounded p-3 h-40 overflow-y-auto text-xs" id="runLogs"></div>
+        </div>
+
+        <div class="app-card p-6">
+            <h2 class="text-xl font-semibold mb-4">Run History</h2>
+            <div id="runHistory" class="space-y-3"></div>
+        </div>
+    </div>
+
+    <div id="createTemplateModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+        <div class="flex items-center justify-center min-h-screen p-4">
+            <div class="app-card p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+                <h3 id="templateModalTitle" class="text-lg font-semibold mb-4">Create Enrichment Template</h3>
+                <form id="createTemplateForm" class="space-y-4">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium mb-2">Template Name</label>
+                            <input id="templateName" type="text" class="w-full p-2 border border-gray-300 rounded-lg" required>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-2">Service</label>
+                            <input id="templateService" type="text" value="http_enrichment" class="w-full p-2 border border-gray-300 rounded-lg" readonly>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-2">API URL</label>
+                            <input id="templateApiUrl" type="text" class="w-full p-2 border border-gray-300 rounded-lg" value="https://promising-investments-complexity-municipal.trycloudflare.com/api/public/enrich" required>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-2">API Key</label>
+                            <input id="templateApiKey" type="password" class="w-full p-2 border border-gray-300 rounded-lg" required>
+                        </div>
+                        <div class="md:col-span-2">
+                            <label class="block text-sm font-medium mb-2">Schema URL</label>
+                            <div class="flex gap-2">
+                                <input id="templateSchemaUrl" type="text" class="flex-1 p-2 border border-gray-300 rounded-lg" value="https://promising-investments-complexity-municipal.trycloudflare.com/api/public/schema/enrichment" required>
+                                <button type="button" id="loadSchemaBtn" class="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">Load Schema</button>
+                            </div>
+                            <div id="schemaLoadStatus" class="text-xs text-gray-500 mt-1">Load schema to build input/output mapper.</div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div>
+                            <h4 class="font-semibold mb-2">Input Mapping (API input -> local field/literal)</h4>
+                            <div id="inputMappingRows" class="space-y-2"></div>
+                        </div>
+                        <div>
+                            <h4 class="font-semibold mb-2">Output Mapping (API output -> local field)</h4>
+                            <div id="outputMappingRows" class="space-y-2"></div>
+                        </div>
+                    </div>
+
+                    <div class="flex flex-col sm:flex-row gap-3">
+                        <button type="button" id="cancelCreateTemplate" class="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">Cancel</button>
+                        <button id="saveTemplateBtn" type="submit" class="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">Create Template</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let selectedCampaign = null;
+        let selectedTemplate = null;
+        let activeRunId = null;
+        let pollTimer = null;
+        let templateSchema = null;
+        let editingTemplateId = null;
+
+        const LOCAL_FIELDS = [
+            'business_name','email','phone','domain','address','category','rating','review_count',
+            'facebook','instagram','twitter','yelp','full_name','firstname','lastname','industry',
+            'city','state','country','personal_job_position','personal_prospect_location','personal_user_social',
+            'company','company_social','company_size','www','icebreaker','time_zone_offset_min','notes',
+            'tags_import','screenshot','logo','place_id','request_id','campaign_id'
+        ];
+        for (let i = 1; i <= 20; i++) {
+            LOCAL_FIELDS.push(`custom_${i}`);
+        }
+
+        function escapeHtml(v) {
+            return String(v ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function buildFieldOptions(selectedValue = '') {
+            let html = '<option value="">-- Select Local Field --</option>';
+            LOCAL_FIELDS.forEach(field => {
+                const selected = field === selectedValue ? 'selected' : '';
+                html += `<option value="${field}" ${selected}>${field}</option>`;
+            });
+            return html;
+        }
+
+        function statusBadgeClass(status) {
+            if (status === 'running') return 'bg-indigo-100 text-indigo-700';
+            if (status === 'queued') return 'bg-blue-100 text-blue-700';
+            if (status === 'paused') return 'bg-amber-100 text-amber-700';
+            if (status === 'completed') return 'bg-green-100 text-green-700';
+            if (status === 'failed') return 'bg-red-100 text-red-700';
+            if (status === 'cancelled') return 'bg-red-100 text-red-700';
+            return 'bg-slate-100 text-slate-700';
+        }
+
+        function showRunControls() {
+            document.getElementById('runControlsSection').classList.remove('hidden');
+        }
+
+        function hideRunControls() {
+            document.getElementById('runControlsSection').classList.add('hidden');
+        }
+
+        function showProgressSection() {
+            document.getElementById('progressSection').classList.remove('hidden');
+        }
+
+        async function loadCampaigns() {
+            try {
+                const response = await fetch('/api/campaigns/all');
+                const data = await response.json();
+                const select = document.getElementById('campaignSelect');
+                select.innerHTML = '<option value="">Select a campaign...</option>';
+
+                (data.campaigns || []).forEach(c => {
+                    const option = document.createElement('option');
+                    option.value = c.id;
+                    option.textContent = `${c.name} (${c.total_contacts || 0} contacts)`;
+                    select.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Error loading campaigns:', error);
+            }
+        }
+
+        async function loadTemplates() {
+            try {
+                const response = await fetch('/api/enrichment/templates');
+                const data = await response.json();
+                const list = document.getElementById('templatesList');
+                list.innerHTML = '';
+
+                const templates = data.templates || [];
+                if (templates.length === 0) {
+                    list.innerHTML = '<p class="text-sm text-gray-500">No templates found. Create one to start enrichment.</p>';
+                    return;
+                }
+
+                templates.forEach(template => {
+                    const div = document.createElement('div');
+                    div.className = 'border border-gray-200 rounded-lg p-4 cursor-pointer hover:bg-indigo-50 transition-colors';
+                    div.onclick = (event) => selectTemplate(template, event.currentTarget);
+                    div.innerHTML = `
+                        <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                                <h3 class="font-medium">${escapeHtml(template.name)}</h3>
+                                <p class="text-sm text-gray-600">${escapeHtml((template.api_config || {}).api_url || '')}</p>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <button onclick="editTemplate(event, ${template.id})" class="text-blue-600 hover:text-blue-800 text-sm px-2 py-1 border border-blue-300 rounded">Edit</button>
+                                <button onclick="deleteTemplate(event, ${template.id})" class="text-red-600 hover:text-red-800 text-sm px-2 py-1 border border-red-300 rounded">Delete</button>
+                            </div>
+                        </div>
+                    `;
+                    list.appendChild(div);
+                });
+            } catch (error) {
+                console.error('Error loading templates:', error);
+            }
+        }
+
+        function selectTemplate(template, element) {
+            selectedTemplate = template;
+            document.querySelectorAll('#templatesList > div').forEach(div => {
+                div.classList.remove('bg-indigo-100', 'border-indigo-500');
+                div.classList.add('border-gray-200');
+            });
+            if (element) {
+                element.classList.remove('border-gray-200');
+                element.classList.add('bg-indigo-100', 'border-indigo-500');
+            }
+
+            const config = template.api_config || {};
+            document.getElementById('runApiUrl').value = config.api_url || '';
+            document.getElementById('runApiKey').value = config.api_key || '';
+            showRunControls();
+            maybeShowSections();
+        }
+
+        function maybeShowSections() {
+            if (selectedCampaign && selectedTemplate) {
+                showRunControls();
+            }
+        }
+
+        async function loadSchemaForTemplateCreation() {
+            const apiKey = String(document.getElementById('templateApiKey').value || '').trim();
+            const schemaUrl = String(document.getElementById('templateSchemaUrl').value || '').trim();
+            const status = document.getElementById('schemaLoadStatus');
+
+            if (!apiKey) {
+                status.textContent = 'Enter API key first.';
+                return;
+            }
+
+            status.textContent = 'Loading schema...';
+            try {
+                const response = await fetch('/api/enrichment/schema', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api_key: apiKey, schema_url: schemaUrl })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || `HTTP ${response.status}`);
+                }
+
+                templateSchema = data;
+                renderInputMappingRows(data);
+                renderOutputMappingRows(data);
+                status.textContent = `Loaded schema with ${(data.input_fields || []).length} input field(s) and ${(data.enrichment_fields || []).length} output field(s).`;
+            } catch (error) {
+                status.textContent = `Schema load failed: ${error.message}`;
+            }
+        }
+
+        function renderInputMappingRows(schema) {
+            const container = document.getElementById('inputMappingRows');
+            const inputFields = schema?.input_fields || [];
+            const requiredFields = new Set(schema?.required_input_fields || []);
+
+            container.innerHTML = '';
+            inputFields.forEach(field => {
+                const row = document.createElement('div');
+                row.className = 'rounded border border-slate-200 p-2';
+                row.innerHTML = `
+                    <div class="text-xs text-slate-600 mb-1">
+                        <span class="font-semibold">${escapeHtml(field.key)}</span>
+                        ${requiredFields.has(field.key) ? '<span class="text-red-600">* required</span>' : ''}
+                    </div>
+                    <div class="grid grid-cols-1 gap-2">
+                        <select data-input-key="${escapeHtml(field.key)}" class="w-full p-2 border border-gray-300 rounded text-sm">
+                            ${buildFieldOptions('')}
+                        </select>
+                        <input data-input-literal="${escapeHtml(field.key)}" type="text" class="w-full p-2 border border-gray-300 rounded text-sm" placeholder="Optional literal value (overrides field)">
+                    </div>
+                `;
+                container.appendChild(row);
+            });
+        }
+
+        function renderOutputMappingRows(schema) {
+            const container = document.getElementById('outputMappingRows');
+            const outputFields = schema?.enrichment_fields || [];
+
+            container.innerHTML = '';
+            outputFields.forEach(field => {
+                const row = document.createElement('div');
+                row.className = 'rounded border border-slate-200 p-2';
+                row.innerHTML = `
+                    <div class="text-xs text-slate-600 mb-1"><span class="font-semibold">${escapeHtml(field.key)}</span></div>
+                    <select data-output-key="${escapeHtml(field.key)}" class="w-full p-2 border border-gray-300 rounded text-sm">
+                        ${buildFieldOptions('')}
+                    </select>
+                `;
+                container.appendChild(row);
+            });
+        }
+
+        function collectInputMappingFromModal() {
+            const mapping = {};
+            document.querySelectorAll('[data-input-key]').forEach(select => {
+                const key = select.getAttribute('data-input-key');
+                const selectedField = String(select.value || '').trim();
+                const literalInput = document.querySelector(`[data-input-literal="${key}"]`);
+                const literalValue = String(literalInput?.value || '').trim();
+
+                if (literalValue) {
+                    mapping[key] = `literal:${literalValue}`;
+                } else if (selectedField) {
+                    mapping[key] = selectedField;
+                } else {
+                    mapping[key] = '';
+                }
+            });
+            return mapping;
+        }
+
+        function collectOutputMappingFromModal() {
+            const mapping = {};
+            document.querySelectorAll('[data-output-key]').forEach(select => {
+                const key = select.getAttribute('data-output-key');
+                const selectedField = String(select.value || '').trim();
+                if (selectedField) {
+                    mapping[key] = selectedField;
+                }
+            });
+            return mapping;
+        }
+
+        async function createTemplate(event) {
+            event.preventDefault();
+            const name = String(document.getElementById('templateName').value || '').trim();
+            const apiUrl = String(document.getElementById('templateApiUrl').value || '').trim();
+            const apiKey = String(document.getElementById('templateApiKey').value || '').trim();
+            const schemaUrl = String(document.getElementById('templateSchemaUrl').value || '').trim();
+
+            if (!name || !apiUrl || !apiKey) {
+                alert('Template name, API URL and API key are required.');
+                return;
+            }
+
+            const inputMapping = collectInputMappingFromModal();
+            const outputMapping = collectOutputMappingFromModal();
+            const isEdit = !!editingTemplateId;
+
+            try {
+                const endpoint = isEdit ? `/api/enrichment/templates/${editingTemplateId}` : '/api/enrichment/templates';
+                const method = isEdit ? 'PUT' : 'POST';
+                const response = await fetch(endpoint, {
+                    method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name,
+                        service: 'http_enrichment',
+                        api_config: {
+                            api_url: apiUrl,
+                            api_key: apiKey,
+                            schema_url: schemaUrl,
+                        },
+                        input_mapping: inputMapping,
+                        output_mapping: outputMapping,
+                        schema_cache: templateSchema || {}
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || `HTTP ${response.status}`);
+                }
+
+                closeCreateTemplateModal();
+                await loadTemplates();
+                alert(isEdit ? 'Template updated successfully.' : 'Template created successfully.');
+            } catch (error) {
+                alert(`Template save failed: ${error.message}`);
+            }
+        }
+
+        async function deleteTemplate(clickEvent, templateId) {
+            if (clickEvent) {
+                clickEvent.stopPropagation();
+            }
+            if (!confirm('Delete this template?')) return;
+            try {
+                const response = await fetch(`/api/enrichment/templates/${templateId}`, { method: 'DELETE' });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(data.detail || `HTTP ${response.status}`);
+                }
+                if (selectedTemplate && selectedTemplate.id === templateId) {
+                    selectedTemplate = null;
+                    hideRunControls();
+                }
+                await loadTemplates();
+            } catch (error) {
+                alert(`Delete failed: ${error.message}`);
+            }
+        }
+
+        async function editTemplate(clickEvent, templateId) {
+            if (clickEvent) clickEvent.stopPropagation();
+            try {
+                const response = await fetch(`/api/enrichment/templates/${templateId}`);
+                const template = await response.json();
+                if (!response.ok) {
+                    throw new Error(template.detail || `HTTP ${response.status}`);
+                }
+
+                editingTemplateId = templateId;
+                templateSchema = template.schema_cache || null;
+                document.getElementById('templateModalTitle').textContent = 'Edit Enrichment Template';
+                document.getElementById('saveTemplateBtn').textContent = 'Update Template';
+                document.getElementById('templateName').value = template.name || '';
+                document.getElementById('templateApiUrl').value = (template.api_config || {}).api_url || '';
+                document.getElementById('templateApiKey').value = (template.api_config || {}).api_key || '';
+                document.getElementById('templateSchemaUrl').value = (template.api_config || {}).schema_url || 'https://promising-investments-complexity-municipal.trycloudflare.com/api/public/schema/enrichment';
+
+                const schemaForRendering = templateSchema || {
+                    input_fields: Object.keys(template.input_mapping || {}).map((key) => ({ key, label: key, required: false, placeholder: '' })),
+                    required_input_fields: [],
+                    enrichment_fields: Object.keys(template.output_mapping || {}).map((key) => ({ key, label: key, enabled: true }))
+                };
+                renderInputMappingRows(schemaForRendering);
+                renderOutputMappingRows(schemaForRendering);
+
+                const inputMapping = template.input_mapping || {};
+                document.querySelectorAll('[data-input-key]').forEach((select) => {
+                    const key = select.getAttribute('data-input-key');
+                    const mappedValue = String(inputMapping[key] || '');
+                    const literalInput = document.querySelector(`[data-input-literal="${key}"]`);
+                    if (mappedValue.startsWith('literal:')) {
+                        select.value = '';
+                        if (literalInput) literalInput.value = mappedValue.slice('literal:'.length);
+                    } else {
+                        select.value = mappedValue;
+                        if (literalInput) literalInput.value = '';
+                    }
+                });
+
+                const outputMapping = template.output_mapping || {};
+                document.querySelectorAll('[data-output-key]').forEach((select) => {
+                    const key = select.getAttribute('data-output-key');
+                    const mappedValue = String(outputMapping[key] || '');
+                    select.value = mappedValue;
+                });
+
+                document.getElementById('schemaLoadStatus').textContent = 'Loaded template mapping.';
+                document.getElementById('createTemplateModal').classList.remove('hidden');
+            } catch (error) {
+                alert(`Failed to load template: ${error.message}`);
+            }
+        }
+
+        async function startEnrichment() {
+            if (!selectedCampaign || !selectedTemplate) {
+                alert('Select campaign and template first.');
+                return;
+            }
+
+            const concurrency = Number(document.getElementById('runConcurrency').value || 1);
+            const maxRetries = Number(document.getElementById('runRetries').value || 1);
+            const apiUrl = String(document.getElementById('runApiUrl').value || '').trim();
+            const apiKey = String(document.getElementById('runApiKey').value || '').trim();
+            const overwriteExisting = document.getElementById('runOverwrite').checked;
+            const skipMissingInput = document.getElementById('runSkipMissing').checked;
+
+            try {
+                const response = await fetch(`/api/campaign/${selectedCampaign}/enrichment/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        template_id: selectedTemplate.id,
+                        api_url: apiUrl,
+                        api_key: apiKey,
+                        concurrency,
+                        max_retries: maxRetries,
+                        overwrite_existing: overwriteExisting,
+                        skip_missing_input: skipMissingInput
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || `HTTP ${response.status}`);
+                }
+
+                activeRunId = data.run?.run_id || null;
+                if (activeRunId) {
+                    showProgressSection();
+                    renderRunStatus(data.run, data.logs || []);
+                    startPolling();
+                }
+            } catch (error) {
+                alert(`Start failed: ${error.message}`);
+            }
+        }
+
+        async function loadActiveRunForCampaign() {
+            if (!selectedCampaign) return;
+            try {
+                const response = await fetch(`/api/campaign/${selectedCampaign}/enrichment-run/active`);
+                const data = await response.json();
+                if (!response.ok) return;
+
+                if (data.run) {
+                    activeRunId = data.run.run_id;
+                    showProgressSection();
+                    renderRunStatus(data.run, data.logs || []);
+                    startPolling();
+                } else {
+                    activeRunId = null;
+                    stopPolling();
+                }
+            } catch (error) {
+                console.error('Error loading active run:', error);
+            }
+        }
+
+        async function pollRunStatus() {
+            if (!activeRunId) return;
+            try {
+                const response = await fetch(`/api/enrichment/runs/${activeRunId}?log_limit=300`);
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || `HTTP ${response.status}`);
+                }
+
+                renderRunStatus(data.run || {}, data.logs || []);
+                if (['completed', 'failed', 'cancelled'].includes(data.run?.status || '')) {
+                    stopPolling();
+                    await loadRunHistory();
+                }
+            } catch (error) {
+                console.error('Error polling run status:', error);
+                stopPolling();
+            }
+        }
+
+        function renderRunStatus(run, logs) {
+            if (!run) return;
+            showProgressSection();
+
+            const status = run.status || 'idle';
+            const total = Number(run.total_contacts || 0);
+            const processed = Number(run.processed_contacts || 0);
+            const enriched = Number(run.enriched_contacts || 0);
+            const failed = Number(run.failed_contacts || 0);
+            const skipped = Number(run.skipped_contacts || 0);
+            const percent = Math.max(0, Math.min(100, Number(run.progress_percent || 0)));
+
+            const badge = document.getElementById('runStatusBadge');
+            badge.className = `inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${statusBadgeClass(status)}`;
+            badge.textContent = status;
+
+            document.getElementById('runProgressSummary').textContent = `${processed} / ${total}`;
+            document.getElementById('runProgressBar').style.width = `${percent}%`;
+            document.getElementById('runTotal').textContent = total;
+            document.getElementById('runEnriched').textContent = enriched;
+            document.getElementById('runFailed').textContent = failed;
+            document.getElementById('runSkipped').textContent = skipped;
+            document.getElementById('runCurrent').textContent = run.current_contact_name || '-';
+
+            const errorBox = document.getElementById('runError');
+            if (run.latest_error) {
+                errorBox.classList.remove('hidden');
+                errorBox.textContent = run.latest_error;
+            } else {
+                errorBox.classList.add('hidden');
+                errorBox.textContent = '';
+            }
+
+            const logsBox = document.getElementById('runLogs');
+            logsBox.innerHTML = (logs || []).map(log => {
+                const ts = log.created_at ? new Date(log.created_at).toLocaleTimeString() : '';
+                const level = String(log.level || 'info').toUpperCase();
+                return `<div>[${escapeHtml(ts)}] [${escapeHtml(level)}] ${escapeHtml(log.message || '')}</div>`;
+            }).join('');
+            logsBox.scrollTop = logsBox.scrollHeight;
+
+            const isActive = ['queued', 'running', 'paused'].includes(status);
+            document.getElementById('pauseEnrichmentBtn').disabled = !isActive || status === 'paused';
+            document.getElementById('resumeEnrichmentBtn').disabled = !isActive || status === 'running';
+            document.getElementById('cancelEnrichmentBtn').disabled = !isActive;
+            document.getElementById('startEnrichmentBtn').disabled = status === 'running' || status === 'queued';
+        }
+
+        function startPolling() {
+            stopPolling();
+            pollTimer = setInterval(() => {
+                pollRunStatus();
+            }, 2000);
+        }
+
+        function stopPolling() {
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+        }
+
+        async function runAction(action) {
+            if (!activeRunId) return;
+            try {
+                const response = await fetch(`/api/enrichment/runs/${activeRunId}/${action}`, { method: 'POST' });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || `HTTP ${response.status}`);
+                }
+                renderRunStatus(data.run || {}, data.logs || []);
+                if (action === 'resume') {
+                    startPolling();
+                }
+                if (action === 'cancel' && ['cancelled', 'completed'].includes(data.run?.status || '')) {
+                    stopPolling();
+                }
+            } catch (error) {
+                alert(`${action} failed: ${error.message}`);
+            }
+        }
+
+        async function loadRunHistory() {
+            if (!selectedCampaign) return;
+            try {
+                const response = await fetch(`/api/campaign/${selectedCampaign}/enrichment-history`);
+                const data = await response.json();
+                const history = data.history || [];
+                const container = document.getElementById('runHistory');
+                if (history.length === 0) {
+                    container.innerHTML = '<p class="text-sm text-gray-500">No enrichment runs yet.</p>';
+                    return;
+                }
+                container.innerHTML = history.map(run => `
+                    <div class="border border-gray-200 rounded-lg p-3">
+                        <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                                <div class="font-medium">${escapeHtml(run.template_name || 'Template')}</div>
+                                <div class="text-xs text-gray-500">Run #${run.run_id}</div>
+                            </div>
+                            <div class="text-xs text-gray-500">${run.created_at ? new Date(run.created_at).toLocaleString() : ''}</div>
+                        </div>
+                        <div class="text-sm text-gray-700 mt-2">
+                            Status: <strong>${escapeHtml(run.status || 'idle')}</strong> •
+                            ${Number(run.processed_contacts || 0)}/${Number(run.total_contacts || 0)} •
+                            Enriched ${Number(run.enriched_contacts || 0)} • Failed ${Number(run.failed_contacts || 0)} • Skipped ${Number(run.skipped_contacts || 0)}
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('Error loading run history:', error);
+            }
+        }
+
+        function openCreateTemplateModal() {
+            editingTemplateId = null;
+            templateSchema = null;
+            document.getElementById('templateModalTitle').textContent = 'Create Enrichment Template';
+            document.getElementById('saveTemplateBtn').textContent = 'Create Template';
+            document.getElementById('schemaLoadStatus').textContent = 'Load schema to build input/output mapper.';
+            document.getElementById('inputMappingRows').innerHTML = '';
+            document.getElementById('outputMappingRows').innerHTML = '';
+            document.getElementById('createTemplateModal').classList.remove('hidden');
+        }
+
+        function closeCreateTemplateModal() {
+            document.getElementById('createTemplateModal').classList.add('hidden');
+            document.getElementById('createTemplateForm').reset();
+            editingTemplateId = null;
+            document.getElementById('templateModalTitle').textContent = 'Create Enrichment Template';
+            document.getElementById('saveTemplateBtn').textContent = 'Create Template';
+            document.getElementById('templateApiUrl').value = 'https://promising-investments-complexity-municipal.trycloudflare.com/api/public/enrich';
+            document.getElementById('templateSchemaUrl').value = 'https://promising-investments-complexity-municipal.trycloudflare.com/api/public/schema/enrichment';
+            templateSchema = null;
+        }
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadCampaigns();
+            await loadTemplates();
+
+            document.getElementById('campaignSelect').addEventListener('change', async (event) => {
+                selectedCampaign = event.target.value || null;
+                activeRunId = null;
+                stopPolling();
+                if (selectedCampaign) {
+                    maybeShowSections();
+                    await loadRunHistory();
+                    await loadActiveRunForCampaign();
+                }
+            });
+
+            document.getElementById('createTemplateBtn').addEventListener('click', openCreateTemplateModal);
+            document.getElementById('cancelCreateTemplate').addEventListener('click', closeCreateTemplateModal);
+            document.getElementById('loadSchemaBtn').addEventListener('click', loadSchemaForTemplateCreation);
+            document.getElementById('createTemplateForm').addEventListener('submit', createTemplate);
+
+            document.getElementById('startEnrichmentBtn').addEventListener('click', startEnrichment);
+            document.getElementById('pauseEnrichmentBtn').addEventListener('click', () => runAction('pause'));
+            document.getElementById('resumeEnrichmentBtn').addEventListener('click', () => runAction('resume'));
+            document.getElementById('cancelEnrichmentBtn').addEventListener('click', () => runAction('cancel'));
+        });
+    </script>
+</body>
+</html>

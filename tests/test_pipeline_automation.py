@@ -206,6 +206,28 @@ def _install_stub_modules():
     email_verification.MyEmailVerifierIntegration = MyEmailVerifierIntegration
     sys.modules["email_verification"] = email_verification
 
+    requests_module = types.ModuleType("requests")
+
+    class _DummyResponse:
+        def __init__(self, status_code=200, payload=None):
+            self.status_code = status_code
+            self._payload = payload or {}
+            self.text = ""
+            self.content = b"{}"
+
+        def json(self):
+            return self._payload
+
+    def _dummy_post(*_args, **_kwargs):
+        return _DummyResponse()
+
+    def _dummy_get(*_args, **_kwargs):
+        return _DummyResponse(payload={"input_fields": [], "required_input_fields": [], "enrichment_fields": []})
+
+    requests_module.post = _dummy_post
+    requests_module.get = _dummy_get
+    sys.modules["requests"] = requests_module
+
 
 def load_main_module():
     for module_name in [
@@ -638,6 +660,73 @@ class PipelineUnitLogicTests(unittest.TestCase):
         self.main._apply_city_fallback_for_export(contacts, {1001: "Mondovi", 1002: "Durand"})
         self.assertEqual(contacts[0]["city"], "Mondovi")
         self.assertEqual(contacts[1]["city"], "Elmwood")
+
+    def test_resolve_enrichment_input_value_supports_literal_and_field(self):
+        contact = {"city": "Chicago", "state": "IL"}
+        self.assertEqual(self.main._resolve_enrichment_input_value(contact, "city"), "Chicago")
+        self.assertEqual(self.main._resolve_enrichment_input_value(contact, "literal:Wisconsin"), "Wisconsin")
+        self.assertEqual(self.main._resolve_enrichment_input_value(contact, "TX"), "TX")
+
+    def test_build_enrichment_payload_tracks_missing_required(self):
+        contact = {"business_name": "Acme", "city": "", "state": "WI"}
+        payload, missing = self.main._build_enrichment_payload(
+            contact,
+            {"company": "business_name", "city": "city", "state": "state"},
+            ["company", "city", "state"],
+        )
+        self.assertEqual(payload["company"], "Acme")
+        self.assertEqual(payload["state"], "WI")
+        self.assertIn("city", missing)
+
+    def test_apply_enrichment_output_mapping_validates_local_fields(self):
+        mapped = self.main._apply_enrichment_output_mapping(
+            {"owner_firstname": "Shay", "top_service": "Locksmith"},
+            {"owner_firstname": "firstname", "top_service": "custom_2", "bad": "not_real_field"},
+        )
+        self.assertEqual(mapped["firstname"], "Shay")
+        self.assertEqual(mapped["custom_2"], "Locksmith")
+        self.assertNotIn("not_real_field", mapped)
+
+    def test_compute_enrichment_progress_payload_prefers_active_run(self):
+        active = {
+            "id": 9,
+            "campaign_id": 3,
+            "template_id": 2,
+            "status": "running",
+            "total_contacts": 100,
+            "processed_contacts": 40,
+            "enriched_contacts": 30,
+            "failed_contacts": 5,
+            "skipped_contacts": 5,
+            "current_contact_name": "Acme",
+            "pause_requested": False,
+            "cancel_requested": False,
+            "concurrency": 2,
+            "max_retries": 1,
+            "overwrite_existing": False,
+            "skip_missing_input": True,
+        }
+        latest = {
+            "id": 8,
+            "campaign_id": 3,
+            "template_id": 2,
+            "status": "completed",
+            "total_contacts": 20,
+            "processed_contacts": 20,
+            "enriched_contacts": 20,
+            "failed_contacts": 0,
+            "skipped_contacts": 0,
+            "pause_requested": False,
+            "cancel_requested": False,
+            "concurrency": 1,
+            "max_retries": 1,
+            "overwrite_existing": False,
+            "skip_missing_input": True,
+        }
+        payload = self.main._compute_enrichment_progress_payload(3, active, latest)
+        self.assertEqual(payload["run_id"], 9)
+        self.assertEqual(payload["status"], "running")
+        self.assertEqual(payload["processed_contacts"], 40)
 
 
 if __name__ == "__main__":
