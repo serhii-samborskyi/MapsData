@@ -134,6 +134,10 @@
                             <label class="block text-sm font-medium mb-2">API Key</label>
                             <input id="templateApiKey" type="password" class="w-full p-2 border border-gray-300 rounded-lg" required>
                         </div>
+                        <div>
+                            <label class="block text-sm font-medium mb-2">Timeout (seconds)</label>
+                            <input id="templateTimeoutSeconds" type="number" min="15" max="600" value="120" class="w-full p-2 border border-gray-300 rounded-lg" required>
+                        </div>
                         <div class="md:col-span-2">
                             <label class="block text-sm font-medium mb-2">Schema URL</label>
                             <div class="flex gap-2">
@@ -411,6 +415,7 @@
             const name = String(document.getElementById('templateName').value || '').trim();
             const apiUrl = String(document.getElementById('templateApiUrl').value || '').trim();
             const apiKey = String(document.getElementById('templateApiKey').value || '').trim();
+            const timeoutSeconds = Number(document.getElementById('templateTimeoutSeconds').value || 120);
             const schemaUrl = String(document.getElementById('templateSchemaUrl').value || '').trim();
 
             if (!name || !apiUrl || !apiKey) {
@@ -435,6 +440,7 @@
                             api_url: apiUrl,
                             api_key: apiKey,
                             schema_url: schemaUrl,
+                            timeout_seconds: timeoutSeconds,
                         },
                         input_mapping: inputMapping,
                         output_mapping: outputMapping,
@@ -491,6 +497,7 @@
                 document.getElementById('templateName').value = template.name || '';
                 document.getElementById('templateApiUrl').value = (template.api_config || {}).api_url || '';
                 document.getElementById('templateApiKey').value = (template.api_config || {}).api_key || '';
+                document.getElementById('templateTimeoutSeconds').value = Number((template.api_config || {}).timeout_seconds || 120);
                 document.getElementById('templateSchemaUrl').value = (template.api_config || {}).schema_url || 'https://promising-investments-complexity-municipal.trycloudflare.com/api/public/schema/enrichment';
 
                 const schemaForRendering = templateSchema || {
@@ -787,6 +794,7 @@
             document.getElementById('templateModalTitle').textContent = 'Create Enrichment Template';
             document.getElementById('saveTemplateBtn').textContent = 'Create Template';
             document.getElementById('templateApiUrl').value = 'https://promising-investments-complexity-municipal.trycloudflare.com/api/public/enrich';
+            document.getElementById('templateTimeoutSeconds').value = 120;
             document.getElementById('templateSchemaUrl').value = 'https://promising-investments-complexity-municipal.trycloudflare.com/api/public/schema/enrichment';
             templateSchema = null;
         }

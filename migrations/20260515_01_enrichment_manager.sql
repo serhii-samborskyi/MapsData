@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS enrichment_runs (
     max_retries INTEGER NOT NULL DEFAULT 1,
     overwrite_existing BOOLEAN NOT NULL DEFAULT FALSE,
     skip_missing_input BOOLEAN NOT NULL DEFAULT TRUE,
+    timeout_seconds INTEGER NOT NULL DEFAULT 120,
     input_mapping TEXT NOT NULL DEFAULT '{}',
     output_mapping TEXT NOT NULL DEFAULT '{}',
     required_inputs TEXT NOT NULL DEFAULT '[]',
@@ -45,6 +46,10 @@ CREATE TABLE IF NOT EXISTS enrichment_runs (
 ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS input_mapping TEXT DEFAULT '{}';
 ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS output_mapping TEXT DEFAULT '{}';
 ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS required_inputs TEXT DEFAULT '[]';
+ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS timeout_seconds INTEGER DEFAULT 120;
+UPDATE enrichment_runs SET timeout_seconds = 120 WHERE timeout_seconds IS NULL OR timeout_seconds < 1;
+ALTER TABLE enrichment_runs ALTER COLUMN timeout_seconds SET DEFAULT 120;
+ALTER TABLE enrichment_runs ALTER COLUMN timeout_seconds SET NOT NULL;
 
 CREATE TABLE IF NOT EXISTS enrichment_run_contacts (
     id BIGSERIAL PRIMARY KEY,

@@ -79,6 +79,9 @@ MAX_ENRICHMENT_LOGS = 300
 MAX_ENRICHMENT_CONCURRENCY = 20
 DEFAULT_ENRICHMENT_API_URL = "https://promising-investments-complexity-municipal.trycloudflare.com/api/public/enrich"
 DEFAULT_ENRICHMENT_SCHEMA_URL = "https://promising-investments-complexity-municipal.trycloudflare.com/api/public/schema/enrichment"
+DEFAULT_ENRICHMENT_TIMEOUT_SECONDS = 120
+MIN_ENRICHMENT_TIMEOUT_SECONDS = 15
+MAX_ENRICHMENT_TIMEOUT_SECONDS = 600
 
 
 def _now_utc() -> datetime:
@@ -734,6 +737,14 @@ def _safe_json_loads(value: Any, default: Any):
         return default
 
 
+def _normalize_enrichment_timeout(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = DEFAULT_ENRICHMENT_TIMEOUT_SECONDS
+    return max(MIN_ENRICHMENT_TIMEOUT_SECONDS, min(parsed, MAX_ENRICHMENT_TIMEOUT_SECONDS))
+
+
 def _serialize_enrichment_run(run: Optional[dict]) -> dict:
     if not run:
         return {
@@ -762,6 +773,7 @@ def _serialize_enrichment_run(run: Optional[dict]) -> dict:
             "max_retries": 0,
             "overwrite_existing": False,
             "skip_missing_input": True,
+            "timeout_seconds": DEFAULT_ENRICHMENT_TIMEOUT_SECONDS,
         }
 
     total = int(run.get("total_contacts") or 0)
@@ -794,6 +806,7 @@ def _serialize_enrichment_run(run: Optional[dict]) -> dict:
         "max_retries": int(run.get("max_retries") or 1),
         "overwrite_existing": bool(run.get("overwrite_existing")),
         "skip_missing_input": bool(run.get("skip_missing_input")),
+        "timeout_seconds": _normalize_enrichment_timeout(run.get("timeout_seconds")),
     }
 
 
@@ -1385,6 +1398,7 @@ def _process_enrichment_contact_task(
     output_mapping: dict,
     required_inputs: List[str],
     max_retries: int,
+    timeout_seconds: int,
     request_city_map: Optional[dict[int, str]] = None,
 ):
     with get_db() as conn:
@@ -1441,7 +1455,7 @@ def _process_enrichment_contact_task(
         last_error = "Unknown enrichment error"
         for attempts in range(1, max(1, int(max_retries)) + 1):
             try:
-                response = requests.post(api_url, headers=headers, json=payload, timeout=45)
+                response = requests.post(api_url, headers=headers, json=payload, timeout=max(1, int(timeout_seconds)))
                 if response.status_code >= 400:
                     raise RuntimeError(f"HTTP {response.status_code}: {response.text[:300]}")
                 response_data = response.json() if response.content else {}
@@ -1504,6 +1518,7 @@ def _run_enrichment_job(run_id: int):
             concurrency = max(1, min(int(run.get("concurrency") or 1), MAX_ENRICHMENT_CONCURRENCY))
             max_retries = max(1, min(int(run.get("max_retries") or 1), 10))
             campaign_id = int(run.get("campaign_id"))
+            timeout_seconds = _normalize_enrichment_timeout(run.get("timeout_seconds"))
             request_city_map = _build_campaign_request_city_map(cursor, campaign_id)
 
             cursor.execute(
@@ -1620,6 +1635,7 @@ def _run_enrichment_job(run_id: int):
                             output_mapping,
                             required_inputs,
                             max_retries,
+                            timeout_seconds,
                             request_city_map,
                         )
                         inflight[fut] = claimed
@@ -5640,6 +5656,8 @@ async def create_enrichment_template(request: Request):
 
     service = str(data.get("service") or "http_enrichment").strip() or "http_enrichment"
     api_config = data.get("api_config") or {}
+    api_config = dict(api_config)
+    api_config["timeout_seconds"] = _normalize_enrichment_timeout(api_config.get("timeout_seconds"))
     input_mapping = data.get("input_mapping") or {}
     output_mapping = data.get("output_mapping") or {}
     schema_cache = data.get("schema_cache") or {}
@@ -5688,6 +5706,8 @@ async def update_enrichment_template(template_id: int, request: Request):
 
     service = str(data.get("service") or existing.get("service") or "http_enrichment").strip() or "http_enrichment"
     api_config = data.get("api_config") if isinstance(data.get("api_config"), dict) else existing.get("api_config", {})
+    api_config = dict(api_config or {})
+    api_config["timeout_seconds"] = _normalize_enrichment_timeout(api_config.get("timeout_seconds"))
     input_mapping = data.get("input_mapping") if isinstance(data.get("input_mapping"), dict) else existing.get("input_mapping", {})
     output_mapping = data.get("output_mapping") if isinstance(data.get("output_mapping"), dict) else existing.get("output_mapping", {})
     schema_cache = data.get("schema_cache") if isinstance(data.get("schema_cache"), dict) else existing.get("schema_cache", {})
@@ -5762,6 +5782,12 @@ async def start_enrichment_run(campaign_id: int, request: Request):
     template_api_config = template.get("api_config") or {}
     api_url = str(data.get("api_url") or template_api_config.get("api_url") or DEFAULT_ENRICHMENT_API_URL).strip()
     api_key = str(data.get("api_key") or template_api_config.get("api_key") or "").strip()
+    timeout_seconds = _normalize_enrichment_timeout(
+        data.get("timeout_seconds") if data.get("timeout_seconds") is not None else template_api_config.get("timeout_seconds")
+    )
+    timeout_seconds = _normalize_enrichment_timeout(
+        data.get("timeout_seconds") if data.get("timeout_seconds") is not None else template_api_config.get("timeout_seconds")
+    )
 
     if not api_url:
         raise HTTPException(status_code=400, detail="api_url is required")
@@ -5809,12 +5835,13 @@ async def start_enrichment_run(campaign_id: int, request: Request):
                 max_retries,
                 overwrite_existing,
                 skip_missing_input,
+                timeout_seconds,
                 input_mapping,
                 output_mapping,
                 required_inputs,
                 created_by
             )
-            VALUES (%s, %s, 'queued', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, 'queued', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -5826,6 +5853,7 @@ async def start_enrichment_run(campaign_id: int, request: Request):
                 max_retries,
                 overwrite_existing,
                 skip_missing_input,
+                timeout_seconds,
                 json.dumps(input_mapping or {}),
                 json.dumps(output_mapping or {}),
                 json.dumps(required_inputs or []),
@@ -5900,8 +5928,8 @@ async def start_enrichment_run(campaign_id: int, request: Request):
             cursor,
             run_id,
             campaign_id,
-            f"Run created: total={len(contacts)}, pending={pending_count}, skipped={skipped_count}, concurrency={concurrency}, retries={max_retries}",
-            "info",
+                f"Run created: total={len(contacts)}, pending={pending_count}, skipped={skipped_count}, concurrency={concurrency}, retries={max_retries}",
+                "info",
         )
         if skipped_reason_aggregate["output_already_present"]:
             _append_enrichment_log(
@@ -6010,7 +6038,7 @@ async def test_enrichment_run(campaign_id: int, request: Request):
     headers = {"Content-Type": "application/json", "x-api-key": api_key}
     start_time = time.time()
     try:
-        response = requests.post(api_url, headers=headers, json=selected_payload, timeout=45)
+        response = requests.post(api_url, headers=headers, json=selected_payload, timeout=timeout_seconds)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Enrichment test request failed: {str(exc)}")
 
@@ -6042,6 +6070,7 @@ async def test_enrichment_run(campaign_id: int, request: Request):
     return {
         "status": "ok",
         "latency_ms": latency_ms,
+        "timeout_seconds": timeout_seconds,
         "contact_id": selected_contact.get("id"),
         "contact_name": selected_contact.get("business_name"),
         "request_payload": selected_payload,
@@ -6471,6 +6500,7 @@ async def create_default_templates():
                     "api_url": DEFAULT_ENRICHMENT_API_URL,
                     "api_key": "",
                     "schema_url": DEFAULT_ENRICHMENT_SCHEMA_URL,
+                    "timeout_seconds": DEFAULT_ENRICHMENT_TIMEOUT_SECONDS,
                 },
                 {
                     "company": "business_name",
