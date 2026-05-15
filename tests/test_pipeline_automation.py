@@ -678,6 +678,17 @@ class PipelineUnitLogicTests(unittest.TestCase):
         self.assertEqual(payload["state"], "WI")
         self.assertIn("city", missing)
 
+    def test_enrichment_payload_uses_city_fallback_from_request_map(self):
+        contacts = [{"id": 1, "business_name": "Acme", "city": "", "state": "WI", "request_id": 1001, "address": ""}]
+        self.main._apply_city_fallback_for_export(contacts, {1001: "Mondovi"})
+        payload, missing = self.main._build_enrichment_payload(
+            contacts[0],
+            {"company": "business_name", "city": "city", "state": "state"},
+            ["company", "city", "state"],
+        )
+        self.assertEqual(payload["city"], "Mondovi")
+        self.assertEqual(missing, [])
+
     def test_apply_enrichment_output_mapping_validates_local_fields(self):
         mapped = self.main._apply_enrichment_output_mapping(
             {"owner_firstname": "Shay", "top_service": "Locksmith"},

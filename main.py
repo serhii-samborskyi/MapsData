@@ -1385,6 +1385,7 @@ def _process_enrichment_contact_task(
     output_mapping: dict,
     required_inputs: List[str],
     max_retries: int,
+    request_city_map: Optional[dict[int, str]] = None,
 ):
     with get_db() as conn:
         cursor = conn.cursor()
@@ -1413,6 +1414,7 @@ def _process_enrichment_contact_task(
             return
 
         contact = dict(contact_row)
+        _apply_city_fallback_for_export([contact], request_city_map or {})
         contact_name = str(contact.get("business_name") or "").strip()
         payload, missing_required = _build_enrichment_payload(contact, input_mapping, required_inputs)
 
@@ -1502,6 +1504,7 @@ def _run_enrichment_job(run_id: int):
             concurrency = max(1, min(int(run.get("concurrency") or 1), MAX_ENRICHMENT_CONCURRENCY))
             max_retries = max(1, min(int(run.get("max_retries") or 1), 10))
             campaign_id = int(run.get("campaign_id"))
+            request_city_map = _build_campaign_request_city_map(cursor, campaign_id)
 
             cursor.execute(
                 """
@@ -1617,6 +1620,7 @@ def _run_enrichment_job(run_id: int):
                             output_mapping,
                             required_inputs,
                             max_retries,
+                            request_city_map,
                         )
                         inflight[fut] = claimed
 
@@ -5832,6 +5836,8 @@ async def start_enrichment_run(campaign_id: int, request: Request):
 
         cursor.execute("SELECT * FROM contacts WHERE campaign_id = %s ORDER BY id ASC", (campaign_id,))
         contacts = [dict(row) for row in cursor.fetchall()]
+        request_city_map = _build_campaign_request_city_map(cursor, campaign_id)
+        _apply_city_fallback_for_export(contacts, request_city_map)
         pending_count = 0
         skipped_count = 0
         skipped_reason_aggregate = {"output_already_present": 0, "missing_required_input": 0}
@@ -5969,6 +5975,8 @@ async def test_enrichment_run(campaign_id: int, request: Request):
             (campaign_id,),
         )
         sample_contacts = [dict(row) for row in cursor.fetchall()]
+        request_city_map = _build_campaign_request_city_map(cursor, campaign_id)
+        _apply_city_fallback_for_export(sample_contacts, request_city_map)
 
     if not sample_contacts:
         raise HTTPException(status_code=404, detail="No contacts found in campaign")
