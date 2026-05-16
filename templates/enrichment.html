@@ -97,7 +97,10 @@
             </div>
             <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm mb-3">
                 <div class="rounded border border-slate-200 bg-white px-2 py-2">Total: <span id="runTotal">0</span></div>
-                <div class="rounded border border-slate-200 bg-white px-2 py-2">Enriched: <span id="runEnriched">0</span></div>
+                <div class="rounded border border-slate-200 bg-white px-2 py-2">
+                    <div>Enriched: <span id="runEnriched">0</span></div>
+                    <div id="runFieldCoverage" class="mt-1 space-y-0.5 text-[11px] text-slate-600"></div>
+                </div>
                 <div class="rounded border border-slate-200 bg-white px-2 py-2">Failed: <span id="runFailed">0</span></div>
                 <div class="rounded border border-slate-200 bg-white px-2 py-2">Skipped: <span id="runSkipped">0</span></div>
                 <div class="rounded border border-slate-200 bg-white px-2 py-2">Current: <span id="runCurrent">-</span></div>
@@ -685,6 +688,20 @@
             document.getElementById('runFailed').textContent = failed;
             document.getElementById('runSkipped').textContent = skipped;
             document.getElementById('runCurrent').textContent = run.current_contact_name || '-';
+            const coverageBox = document.getElementById('runFieldCoverage');
+            const coverage = Array.isArray(run.field_coverage) ? run.field_coverage : [];
+            if (coverage.length) {
+                coverageBox.innerHTML = coverage.map(item => {
+                    const apiField = item.api_field || '-';
+                    const localField = item.local_field || '-';
+                    const foundCount = Number(item.found_count || 0);
+                    const totalRecords = Number(item.total_records || total);
+                    const pct = Number(item.percentage || 0).toFixed(2);
+                    return `<div>${escapeHtml(apiField)} \u2192 ${escapeHtml(localField)}: ${foundCount}/${totalRecords} (${pct}%)</div>`;
+                }).join('');
+            } else {
+                coverageBox.textContent = 'No per-field results yet';
+            }
 
             const errorBox = document.getElementById('runError');
             if (run.latest_error) {

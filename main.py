@@ -810,6 +810,62 @@ def _serialize_enrichment_run(run: Optional[dict]) -> dict:
     }
 
 
+def _compute_enrichment_field_coverage(cursor, run: Optional[dict]) -> List[dict]:
+    if not run:
+        return []
+
+    run_id = run.get("id")
+    try:
+        run_id_int = int(run_id)
+    except (TypeError, ValueError):
+        return []
+
+    total_records = int(run.get("total_contacts") or 0)
+    output_mapping = _safe_json_loads(run.get("output_mapping"), {})
+    if not isinstance(output_mapping, dict) or not output_mapping:
+        return []
+
+    coverage_rows: List[dict] = []
+    for api_field, local_field in output_mapping.items():
+        api_key = _normalize_mapping_value(api_field)
+        local_key = _normalize_mapping_value(local_field)
+        if not api_key or not local_key:
+            continue
+        if local_key not in ENRICHMENT_LOCAL_FIELD_SET:
+            continue
+
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS found_count
+            FROM enrichment_run_contacts
+            WHERE run_id = %s
+              AND COALESCE(NULLIF(btrim(response_payload->>%s), ''), '') != ''
+            """,
+            (run_id_int, api_key),
+        )
+        found_count = int((cursor.fetchone() or {}).get("found_count") or 0)
+        percentage = round((found_count / total_records) * 100, 2) if total_records > 0 else 0
+        coverage_rows.append({
+            "api_field": api_key,
+            "local_field": local_key,
+            "found_count": found_count,
+            "total_records": total_records,
+            "percentage": percentage,
+        })
+
+    coverage_rows.sort(key=lambda item: item["api_field"])
+    return coverage_rows
+
+
+def _serialize_enrichment_run_with_coverage(cursor, run: Optional[dict]) -> dict:
+    payload = _serialize_enrichment_run(run)
+    if cursor is None:
+        payload["field_coverage"] = []
+    else:
+        payload["field_coverage"] = _compute_enrichment_field_coverage(cursor, run)
+    return payload
+
+
 def _append_enrichment_log(cursor, run_id: int, campaign_id: int, message: str, level: str = "info", contact_id: Optional[int] = None):
     cursor.execute(
         """
@@ -5816,7 +5872,7 @@ async def start_enrichment_run(campaign_id: int, request: Request):
             logs = _load_enrichment_logs(cursor, int(active_run["id"]), limit=150)
             return {
                 "idempotent": True,
-                "run": _serialize_enrichment_run(active_run),
+                "run": _serialize_enrichment_run_with_coverage(cursor, active_run),
                 "logs": logs,
             }
 
@@ -5946,6 +6002,7 @@ async def start_enrichment_run(campaign_id: int, request: Request):
             )
 
         run = _load_enrichment_run(cursor, run_id)
+        run_payload = _serialize_enrichment_run_with_coverage(cursor, run)
         logs = _load_enrichment_logs(cursor, run_id, limit=150)
         conn.commit()
 
@@ -5954,7 +6011,7 @@ async def start_enrichment_run(campaign_id: int, request: Request):
 
     return {
         "idempotent": False,
-        "run": _serialize_enrichment_run(run),
+        "run": run_payload,
         "logs": logs,
     }
 
@@ -6087,7 +6144,7 @@ async def get_enrichment_run_status(run_id: int, log_limit: int = 200):
         if not run:
             raise HTTPException(status_code=404, detail="Run not found")
         logs = _load_enrichment_logs(cursor, run_id, limit=log_limit)
-        return {"run": _serialize_enrichment_run(run), "logs": logs}
+        return {"run": _serialize_enrichment_run_with_coverage(cursor, run), "logs": logs}
 
 
 @app.get("/api/campaign/{campaign_id}/enrichment-run/active")
@@ -6099,7 +6156,7 @@ async def get_active_enrichment_run(campaign_id: int):
         if not active_run:
             return {"run": None}
         logs = _load_enrichment_logs(cursor, int(active_run["id"]), limit=100)
-        return {"run": _serialize_enrichment_run(active_run), "logs": logs}
+        return {"run": _serialize_enrichment_run_with_coverage(cursor, active_run), "logs": logs}
 
 
 @app.get("/api/campaign/{campaign_id}/enrichment-progress")
