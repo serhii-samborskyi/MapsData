@@ -73,6 +73,7 @@ PIPELINE_MAX_LEASE_SECONDS = 900
 PIPELINE_RECLAIM_HEARTBEAT_GRACE_SECONDS = 75
 PIPELINE_ALLOWED_CLAIM_ACTORS = {"daemon", "dashboard", "system", "worker"}
 MAPS_SCRAPE_MODES = {"fast", "slow"}
+PIPELINE_EMAIL_STAGES = {"email_fast", "email_fallback"}
 ENRICHMENT_RUN_STATUSES = {"queued", "running", "paused", "completed", "failed", "cancelled"}
 ENRICHMENT_ACTIVE_STATUSES = {"queued", "running", "paused"}
 MAX_ENRICHMENT_LOGS = 300
@@ -395,6 +396,17 @@ def _coerce_lease_seconds(value: Any) -> int:
     return lease_seconds
 
 
+def _coerce_bool_flag(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    candidate = str(value).strip().lower()
+    if not candidate:
+        return default
+    return candidate in {"1", "true", "yes", "y", "on"}
+
+
 def _normalize_maps_scrape_mode(value: Any, default: str = "slow") -> str:
     mode = str(value or "").strip().lower()
     if mode in MAPS_SCRAPE_MODES:
@@ -407,6 +419,15 @@ def _resolve_claim_machine_id(payload: dict) -> str:
     if machine_id:
         return machine_id
     return str(payload.get("worker_id") or "").strip()
+
+
+def _is_scrape_maps_only_campaign(cursor, campaign_id: int) -> bool:
+    cursor.execute(
+        "SELECT COALESCE(scrape_maps_only, FALSE) AS scrape_maps_only FROM search_campaigns WHERE id = %s",
+        (campaign_id,),
+    )
+    row = cursor.fetchone() or {}
+    return bool(row.get("scrape_maps_only"))
 
 
 async def _read_json_body(request: Request) -> dict:
@@ -1898,7 +1919,8 @@ async def get_campaigns(
                 sc.id,
                 sc.name,
                 sc.status,
-                COALESCE(sc.maps_scrape_mode, 'slow') AS maps_scrape_mode
+                COALESCE(sc.maps_scrape_mode, 'slow') AS maps_scrape_mode,
+                COALESCE(sc.scrape_maps_only, FALSE) AS scrape_maps_only
             FROM search_campaigns sc
             {search_clause}
             ORDER BY sc.id DESC
@@ -2519,17 +2541,19 @@ async def create_campaign(
     name: str = Form(...),
     search_phrases: str = Form(...),
     maps_scrape_mode: str = Form("slow"),
+    scrape_maps_only: Optional[str] = Form(None),
 ):
     phrases = [p.strip() for p in search_phrases.split("\n") if p.strip()]
     requested_mode = str(maps_scrape_mode or "").strip().lower()
     if requested_mode and requested_mode not in MAPS_SCRAPE_MODES:
         raise HTTPException(status_code=400, detail="Invalid maps_scrape_mode")
     normalized_mode = _normalize_maps_scrape_mode(requested_mode or "slow")
+    normalized_scrape_maps_only = _coerce_bool_flag(scrape_maps_only, False)
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO search_campaigns (name, status, maps_scrape_mode) VALUES (%s, %s, %s) RETURNING id",
-            (name, "active", normalized_mode)
+            "INSERT INTO search_campaigns (name, status, maps_scrape_mode, scrape_maps_only) VALUES (%s, %s, %s, %s) RETURNING id",
+            (name, "active", normalized_mode, normalized_scrape_maps_only)
         )
         campaign_id = cursor.fetchone()['id']
         for phrase in phrases:
@@ -2542,6 +2566,7 @@ async def create_campaign(
         "status": "Campaign created",
         "campaign_id": campaign_id,
         "maps_scrape_mode": normalized_mode,
+        "scrape_maps_only": normalized_scrape_maps_only,
     }
 
 @app.get("/api/reserve_phrase/{campaign_id}")
@@ -2596,7 +2621,8 @@ async def get_active_campaigns():
                 id,
                 name,
                 status,
-                COALESCE(maps_scrape_mode, 'slow') AS maps_scrape_mode
+                COALESCE(maps_scrape_mode, 'slow') AS maps_scrape_mode,
+                COALESCE(scrape_maps_only, FALSE) AS scrape_maps_only
             FROM search_campaigns
             WHERE status = 'active'
             ORDER BY id ASC
@@ -2646,7 +2672,8 @@ async def get_all_campaigns():
                 id,
                 name,
                 status,
-                COALESCE(maps_scrape_mode, 'slow') AS maps_scrape_mode
+                COALESCE(maps_scrape_mode, 'slow') AS maps_scrape_mode,
+                COALESCE(scrape_maps_only, FALSE) AS scrape_maps_only
             FROM search_campaigns
             ORDER BY status = 'active' DESC, name ASC
         """)
@@ -3013,7 +3040,8 @@ async def claim_pipeline_stage(request: Request):
             SELECT
                 pr.*,
                 sc.name AS campaign_name,
-                COALESCE(sc.maps_scrape_mode, 'slow') AS maps_scrape_mode
+                COALESCE(sc.maps_scrape_mode, 'slow') AS maps_scrape_mode,
+                COALESCE(sc.scrape_maps_only, FALSE) AS scrape_maps_only
             FROM pipeline_runs pr
             JOIN search_campaigns sc ON sc.id = pr.campaign_id
             WHERE pr.status IN ('pending', 'running')
@@ -3133,6 +3161,7 @@ async def claim_pipeline_stage(request: Request):
                 "machine_id": machine_id,
                 "campaign_name": run.get("campaign_name"),
                 "maps_scrape_mode": _normalize_maps_scrape_mode(run.get("maps_scrape_mode"), "slow"),
+                "scrape_maps_only": bool(run.get("scrape_maps_only")),
             }
 
         for run in candidate_runs:
@@ -3477,6 +3506,39 @@ async def complete_pipeline_stage(run_id: int, request: Request):
             raise HTTPException(status_code=409, detail="Stage is not claimable for completion")
 
         next_stage = _next_pipeline_stage(stage_to_complete)
+        skipped_stages: List[str] = []
+        if next_stage is not None and _is_scrape_maps_only_campaign(cursor, run["campaign_id"]):
+            while next_stage in PIPELINE_EMAIL_STAGES:
+                cursor.execute("""
+                    UPDATE pipeline_run_stages
+                    SET status = 'completed',
+                        actor = %s,
+                        worker_id = COALESCE(%s, worker_id),
+                        worker_metadata = %s,
+                        started_at = COALESCE(started_at, %s),
+                        completed_at = COALESCE(completed_at, %s),
+                        last_heartbeat_at = %s,
+                        error_message = NULL,
+                        error_payload = NULL,
+                        failed_at = NULL,
+                        updated_at = %s
+                    WHERE run_id = %s
+                      AND stage = %s
+                      AND status IN ('pending', 'running', 'failed')
+                """, (
+                    "system",
+                    machine_id or None,
+                    Json(lock_metadata) if lock_metadata else None,
+                    now,
+                    now,
+                    now,
+                    now,
+                    run_id,
+                    next_stage,
+                ))
+                skipped_stages.append(next_stage)
+                next_stage = _next_pipeline_stage(next_stage)
+
         if next_stage is None:
             cursor.execute("""
                 UPDATE pipeline_runs
@@ -3567,6 +3629,7 @@ async def complete_pipeline_stage(run_id: int, request: Request):
             "completed_stage": stage_to_complete,
             "next_stage": next_stage,
             "pipeline_status": "completed" if next_stage is None else "running",
+            "skipped_stages": skipped_stages,
             "machine_id": machine_id,
         }
 
@@ -4416,9 +4479,10 @@ async def duplicate_campaign(campaign_id: int, request: Request):
 
         # Create new campaign
         maps_scrape_mode = _normalize_maps_scrape_mode(original_campaign.get("maps_scrape_mode"), "slow")
+        scrape_maps_only = bool(original_campaign.get("scrape_maps_only"))
         cursor.execute(
-            "INSERT INTO search_campaigns (name, status, maps_scrape_mode) VALUES (%s, %s, %s) RETURNING id",
-            (new_name, "active", maps_scrape_mode)
+            "INSERT INTO search_campaigns (name, status, maps_scrape_mode, scrape_maps_only) VALUES (%s, %s, %s, %s) RETURNING id",
+            (new_name, "active", maps_scrape_mode, scrape_maps_only)
         )
         new_campaign_id = cursor.fetchone()['id']
 

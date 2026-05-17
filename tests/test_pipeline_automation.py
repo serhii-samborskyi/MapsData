@@ -411,6 +411,7 @@ class PipelineEndpointTests(unittest.TestCase):
             },
             {"match": "from pipeline_run_locks", "fetchone": None},
             {"match": "update pipeline_run_stages", "rowcount": 1},
+            {"match": "select coalesce(scrape_maps_only, false)", "fetchone": {"scrape_maps_only": False}},
             {"match": "update pipeline_runs", "rowcount": 1},
             {"match": "update pipeline_run_stages", "rowcount": 1},
             {"match": "insert into pipeline_run_locks", "rowcount": 1},
@@ -421,6 +422,30 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(response["completed_stage"], "cleanup_contacts")
         self.assertEqual(response["next_stage"], "email_fast")
         self.assertEqual(response["pipeline_status"], "running")
+        self.assertEqual(response["skipped_stages"], [])
+
+    def test_stage_complete_skips_email_stages_when_maps_only_enabled(self):
+        self._patch_db([
+            {
+                "match": "select * from pipeline_runs where id = %s",
+                "fetchone": {"id": 78, "campaign_id": 10, "status": "running", "current_stage": "cleanup_contacts", "worker_id": "daemon-1"},
+            },
+            {"match": "from pipeline_run_locks", "fetchone": None},
+            {"match": "update pipeline_run_stages", "rowcount": 1},
+            {"match": "select coalesce(scrape_maps_only, false)", "fetchone": {"scrape_maps_only": True}},
+            {"match": "update pipeline_run_stages", "rowcount": 1},
+            {"match": "update pipeline_run_stages", "rowcount": 1},
+            {"match": "update pipeline_runs", "rowcount": 1},
+            {"match": "update pipeline_run_stages", "rowcount": 1},
+            {"match": "insert into pipeline_run_locks", "rowcount": 1},
+        ])
+
+        response = asyncio.run(self.main.complete_pipeline_stage(78, FakeRequest({"worker_id": "daemon-1", "stage": "cleanup_contacts"})))
+        self.assertEqual(response["status"], "ok")
+        self.assertEqual(response["completed_stage"], "cleanup_contacts")
+        self.assertEqual(response["next_stage"], "finalize")
+        self.assertEqual(response["pipeline_status"], "running")
+        self.assertEqual(response["skipped_stages"], ["email_fast", "email_fallback"])
 
     def test_claim_returns_maps_mode_and_machine_fields(self):
         self._patch_db([
@@ -535,6 +560,25 @@ class PipelineEndpointTests(unittest.TestCase):
         response = asyncio.run(self.main.create_campaign(name="Demo", search_phrases="a\nb"))
         self.assertEqual(response["campaign_id"], 123)
         self.assertEqual(response["maps_scrape_mode"], "slow")
+        self.assertFalse(response["scrape_maps_only"])
+
+    def test_create_campaign_accepts_scrape_maps_only_toggle(self):
+        self._patch_db([
+            {"match": "insert into search_campaigns", "fetchone": {"id": 124}},
+            {"match": "insert into requests", "rowcount": 1},
+        ])
+
+        response = asyncio.run(
+            self.main.create_campaign(
+                name="MapsOnly",
+                search_phrases="a",
+                maps_scrape_mode="fast",
+                scrape_maps_only="1",
+            )
+        )
+        self.assertEqual(response["campaign_id"], 124)
+        self.assertEqual(response["maps_scrape_mode"], "fast")
+        self.assertTrue(response["scrape_maps_only"])
 
     def test_create_campaign_rejects_invalid_maps_mode(self):
         with self.assertRaises(self.main.HTTPException) as ctx:
