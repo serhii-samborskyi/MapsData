@@ -171,6 +171,7 @@ def init_db():
                 max_retries INTEGER NOT NULL DEFAULT 1,
                 overwrite_existing BOOLEAN NOT NULL DEFAULT FALSE,
                 skip_missing_input BOOLEAN NOT NULL DEFAULT TRUE,
+                valid_emails_only BOOLEAN NOT NULL DEFAULT FALSE,
                 timeout_seconds INTEGER NOT NULL DEFAULT 120,
                 input_mapping TEXT NOT NULL DEFAULT '{}',
                 output_mapping TEXT NOT NULL DEFAULT '{}',
@@ -314,6 +315,10 @@ def init_db():
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS input_mapping TEXT DEFAULT '{}'")
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS output_mapping TEXT DEFAULT '{}'")
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS required_inputs TEXT DEFAULT '[]'")
+        cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS valid_emails_only BOOLEAN")
+        cursor.execute("UPDATE enrichment_runs SET valid_emails_only = FALSE WHERE valid_emails_only IS NULL")
+        cursor.execute("ALTER TABLE enrichment_runs ALTER COLUMN valid_emails_only SET DEFAULT FALSE")
+        cursor.execute("ALTER TABLE enrichment_runs ALTER COLUMN valid_emails_only SET NOT NULL")
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS timeout_seconds INTEGER DEFAULT 120")
         cursor.execute("ALTER TABLE enrichment_runs ALTER COLUMN input_mapping SET NOT NULL")
         cursor.execute("ALTER TABLE enrichment_runs ALTER COLUMN output_mapping SET NOT NULL")

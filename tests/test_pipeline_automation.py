@@ -668,6 +668,12 @@ class PipelineUnitLogicTests(unittest.TestCase):
         self.assertFalse(self.main._is_valid_domain("bad_domain"))
         self.assertFalse(self.main._is_valid_domain(""))
 
+    def test_is_valid_email_lead_requires_email_and_valid_status(self):
+        self.assertTrue(self.main._is_valid_email_lead({"email": "a@example.com", "email_status": "Valid"}))
+        self.assertTrue(self.main._is_valid_email_lead({"email": "a@example.com", "email_status": "verified"}))
+        self.assertFalse(self.main._is_valid_email_lead({"email": "a@example.com", "email_status": "Invalid"}))
+        self.assertFalse(self.main._is_valid_email_lead({"email": "", "email_status": "Valid"}))
+
     def test_stats_computation(self):
         contacts = [
             {"id": 1, "domain": "example.com", "email": "a@example.com", "phone": "", "place_id": "", "business_name": "A"},

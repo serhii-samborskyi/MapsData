@@ -60,7 +60,7 @@
                     <input id="runRetries" type="number" min="1" max="10" value="1" class="w-full p-2 border border-gray-300 rounded-lg">
                 </div>
             </div>
-            <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div class="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
                 <label class="flex items-center text-sm text-gray-700">
                     <input id="runOverwrite" type="checkbox" class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
                     <span class="ml-2">Overwrite existing output fields</span>
@@ -68,6 +68,10 @@
                 <label class="flex items-center text-sm text-gray-700">
                     <input id="runSkipMissing" type="checkbox" checked class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
                     <span class="ml-2">Skip contacts missing required inputs</span>
+                </label>
+                <label class="flex items-center text-sm text-gray-700">
+                    <input id="runValidEmailsOnly" type="checkbox" class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                    <span class="ml-2">Enrich only leads with valid emails</span>
                 </label>
             </div>
 
@@ -551,6 +555,7 @@
             const apiKey = String(document.getElementById('runApiKey').value || '').trim();
             const overwriteExisting = document.getElementById('runOverwrite').checked;
             const skipMissingInput = document.getElementById('runSkipMissing').checked;
+            const validEmailsOnly = document.getElementById('runValidEmailsOnly').checked;
 
             try {
                 const response = await fetch(`/api/campaign/${selectedCampaign}/enrichment/start`, {
@@ -563,7 +568,8 @@
                         concurrency,
                         max_retries: maxRetries,
                         overwrite_existing: overwriteExisting,
-                        skip_missing_input: skipMissingInput
+                        skip_missing_input: skipMissingInput,
+                        valid_emails_only: validEmailsOnly
                     })
                 });
                 const data = await response.json();
@@ -688,6 +694,7 @@
             document.getElementById('runFailed').textContent = failed;
             document.getElementById('runSkipped').textContent = skipped;
             document.getElementById('runCurrent').textContent = run.current_contact_name || '-';
+            document.getElementById('runValidEmailsOnly').checked = !!run.valid_emails_only;
             const coverageBox = document.getElementById('runFieldCoverage');
             const coverage = Array.isArray(run.field_coverage) ? run.field_coverage : [];
             if (coverage.length) {

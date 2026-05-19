@@ -538,6 +538,13 @@ def _is_valid_email_status(normalized_status: str) -> bool:
 def _is_catch_all_email_status(normalized_status: str) -> bool:
     return "catchall" in normalized_status
 
+def _is_valid_email_lead(contact: dict) -> bool:
+    email_value = str(contact.get("email") or "").strip()
+    if not email_value:
+        return False
+    normalized_status = _resolve_contact_email_status(contact)
+    return _is_valid_email_status(normalized_status)
+
 def _matches_export_status_filter(contact: dict, valid_only: bool, include_catch_all: bool, catch_all_only: bool) -> bool:
     normalized_status = _resolve_contact_email_status(contact)
     is_valid = _is_valid_email_status(normalized_status)
@@ -794,6 +801,7 @@ def _serialize_enrichment_run(run: Optional[dict]) -> dict:
             "max_retries": 0,
             "overwrite_existing": False,
             "skip_missing_input": True,
+            "valid_emails_only": False,
             "timeout_seconds": DEFAULT_ENRICHMENT_TIMEOUT_SECONDS,
         }
 
@@ -827,6 +835,7 @@ def _serialize_enrichment_run(run: Optional[dict]) -> dict:
         "max_retries": int(run.get("max_retries") or 1),
         "overwrite_existing": bool(run.get("overwrite_existing")),
         "skip_missing_input": bool(run.get("skip_missing_input")),
+        "valid_emails_only": bool(run.get("valid_emails_only")),
         "timeout_seconds": _normalize_enrichment_timeout(run.get("timeout_seconds")),
     }
 
@@ -5898,6 +5907,7 @@ async def start_enrichment_run(campaign_id: int, request: Request):
     max_retries = max(1, min(int(data.get("max_retries") or 1), 10))
     overwrite_existing = bool(data.get("overwrite_existing", False))
     skip_missing_input = bool(data.get("skip_missing_input", True))
+    valid_emails_only = _coerce_bool_flag(data.get("valid_emails_only"), False)
 
     template_api_config = template.get("api_config") or {}
     api_url = str(data.get("api_url") or template_api_config.get("api_url") or DEFAULT_ENRICHMENT_API_URL).strip()
@@ -5952,13 +5962,14 @@ async def start_enrichment_run(campaign_id: int, request: Request):
                 max_retries,
                 overwrite_existing,
                 skip_missing_input,
+                valid_emails_only,
                 timeout_seconds,
                 input_mapping,
                 output_mapping,
                 required_inputs,
                 created_by
             )
-            VALUES (%s, %s, 'queued', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, 'queued', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -5970,6 +5981,7 @@ async def start_enrichment_run(campaign_id: int, request: Request):
                 max_retries,
                 overwrite_existing,
                 skip_missing_input,
+                valid_emails_only,
                 timeout_seconds,
                 json.dumps(input_mapping or {}),
                 json.dumps(output_mapping or {}),
@@ -5983,6 +5995,11 @@ async def start_enrichment_run(campaign_id: int, request: Request):
         contacts = [dict(row) for row in cursor.fetchall()]
         request_city_map = _build_campaign_request_city_map(cursor, campaign_id)
         _apply_city_fallback_for_export(contacts, request_city_map)
+        skipped_invalid_email_count = 0
+        if valid_emails_only:
+            filtered_contacts = [contact for contact in contacts if _is_valid_email_lead(contact)]
+            skipped_invalid_email_count = len(contacts) - len(filtered_contacts)
+            contacts = filtered_contacts
         pending_count = 0
         skipped_count = 0
         skipped_reason_aggregate = {"output_already_present": 0, "missing_required_input": 0}
@@ -6048,6 +6065,14 @@ async def start_enrichment_run(campaign_id: int, request: Request):
                 f"Run created: total={len(contacts)}, pending={pending_count}, skipped={skipped_count}, concurrency={concurrency}, retries={max_retries}",
                 "info",
         )
+        if skipped_invalid_email_count:
+            _append_enrichment_log(
+                cursor,
+                run_id,
+                campaign_id,
+                f"Filtered out non-valid-email leads: {skipped_invalid_email_count}",
+                "info",
+            )
         if skipped_reason_aggregate["output_already_present"]:
             _append_enrichment_log(
                 cursor,
