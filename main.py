@@ -4489,20 +4489,45 @@ async def duplicate_campaign(campaign_id: int, request: Request):
         # Create new campaign
         maps_scrape_mode = _normalize_maps_scrape_mode(original_campaign.get("maps_scrape_mode"), "slow")
         scrape_maps_only = bool(original_campaign.get("scrape_maps_only"))
+        source_campaign_status = str(original_campaign.get("status") or "active").strip().lower()
+        if source_campaign_status not in {"active", "inactive", "completed"}:
+            source_campaign_status = "active"
+        duplicate_campaign_status = source_campaign_status
+
+        cursor.execute("""
+            SELECT status, current_stage
+            FROM pipeline_runs
+            WHERE campaign_id = %s
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+        """, (campaign_id,))
+        latest_pipeline_run = cursor.fetchone()
+        latest_pipeline_status = str((latest_pipeline_run or {}).get("status") or "").strip().lower()
+        latest_pipeline_stage = str((latest_pipeline_run or {}).get("current_stage") or "").strip().lower()
+        source_pipeline_finalized = latest_pipeline_status == "completed" and latest_pipeline_stage == "finalize"
+        if source_pipeline_finalized and duplicate_campaign_status == "active":
+            # Avoid auto-scrape of duplicated completed/finalized campaigns by legacy daemon pollers.
+            duplicate_campaign_status = "inactive"
+
         cursor.execute(
             "INSERT INTO search_campaigns (name, status, maps_scrape_mode, scrape_maps_only) VALUES (%s, %s, %s, %s) RETURNING id",
-            (new_name, "active", maps_scrape_mode, scrape_maps_only)
+            (new_name, duplicate_campaign_status, maps_scrape_mode, scrape_maps_only)
         )
         new_campaign_id = cursor.fetchone()['id']
 
         # Copy all requests from original campaign
-        cursor.execute("SELECT req_text FROM requests WHERE campaign_id = %s", (campaign_id,))
+        cursor.execute("SELECT req_text, status FROM requests WHERE campaign_id = %s", (campaign_id,))
         requests = cursor.fetchall()
 
         for request in requests:
+            request_status = str(request.get("status") or "pending").strip().lower()
+            if request_status not in {"pending", "inuse", "completed", "reserved"}:
+                request_status = "pending"
+            if source_pipeline_finalized:
+                request_status = "completed"
             cursor.execute(
                 "INSERT INTO requests (campaign_id, req_text, status) VALUES (%s, %s, %s)",
-                (new_campaign_id, request["req_text"], "pending")
+                (new_campaign_id, request["req_text"], request_status)
             )
 
         # Copy contacts based on filters
@@ -4629,6 +4654,7 @@ async def duplicate_campaign(campaign_id: int, request: Request):
             "status": "success", 
             "new_campaign_id": new_campaign_id,
             "new_campaign_name": new_name,
+            "new_campaign_status": duplicate_campaign_status,
             "copied_requests": len(requests),
             "copied_contacts": copied_contacts
         }

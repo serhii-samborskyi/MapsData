@@ -591,6 +591,28 @@ class PipelineEndpointTests(unittest.TestCase):
             )
         self.assertEqual(ctx.exception.status_code, 400)
 
+    def test_duplicate_campaign_from_finalized_pipeline_becomes_inactive(self):
+        self._patch_db([
+            {"match": "select * from search_campaigns where id = %s", "fetchone": {"id": 20, "name": "Demo", "status": "active", "maps_scrape_mode": "slow", "scrape_maps_only": False}},
+            {"match": "select id from search_campaigns where name = %s", "fetchone": None},
+            {"match": "select status, current_stage from pipeline_runs", "fetchone": {"status": "completed", "current_stage": "finalize"}},
+            {"match": "insert into search_campaigns", "fetchone": {"id": 120}},
+            {"match": "select req_text, status from requests where campaign_id = %s", "fetchall": [{"req_text": "a", "status": "completed"}, {"req_text": "b", "status": "pending"}]},
+            {"match": "insert into requests", "rowcount": 1},
+            {"match": "insert into requests", "rowcount": 1},
+        ])
+
+        response = asyncio.run(
+            self.main.duplicate_campaign(
+                20,
+                FakeRequest({"name": "Demo Copy", "contactFilters": {}}),
+            )
+        )
+        self.assertEqual(response["status"], "success")
+        self.assertEqual(response["new_campaign_id"], 120)
+        self.assertEqual(response["new_campaign_status"], "inactive")
+        self.assertEqual(response["copied_requests"], 2)
+
     def test_cleanup_flags_invalid_domains_and_removes_duplicates(self):
         self._patch_db([
             {"match": "select id from search_campaigns", "fetchone": {"id": 3}},
