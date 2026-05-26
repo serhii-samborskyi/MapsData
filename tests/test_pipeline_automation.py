@@ -613,6 +613,38 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(response["new_campaign_status"], "inactive")
         self.assertEqual(response["copied_requests"], 2)
 
+    def test_set_campaign_daemon_ignore_toggle(self):
+        self._patch_db([
+            {"match": "select coalesce(daemon_ignore, false)", "fetchone": {"daemon_ignore": False}},
+            {"match": "update search_campaigns set daemon_ignore", "rowcount": 1},
+        ])
+
+        response = asyncio.run(
+            self.main.set_campaign_daemon_ignore(
+                33,
+                FakeRequest({}),
+            )
+        )
+        self.assertEqual(response["status"], "ok")
+        self.assertEqual(response["campaign_id"], 33)
+        self.assertTrue(response["daemon_ignore"])
+
+    def test_set_campaign_daemon_ignore_explicit_value(self):
+        self._patch_db([
+            {"match": "select coalesce(daemon_ignore, false)", "fetchone": {"daemon_ignore": True}},
+            {"match": "update search_campaigns set daemon_ignore", "rowcount": 1},
+        ])
+
+        response = asyncio.run(
+            self.main.set_campaign_daemon_ignore(
+                34,
+                FakeRequest({"daemon_ignore": False}),
+            )
+        )
+        self.assertEqual(response["status"], "ok")
+        self.assertEqual(response["campaign_id"], 34)
+        self.assertFalse(response["daemon_ignore"])
+
     def test_cleanup_flags_invalid_domains_and_removes_duplicates(self):
         self._patch_db([
             {"match": "select id from search_campaigns", "fetchone": {"id": 3}},

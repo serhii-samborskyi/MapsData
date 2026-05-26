@@ -145,6 +145,11 @@
                                         bg-gray-100 text-gray-800
                                     {% endif %}
                                 ">{{ campaign.status }}</button>
+                                <div class="mt-2">
+                                    <span class="inline-flex items-center rounded-full px-2 py-1 text-[11px] font-medium {% if campaign.daemon_ignore %}bg-rose-100 text-rose-700{% else %}bg-emerald-100 text-emerald-700{% endif %}">
+                                        Daemon: {% if campaign.daemon_ignore %}ignored{% else %}enabled{% endif %}
+                                    </span>
+                                </div>
                                 <div class="mt-3 md:hidden">
                                     <div class="flex items-center justify-between text-[11px] text-slate-500 mb-1">
                                         <span>Progress</span>
@@ -196,7 +201,10 @@
                                     <button onclick="toggleContacts({{ campaign.id }})" class="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-purple-200 transition-all">Contacts</button>
                                     <button onclick="toggleEmails({{ campaign.id }})" class="bg-cyan-100 text-cyan-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-cyan-200 transition-all">Emails</button>
                                     <button onclick="downloadCsv({{ campaign.id }})" class="bg-teal-100 text-teal-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-teal-200 transition-all">Download</button>
-                                    <button onclick="duplicateCampaign({{ campaign.id }})" class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-green-200 transition-all">Duplicate</button>
+                                    <button onclick="duplicateCampaign({{ campaign.id }}, {{ 'true' if campaign.daemon_ignore else 'false' }})" class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-green-200 transition-all">Duplicate</button>
+                                    <button onclick="toggleDaemonIgnore({{ campaign.id }}, {{ 'true' if campaign.daemon_ignore else 'false' }})" class="{% if campaign.daemon_ignore %}bg-rose-100 text-rose-700 hover:bg-rose-200{% else %}bg-emerald-100 text-emerald-700 hover:bg-emerald-200{% endif %} px-3 py-1 rounded-full text-xs font-medium transition-all">
+                                        Daemon Ignore: {% if campaign.daemon_ignore %}On{% else %}Off{% endif %}
+                                    </button>
                                     <button onclick="showExcludeModal({{ campaign.id }})" class="bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-indigo-200 transition-all">Exclude</button>
                                     <button onclick="showRemoveDuplicatesModal({{ campaign.id }})" class="bg-orange-100 text-orange-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-orange-200 transition-all">Remove Duplicates</button>
                                     <button onclick="removeEmptyDomains({{ campaign.id }})" class="bg-yellow-100 text-yellow-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-yellow-200 transition-all">Remove Empty Domains</button>
@@ -214,7 +222,10 @@
                                         <button onclick="toggleContacts({{ campaign.id }})" class="action-menu__item bg-purple-100 text-purple-700">Contacts</button>
                                         <button onclick="toggleEmails({{ campaign.id }})" class="action-menu__item bg-cyan-100 text-cyan-700">Emails</button>
                                         <button onclick="downloadCsv({{ campaign.id }})" class="action-menu__item bg-teal-100 text-teal-700">Download</button>
-                                        <button onclick="duplicateCampaign({{ campaign.id }})" class="action-menu__item bg-green-100 text-green-700">Duplicate</button>
+                                        <button onclick="duplicateCampaign({{ campaign.id }}, {{ 'true' if campaign.daemon_ignore else 'false' }})" class="action-menu__item bg-green-100 text-green-700">Duplicate</button>
+                                        <button onclick="toggleDaemonIgnore({{ campaign.id }}, {{ 'true' if campaign.daemon_ignore else 'false' }})" class="action-menu__item {% if campaign.daemon_ignore %}bg-rose-100 text-rose-700{% else %}bg-emerald-100 text-emerald-700{% endif %}">
+                                            Daemon Ignore: {% if campaign.daemon_ignore %}On{% else %}Off{% endif %}
+                                        </button>
                                         <button onclick="showExcludeModal({{ campaign.id }})" class="action-menu__item bg-indigo-100 text-indigo-700">Exclude</button>
                                         <button onclick="showRemoveDuplicatesModal({{ campaign.id }})" class="action-menu__item bg-orange-100 text-orange-700">Remove Duplicates</button>
                                         <button onclick="removeEmptyDomains({{ campaign.id }})" class="action-menu__item bg-yellow-100 text-yellow-700">Remove Empty Domains</button>
@@ -571,6 +582,10 @@
                             <label class="flex items-center">
                                 <input type="checkbox" id="keepAllContacts" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
                                 <span class="ml-2 text-sm text-gray-700">All contacts</span>
+                            </label>
+                            <label class="flex items-center">
+                                <input type="checkbox" id="duplicateDaemonIgnore" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                                <span class="ml-2 text-sm text-gray-700">Daemon ignore on duplicated campaign</span>
                             </label>
                         </div>
                     </div>
@@ -1321,6 +1336,29 @@
             }
         }
 
+        async function toggleDaemonIgnore(campaignId, currentValue) {
+            const nextValue = !Boolean(currentValue);
+            try {
+                const response = await fetch(`/api/campaign/${campaignId}/daemon-ignore`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        daemon_ignore: nextValue
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.detail || `HTTP ${response.status}`);
+                }
+                await refreshCampaigns();
+            } catch (error) {
+                console.error('Error updating daemon ignore:', error);
+                alert('Error updating daemon ignore');
+            }
+        }
+
         function showRemoveDuplicatesModal(campaignId) {
             pendingRemoveDuplicatesCampaignId = campaignId;
             document.getElementById('removeDuplicatesModal').classList.remove('hidden');
@@ -1541,8 +1579,9 @@
             }
         }
 
-        function duplicateCampaign(campaignId) {
+        function duplicateCampaign(campaignId, daemonIgnore = false) {
             pendingDuplicateCampaignId = campaignId;
+            document.getElementById('duplicateDaemonIgnore').checked = Boolean(daemonIgnore);
             document.getElementById('duplicateModal').classList.remove('hidden');
             document.getElementById('newCampaignName').focus();
         }
@@ -1562,6 +1601,7 @@
             document.getElementById('lessReviewsCount').value = '10';
             document.getElementById('moreReviewsCount').value = '50';
             document.getElementById('keepAllContacts').checked = false;
+            document.getElementById('duplicateDaemonIgnore').checked = false;
             pendingDuplicateCampaignId = null;
         }
 
@@ -1586,6 +1626,7 @@
                 moreReviewsCount: parseInt(document.getElementById('moreReviewsCount').value) || 0,
                 keepAllContacts: document.getElementById('keepAllContacts').checked
             };
+            const duplicateDaemonIgnore = document.getElementById('duplicateDaemonIgnore').checked;
 
             try {
                 const response = await fetch(`/api/campaign/${pendingDuplicateCampaignId}/duplicate`, {
@@ -1595,7 +1636,8 @@
                     },
                     body: JSON.stringify({ 
                         name: newName,
-                        contactFilters: filterOptions
+                        contactFilters: filterOptions,
+                        daemonIgnore: duplicateDaemonIgnore
                     })
                 });
                 const data = await response.json();

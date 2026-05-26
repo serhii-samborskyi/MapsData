@@ -22,7 +22,8 @@ def init_db():
                 name TEXT NOT NULL,
                 status TEXT NOT NULL,
                 maps_scrape_mode TEXT NOT NULL DEFAULT 'slow',
-                scrape_maps_only BOOLEAN NOT NULL DEFAULT FALSE
+                scrape_maps_only BOOLEAN NOT NULL DEFAULT FALSE,
+                daemon_ignore BOOLEAN NOT NULL DEFAULT FALSE
             )
         ''')
         cursor.execute('''
@@ -312,6 +313,10 @@ def init_db():
         cursor.execute("UPDATE search_campaigns SET scrape_maps_only = FALSE WHERE scrape_maps_only IS NULL")
         cursor.execute("ALTER TABLE search_campaigns ALTER COLUMN scrape_maps_only SET DEFAULT FALSE")
         cursor.execute("ALTER TABLE search_campaigns ALTER COLUMN scrape_maps_only SET NOT NULL")
+        cursor.execute("ALTER TABLE search_campaigns ADD COLUMN IF NOT EXISTS daemon_ignore BOOLEAN")
+        cursor.execute("UPDATE search_campaigns SET daemon_ignore = FALSE WHERE daemon_ignore IS NULL")
+        cursor.execute("ALTER TABLE search_campaigns ALTER COLUMN daemon_ignore SET DEFAULT FALSE")
+        cursor.execute("ALTER TABLE search_campaigns ALTER COLUMN daemon_ignore SET NOT NULL")
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS input_mapping TEXT DEFAULT '{}'")
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS output_mapping TEXT DEFAULT '{}'")
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS required_inputs TEXT DEFAULT '[]'")

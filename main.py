@@ -1929,7 +1929,8 @@ async def get_campaigns(
                 sc.name,
                 sc.status,
                 COALESCE(sc.maps_scrape_mode, 'slow') AS maps_scrape_mode,
-                COALESCE(sc.scrape_maps_only, FALSE) AS scrape_maps_only
+                COALESCE(sc.scrape_maps_only, FALSE) AS scrape_maps_only,
+                COALESCE(sc.daemon_ignore, FALSE) AS daemon_ignore
             FROM search_campaigns sc
             {search_clause}
             ORDER BY sc.id DESC
@@ -2530,6 +2531,39 @@ async def update_campaign_status(campaign_id: int, status: str):
         conn.commit()
     return {"status": "Campaign status updated"}
 
+
+@app.post("/api/campaign/{campaign_id}/daemon-ignore")
+async def set_campaign_daemon_ignore(campaign_id: int, request: Request):
+    payload = await _read_json_body(request)
+    requested_value = payload.get("daemon_ignore")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COALESCE(daemon_ignore, FALSE) AS daemon_ignore FROM search_campaigns WHERE id = %s",
+            (campaign_id,),
+        )
+        existing = cursor.fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+
+        if requested_value is None:
+            daemon_ignore = not bool(existing.get("daemon_ignore"))
+        else:
+            daemon_ignore = _coerce_bool_flag(requested_value, False)
+
+        cursor.execute(
+            "UPDATE search_campaigns SET daemon_ignore = %s WHERE id = %s",
+            (daemon_ignore, campaign_id),
+        )
+        conn.commit()
+
+    return {
+        "status": "ok",
+        "campaign_id": campaign_id,
+        "daemon_ignore": daemon_ignore,
+    }
+
 @app.get("/api/campaign/{campaign_id}/complete")
 async def complete_campaign(campaign_id: int):
     with get_db() as conn:
@@ -2631,9 +2665,11 @@ async def get_active_campaigns():
                 name,
                 status,
                 COALESCE(maps_scrape_mode, 'slow') AS maps_scrape_mode,
-                COALESCE(scrape_maps_only, FALSE) AS scrape_maps_only
+                COALESCE(scrape_maps_only, FALSE) AS scrape_maps_only,
+                COALESCE(daemon_ignore, FALSE) AS daemon_ignore
             FROM search_campaigns
             WHERE status = 'active'
+              AND COALESCE(daemon_ignore, FALSE) = FALSE
             ORDER BY id ASC
         """)
         campaigns = [dict(row) for row in cursor.fetchall()]
@@ -2682,7 +2718,8 @@ async def get_all_campaigns():
                 name,
                 status,
                 COALESCE(maps_scrape_mode, 'slow') AS maps_scrape_mode,
-                COALESCE(scrape_maps_only, FALSE) AS scrape_maps_only
+                COALESCE(scrape_maps_only, FALSE) AS scrape_maps_only,
+                COALESCE(daemon_ignore, FALSE) AS daemon_ignore
             FROM search_campaigns
             ORDER BY status = 'active' DESC, name ASC
         """)
@@ -3054,6 +3091,7 @@ async def claim_pipeline_stage(request: Request):
             FROM pipeline_runs pr
             JOIN search_campaigns sc ON sc.id = pr.campaign_id
             WHERE pr.status IN ('pending', 'running')
+              AND COALESCE(sc.daemon_ignore, FALSE) = FALSE
             ORDER BY
                 CASE WHEN COALESCE(pr.worker_id, '') = %s THEN 0 ELSE 1 END,
                 CASE WHEN pr.status = 'running' THEN 0 ELSE 1 END,
@@ -4453,9 +4491,11 @@ async def duplicate_campaign(campaign_id: int, request: Request):
         data = await request.json()
         custom_name = data.get('name', '').strip()
         contact_filters = data.get('contactFilters', {})
+        duplicate_daemon_ignore_payload = data.get("daemonIgnore")
     except:
         custom_name = ''
         contact_filters = {}
+        duplicate_daemon_ignore_payload = None
 
     with get_db() as conn:
         cursor = conn.cursor()
@@ -4489,6 +4529,8 @@ async def duplicate_campaign(campaign_id: int, request: Request):
         # Create new campaign
         maps_scrape_mode = _normalize_maps_scrape_mode(original_campaign.get("maps_scrape_mode"), "slow")
         scrape_maps_only = bool(original_campaign.get("scrape_maps_only"))
+        source_daemon_ignore = bool(original_campaign.get("daemon_ignore"))
+        duplicate_daemon_ignore = _coerce_bool_flag(duplicate_daemon_ignore_payload, source_daemon_ignore)
         source_campaign_status = str(original_campaign.get("status") or "active").strip().lower()
         if source_campaign_status not in {"active", "inactive", "completed"}:
             source_campaign_status = "active"
@@ -4510,8 +4552,8 @@ async def duplicate_campaign(campaign_id: int, request: Request):
             duplicate_campaign_status = "inactive"
 
         cursor.execute(
-            "INSERT INTO search_campaigns (name, status, maps_scrape_mode, scrape_maps_only) VALUES (%s, %s, %s, %s) RETURNING id",
-            (new_name, duplicate_campaign_status, maps_scrape_mode, scrape_maps_only)
+            "INSERT INTO search_campaigns (name, status, maps_scrape_mode, scrape_maps_only, daemon_ignore) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (new_name, duplicate_campaign_status, maps_scrape_mode, scrape_maps_only, duplicate_daemon_ignore)
         )
         new_campaign_id = cursor.fetchone()['id']
 
@@ -4655,6 +4697,7 @@ async def duplicate_campaign(campaign_id: int, request: Request):
             "new_campaign_id": new_campaign_id,
             "new_campaign_name": new_name,
             "new_campaign_status": duplicate_campaign_status,
+            "daemon_ignore": duplicate_daemon_ignore,
             "copied_requests": len(requests),
             "copied_contacts": copied_contacts
         }
