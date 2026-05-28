@@ -74,6 +74,10 @@
                     <span class="ml-2">Enrich only leads with valid emails</span>
                 </label>
                 <label class="flex items-center text-sm text-gray-700">
+                    <input id="runEmailsOnly" type="checkbox" class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                    <span class="ml-2">Enrich only leads with emails</span>
+                </label>
+                <label class="flex items-center text-sm text-gray-700">
                     <input id="runMissingFieldOnly" type="checkbox" class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
                     <span class="ml-2">Enrich only leads if field is missing</span>
                 </label>
@@ -617,6 +621,7 @@
             const apiKey = String(document.getElementById('runApiKey').value || '').trim();
             const overwriteExisting = document.getElementById('runOverwrite').checked;
             const skipMissingInput = document.getElementById('runSkipMissing').checked;
+            const emailsOnly = document.getElementById('runEmailsOnly').checked;
             const validEmailsOnly = document.getElementById('runValidEmailsOnly').checked;
             const missingFieldOnly = document.getElementById('runMissingFieldOnly').checked;
             const missingFieldName = String(document.getElementById('runMissingFieldName').value || '').trim();
@@ -637,6 +642,7 @@
                         max_retries: maxRetries,
                         overwrite_existing: overwriteExisting,
                         skip_missing_input: skipMissingInput,
+                        emails_only: emailsOnly,
                         valid_emails_only: validEmailsOnly,
                         missing_field_only: missingFieldOnly,
                         missing_field_name: missingFieldName
@@ -764,6 +770,7 @@
             document.getElementById('runFailed').textContent = failed;
             document.getElementById('runSkipped').textContent = skipped;
             document.getElementById('runCurrent').textContent = run.current_contact_name || '-';
+            document.getElementById('runEmailsOnly').checked = !!run.emails_only;
             document.getElementById('runValidEmailsOnly').checked = !!run.valid_emails_only;
             document.getElementById('runMissingFieldOnly').checked = !!run.missing_field_only;
             populateMissingFieldOptions(String(run.missing_field_name || '').trim());

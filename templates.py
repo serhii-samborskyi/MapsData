@@ -556,6 +556,7 @@ class SendReadIntegration:
         self.api_key = api_key
         self.base_url = "https://app.sendread.co"
         self.rate_limit = 120
+        self._email_pattern = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
     def get_default_field_mapping(self):
         return {
@@ -603,6 +604,11 @@ class SendReadIntegration:
             if value is None:
                 continue
 
+            if api_field == "email":
+                value = self._clean_email(value)
+                if not value:
+                    continue
+
             if api_field == "website":
                 value = self._clean_website(value)
 
@@ -611,7 +617,16 @@ class SendReadIntegration:
         return transformed
 
     def validate_contact(self, transformed_contact: Dict) -> bool:
-        return bool((transformed_contact.get("email") or "").strip())
+        return bool(self._clean_email(transformed_contact.get("email")))
+
+    def _clean_email(self, email_value: Optional[str]) -> str:
+        raw = str(email_value or "").strip()
+        if not raw:
+            return ""
+        match = self._email_pattern.search(raw)
+        if not match:
+            return ""
+        return match.group(0).lower().strip()
 
     def _extract_list(self, payload) -> Optional[List]:
         if isinstance(payload, list):

@@ -1162,7 +1162,9 @@
                 const data = await parseApiResponse(response);
 
                 if (response.ok) {
-                    alert(`Export completed! ${data.contacts_exported} contacts exported to ${getServiceLabel(data.service)}`);
+                    const skippedInvalid = Number(data.contacts_skipped_invalid || 0);
+                    const skipSuffix = skippedInvalid > 0 ? ` (${skippedInvalid} skipped invalid email)` : '';
+                    alert(`Export completed! ${data.contacts_exported} contacts exported to ${getServiceLabel(data.service)}${skipSuffix}`);
                     await loadExportHistory();
                 } else {
                     alert('Export failed: ' + data.detail);
@@ -1534,7 +1536,9 @@
 
                     if (response.ok) {
                         exportedCount += data.contacts_exported;
-                        addBatchLog(`Batch ${batchNumber} completed: ${data.contacts_exported} contacts exported`);
+                        const skippedInvalid = Number(data.contacts_skipped_invalid || 0);
+                        const skipSuffix = skippedInvalid > 0 ? `, skipped invalid: ${skippedInvalid}` : '';
+                        addBatchLog(`Batch ${batchNumber} completed: ${data.contacts_exported} contacts exported${skipSuffix}`);
 
                         // Update counters
                         document.getElementById('exportedContacts').textContent = exportedCount;

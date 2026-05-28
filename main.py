@@ -801,6 +801,7 @@ def _serialize_enrichment_run(run: Optional[dict]) -> dict:
             "max_retries": 0,
             "overwrite_existing": False,
             "skip_missing_input": True,
+            "emails_only": False,
             "valid_emails_only": False,
             "missing_field_only": False,
             "missing_field_name": "",
@@ -837,6 +838,7 @@ def _serialize_enrichment_run(run: Optional[dict]) -> dict:
         "max_retries": int(run.get("max_retries") or 1),
         "overwrite_existing": bool(run.get("overwrite_existing")),
         "skip_missing_input": bool(run.get("skip_missing_input")),
+        "emails_only": bool(run.get("emails_only")),
         "valid_emails_only": bool(run.get("valid_emails_only")),
         "missing_field_only": bool(run.get("missing_field_only")),
         "missing_field_name": str(run.get("missing_field_name") or "").strip(),
@@ -5317,10 +5319,13 @@ async def export_campaign(campaign_id: int, request: Request):
                 target_type = "campaign" if template['service'] == "sendread_campaign" else "ab_test_list"
 
             transformed_contacts = []
+            prefiltered_invalid_count = 0
             for contact in contacts:
                 transformed = integration.transform_contact(contact, field_mappings)
                 if integration.validate_contact(transformed):
                     transformed_contacts.append(transformed)
+                else:
+                    prefiltered_invalid_count += 1
 
             if not transformed_contacts:
                 raise HTTPException(status_code=400, detail="No valid contacts to export (email is required)")
@@ -5345,12 +5350,57 @@ async def export_campaign(campaign_id: int, request: Request):
                     "status": "Export completed successfully",
                     "service": template['service'],
                     "contacts_exported": len(transformed_contacts),
+                    "contacts_skipped_invalid": prefiltered_invalid_count,
                     "api_response": api_response,
                     "endpoint": endpoint
                 }
             except HTTPException:
                 raise
             except Exception as e:
+                error_text = str(e)
+                should_retry_individually = (
+                    "422" in error_text and "invalid email" in error_text.lower()
+                )
+                if should_retry_individually:
+                    successful_contacts = []
+                    skipped_contacts = []
+                    for lead in transformed_contacts:
+                        try:
+                            if target_type == "campaign":
+                                integration.export_to_campaign(target_id, [lead])
+                            else:
+                                integration.export_to_ab_test_list(target_id, [lead])
+                            successful_contacts.append(lead)
+                        except Exception as item_error:
+                            item_error_text = str(item_error)
+                            if "422" in item_error_text and "invalid email" in item_error_text.lower():
+                                skipped_contacts.append({
+                                    "email": str(lead.get("email") or ""),
+                                    "error": "Invalid email"
+                                })
+                                continue
+                            raise HTTPException(status_code=500, detail=f"Export failed: {item_error_text}")
+
+                    if successful_contacts:
+                        cursor.execute("""
+                            INSERT INTO export_logs (campaign_id, template_id, contacts_exported, status)
+                            VALUES (%s, %s, %s, %s)
+                        """, (campaign_id, template_id, len(successful_contacts), f"completed_with_skips:{len(skipped_contacts)}"))
+                        conn.commit()
+                        endpoint = (
+                            "https://app.sendread.co/api/public/campaigns/{id}/leads"
+                            if target_type == "campaign"
+                            else "https://app.sendread.co/api/public/ab-test-lists/{id}/leads"
+                        )
+                        return {
+                            "status": "Export completed with skipped invalid emails",
+                            "service": template['service'],
+                            "contacts_exported": len(successful_contacts),
+                            "contacts_skipped_invalid": prefiltered_invalid_count + len(skipped_contacts),
+                            "skipped_invalid_emails": skipped_contacts,
+                            "endpoint": endpoint
+                        }
+
                 cursor.execute("""
                     INSERT INTO export_logs (campaign_id, template_id, contacts_exported, status)
                     VALUES (%s, %s, %s, %s)
@@ -6033,6 +6083,7 @@ async def start_enrichment_run(campaign_id: int, request: Request):
     max_retries = max(1, min(int(data.get("max_retries") or 1), 10))
     overwrite_existing = bool(data.get("overwrite_existing", False))
     skip_missing_input = bool(data.get("skip_missing_input", True))
+    emails_only = _coerce_bool_flag(data.get("emails_only"), False)
     valid_emails_only = _coerce_bool_flag(data.get("valid_emails_only"), False)
     missing_field_only = _coerce_bool_flag(data.get("missing_field_only"), False)
     missing_field_name = str(data.get("missing_field_name") or "").strip()
@@ -6097,6 +6148,7 @@ async def start_enrichment_run(campaign_id: int, request: Request):
                 max_retries,
                 overwrite_existing,
                 skip_missing_input,
+                emails_only,
                 valid_emails_only,
                 missing_field_only,
                 missing_field_name,
@@ -6106,7 +6158,7 @@ async def start_enrichment_run(campaign_id: int, request: Request):
                 required_inputs,
                 created_by
             )
-            VALUES (%s, %s, 'queued', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, 'queued', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -6118,6 +6170,7 @@ async def start_enrichment_run(campaign_id: int, request: Request):
                 max_retries,
                 overwrite_existing,
                 skip_missing_input,
+                emails_only,
                 valid_emails_only,
                 missing_field_only,
                 missing_field_name,
@@ -6134,6 +6187,11 @@ async def start_enrichment_run(campaign_id: int, request: Request):
         contacts = [dict(row) for row in cursor.fetchall()]
         request_city_map = _build_campaign_request_city_map(cursor, campaign_id)
         _apply_city_fallback_for_export(contacts, request_city_map)
+        skipped_no_email_count = 0
+        if emails_only:
+            filtered_contacts = [contact for contact in contacts if str(contact.get("email") or "").strip()]
+            skipped_no_email_count = len(contacts) - len(filtered_contacts)
+            contacts = filtered_contacts
         skipped_invalid_email_count = 0
         if valid_emails_only:
             filtered_contacts = [contact for contact in contacts if _is_valid_email_lead(contact)]
@@ -6211,6 +6269,14 @@ async def start_enrichment_run(campaign_id: int, request: Request):
                 f"Run created: total={len(contacts)}, pending={pending_count}, skipped={skipped_count}, concurrency={concurrency}, retries={max_retries}",
                 "info",
         )
+        if skipped_no_email_count:
+            _append_enrichment_log(
+                cursor,
+                run_id,
+                campaign_id,
+                f"Filtered out leads without email: {skipped_no_email_count}",
+                "info",
+            )
         if skipped_invalid_email_count:
             _append_enrichment_log(
                 cursor,
