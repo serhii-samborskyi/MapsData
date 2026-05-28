@@ -50,6 +50,9 @@
                     <span class="inline-flex items-center rounded-full px-2 py-1 text-[11px] font-medium {% if campaign.daemon_ignore %}bg-rose-100 text-rose-700{% else %}bg-emerald-100 text-emerald-700{% endif %}">
                         Daemon: {% if campaign.daemon_ignore %}ignored{% else %}enabled{% endif %}
                     </span>
+                    <span class="inline-flex items-center rounded-full px-2 py-1 text-[11px] font-medium {% if campaign.pinned %}bg-amber-100 text-amber-700{% else %}bg-slate-100 text-slate-600{% endif %}">
+                        {% if campaign.pinned %}Pinned{% else %}Unpinned{% endif %}
+                    </span>
                 </div>
                 <div class="mt-3 md:hidden">
                     <div class="flex items-center justify-between text-[11px] text-slate-500 mb-1">
@@ -84,6 +87,14 @@
                         <div id="enrichment-progress-bar-{{ campaign.id }}" class="h-1.5 rounded-full transition-all duration-500 {% if enrichment_status in ['queued', 'running', 'paused'] %}bg-indigo-500{% elif enrichment_status == 'completed' %}bg-green-500{% elif enrichment_status in ['failed', 'cancelled'] %}bg-red-500{% else %}bg-slate-400{% endif %}" style="width: {{ enrichment_percent }}%"></div>
                     </div>
                     <div id="enrichment-progress-note-{{ campaign.id }}" class="mt-1 text-[11px] text-slate-500 truncate">{{ campaign.enrichment_message or '' }}</div>
+                    <details id="enrichment-fields-toggle-{{ campaign.id }}" class="mt-1 text-[11px]">
+                        <summary class="cursor-pointer select-none text-indigo-600 hover:text-indigo-700">
+                            Fields
+                        </summary>
+                        <div id="enrichment-fields-list-{{ campaign.id }}" class="mt-1 space-y-0.5 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-slate-600">
+                            No field data yet
+                        </div>
+                    </details>
                 </div>
             </td>
             <td data-label="Total Requests" class="text-sm text-slate-700">{{ campaign.total_requests or 0 }}</td>
@@ -103,6 +114,9 @@
                     <button onclick="toggleEmails({{ campaign.id }})" class="bg-cyan-100 text-cyan-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-cyan-200 transition-all">Emails</button>
                     <button onclick="downloadCsv({{ campaign.id }})" class="bg-teal-100 text-teal-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-teal-200 transition-all">Download</button>
                     <button onclick="duplicateCampaign({{ campaign.id }}, {{ 'true' if campaign.daemon_ignore else 'false' }})" class="bg-green-100 text-green-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-green-200 transition-all">Duplicate</button>
+                    <button onclick="togglePin({{ campaign.id }}, {{ 'true' if campaign.pinned else 'false' }})" class="{% if campaign.pinned %}bg-amber-100 text-amber-700 hover:bg-amber-200{% else %}bg-slate-100 text-slate-700 hover:bg-slate-200{% endif %} px-3 py-1 rounded-full text-xs font-medium transition-all">
+                        {% if campaign.pinned %}Unpin{% else %}Pin{% endif %}
+                    </button>
                     <button onclick="toggleDaemonIgnore({{ campaign.id }}, {{ 'true' if campaign.daemon_ignore else 'false' }})" class="{% if campaign.daemon_ignore %}bg-rose-100 text-rose-700 hover:bg-rose-200{% else %}bg-emerald-100 text-emerald-700 hover:bg-emerald-200{% endif %} px-3 py-1 rounded-full text-xs font-medium transition-all">
                         Daemon Ignore: {% if campaign.daemon_ignore %}On{% else %}Off{% endif %}
                     </button>
@@ -124,6 +138,9 @@
                         <button onclick="toggleEmails({{ campaign.id }})" class="action-menu__item bg-cyan-100 text-cyan-700">Emails</button>
                         <button onclick="downloadCsv({{ campaign.id }})" class="action-menu__item bg-teal-100 text-teal-700">Download</button>
                         <button onclick="duplicateCampaign({{ campaign.id }}, {{ 'true' if campaign.daemon_ignore else 'false' }})" class="action-menu__item bg-green-100 text-green-700">Duplicate</button>
+                        <button onclick="togglePin({{ campaign.id }}, {{ 'true' if campaign.pinned else 'false' }})" class="action-menu__item {% if campaign.pinned %}bg-amber-100 text-amber-700{% else %}bg-slate-100 text-slate-700{% endif %}">
+                            {% if campaign.pinned %}Unpin{% else %}Pin{% endif %}
+                        </button>
                         <button onclick="toggleDaemonIgnore({{ campaign.id }}, {{ 'true' if campaign.daemon_ignore else 'false' }})" class="action-menu__item {% if campaign.daemon_ignore %}bg-rose-100 text-rose-700{% else %}bg-emerald-100 text-emerald-700{% endif %}">
                             Daemon Ignore: {% if campaign.daemon_ignore %}On{% else %}Off{% endif %}
                         </button>

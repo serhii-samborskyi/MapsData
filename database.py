@@ -23,7 +23,8 @@ def init_db():
                 status TEXT NOT NULL,
                 maps_scrape_mode TEXT NOT NULL DEFAULT 'slow',
                 scrape_maps_only BOOLEAN NOT NULL DEFAULT FALSE,
-                daemon_ignore BOOLEAN NOT NULL DEFAULT FALSE
+                daemon_ignore BOOLEAN NOT NULL DEFAULT FALSE,
+                pinned BOOLEAN NOT NULL DEFAULT FALSE
             )
         ''')
         cursor.execute('''
@@ -173,6 +174,8 @@ def init_db():
                 overwrite_existing BOOLEAN NOT NULL DEFAULT FALSE,
                 skip_missing_input BOOLEAN NOT NULL DEFAULT TRUE,
                 valid_emails_only BOOLEAN NOT NULL DEFAULT FALSE,
+                missing_field_only BOOLEAN NOT NULL DEFAULT FALSE,
+                missing_field_name TEXT NOT NULL DEFAULT '',
                 timeout_seconds INTEGER NOT NULL DEFAULT 120,
                 input_mapping TEXT NOT NULL DEFAULT '{}',
                 output_mapping TEXT NOT NULL DEFAULT '{}',
@@ -317,6 +320,10 @@ def init_db():
         cursor.execute("UPDATE search_campaigns SET daemon_ignore = FALSE WHERE daemon_ignore IS NULL")
         cursor.execute("ALTER TABLE search_campaigns ALTER COLUMN daemon_ignore SET DEFAULT FALSE")
         cursor.execute("ALTER TABLE search_campaigns ALTER COLUMN daemon_ignore SET NOT NULL")
+        cursor.execute("ALTER TABLE search_campaigns ADD COLUMN IF NOT EXISTS pinned BOOLEAN")
+        cursor.execute("UPDATE search_campaigns SET pinned = FALSE WHERE pinned IS NULL")
+        cursor.execute("ALTER TABLE search_campaigns ALTER COLUMN pinned SET DEFAULT FALSE")
+        cursor.execute("ALTER TABLE search_campaigns ALTER COLUMN pinned SET NOT NULL")
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS input_mapping TEXT DEFAULT '{}'")
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS output_mapping TEXT DEFAULT '{}'")
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS required_inputs TEXT DEFAULT '[]'")
@@ -324,6 +331,14 @@ def init_db():
         cursor.execute("UPDATE enrichment_runs SET valid_emails_only = FALSE WHERE valid_emails_only IS NULL")
         cursor.execute("ALTER TABLE enrichment_runs ALTER COLUMN valid_emails_only SET DEFAULT FALSE")
         cursor.execute("ALTER TABLE enrichment_runs ALTER COLUMN valid_emails_only SET NOT NULL")
+        cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS missing_field_only BOOLEAN")
+        cursor.execute("UPDATE enrichment_runs SET missing_field_only = FALSE WHERE missing_field_only IS NULL")
+        cursor.execute("ALTER TABLE enrichment_runs ALTER COLUMN missing_field_only SET DEFAULT FALSE")
+        cursor.execute("ALTER TABLE enrichment_runs ALTER COLUMN missing_field_only SET NOT NULL")
+        cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS missing_field_name TEXT")
+        cursor.execute("UPDATE enrichment_runs SET missing_field_name = '' WHERE missing_field_name IS NULL")
+        cursor.execute("ALTER TABLE enrichment_runs ALTER COLUMN missing_field_name SET DEFAULT ''")
+        cursor.execute("ALTER TABLE enrichment_runs ALTER COLUMN missing_field_name SET NOT NULL")
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS timeout_seconds INTEGER DEFAULT 120")
         cursor.execute("ALTER TABLE enrichment_runs ALTER COLUMN input_mapping SET NOT NULL")
         cursor.execute("ALTER TABLE enrichment_runs ALTER COLUMN output_mapping SET NOT NULL")

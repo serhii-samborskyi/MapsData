@@ -73,6 +73,15 @@
                     <input id="runValidEmailsOnly" type="checkbox" class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
                     <span class="ml-2">Enrich only leads with valid emails</span>
                 </label>
+                <label class="flex items-center text-sm text-gray-700">
+                    <input id="runMissingFieldOnly" type="checkbox" class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                    <span class="ml-2">Enrich only leads if field is missing</span>
+                </label>
+            </div>
+            <div id="runMissingFieldWrap" class="mt-3 hidden">
+                <label class="block text-sm font-medium mb-2">Field that must be missing</label>
+                <select id="runMissingFieldName" class="w-full md:w-80 p-2 border border-gray-300 rounded-lg"></select>
+                <p class="text-xs text-gray-500 mt-1">Missing values: NULL, empty string, N/A, none, unknown.</p>
             </div>
 
             <div class="mt-6 flex flex-wrap gap-3">
@@ -182,6 +191,7 @@
         let pollTimer = null;
         let templateSchema = null;
         let editingTemplateId = null;
+        const ENRICHMENT_SELECTED_CAMPAIGN_KEY = 'enrichment_selected_campaign_id';
 
         const LOCAL_FIELDS = [
             'business_name','email','phone','domain','address','category','rating','review_count',
@@ -203,6 +213,27 @@
                 .replace(/'/g, '&#39;');
         }
 
+        function getSavedCampaignId() {
+            try {
+                return String(localStorage.getItem(ENRICHMENT_SELECTED_CAMPAIGN_KEY) || '').trim();
+            } catch (error) {
+                return '';
+            }
+        }
+
+        function saveCampaignId(campaignId) {
+            try {
+                const value = String(campaignId || '').trim();
+                if (value) {
+                    localStorage.setItem(ENRICHMENT_SELECTED_CAMPAIGN_KEY, value);
+                } else {
+                    localStorage.removeItem(ENRICHMENT_SELECTED_CAMPAIGN_KEY);
+                }
+            } catch (error) {
+                // Ignore storage errors (private mode/quota) and continue.
+            }
+        }
+
         function buildFieldOptions(selectedValue = '') {
             let html = '<option value="">-- Select Local Field --</option>';
             LOCAL_FIELDS.forEach(field => {
@@ -210,6 +241,26 @@
                 html += `<option value="${field}" ${selected}>${field}</option>`;
             });
             return html;
+        }
+
+        function populateMissingFieldOptions(selectedValue = '') {
+            const select = document.getElementById('runMissingFieldName');
+            if (!select) return;
+            select.innerHTML = '<option value="">-- Select field --</option>' + LOCAL_FIELDS.map(field => {
+                const selected = field === selectedValue ? 'selected' : '';
+                return `<option value="${field}" ${selected}>${field}</option>`;
+            }).join('');
+        }
+
+        function updateMissingFieldToggleState() {
+            const toggle = document.getElementById('runMissingFieldOnly');
+            const wrap = document.getElementById('runMissingFieldWrap');
+            const select = document.getElementById('runMissingFieldName');
+            const enabled = !!toggle?.checked;
+            wrap?.classList.toggle('hidden', !enabled);
+            if (select) {
+                select.disabled = !enabled;
+            }
         }
 
         function statusBadgeClass(status) {
@@ -247,6 +298,17 @@
                     option.textContent = `${c.name} (${c.total_contacts || 0} contacts)`;
                     select.appendChild(option);
                 });
+
+                const savedCampaignId = getSavedCampaignId();
+                if (savedCampaignId) {
+                    const exists = Array.from(select.options).some(option => String(option.value) === savedCampaignId);
+                    if (exists) {
+                        select.value = savedCampaignId;
+                        selectedCampaign = savedCampaignId;
+                    } else {
+                        saveCampaignId('');
+                    }
+                }
             } catch (error) {
                 console.error('Error loading campaigns:', error);
             }
@@ -556,6 +618,12 @@
             const overwriteExisting = document.getElementById('runOverwrite').checked;
             const skipMissingInput = document.getElementById('runSkipMissing').checked;
             const validEmailsOnly = document.getElementById('runValidEmailsOnly').checked;
+            const missingFieldOnly = document.getElementById('runMissingFieldOnly').checked;
+            const missingFieldName = String(document.getElementById('runMissingFieldName').value || '').trim();
+            if (missingFieldOnly && !missingFieldName) {
+                alert('Select a field for "Enrich only leads if field is missing".');
+                return;
+            }
 
             try {
                 const response = await fetch(`/api/campaign/${selectedCampaign}/enrichment/start`, {
@@ -569,7 +637,9 @@
                         max_retries: maxRetries,
                         overwrite_existing: overwriteExisting,
                         skip_missing_input: skipMissingInput,
-                        valid_emails_only: validEmailsOnly
+                        valid_emails_only: validEmailsOnly,
+                        missing_field_only: missingFieldOnly,
+                        missing_field_name: missingFieldName
                     })
                 });
                 const data = await response.json();
@@ -695,6 +765,9 @@
             document.getElementById('runSkipped').textContent = skipped;
             document.getElementById('runCurrent').textContent = run.current_contact_name || '-';
             document.getElementById('runValidEmailsOnly').checked = !!run.valid_emails_only;
+            document.getElementById('runMissingFieldOnly').checked = !!run.missing_field_only;
+            populateMissingFieldOptions(String(run.missing_field_name || '').trim());
+            updateMissingFieldToggleState();
             const coverageBox = document.getElementById('runFieldCoverage');
             const coverage = Array.isArray(run.field_coverage) ? run.field_coverage : [];
             if (coverage.length) {
@@ -779,6 +852,25 @@
                     container.innerHTML = '<p class="text-sm text-gray-500">No enrichment runs yet.</p>';
                     return;
                 }
+                const renderHistoryCoverage = (run) => {
+                    const coverage = Array.isArray(run.field_coverage) ? run.field_coverage : [];
+                    if (!coverage.length) return '';
+                    const total = Number(run.total_contacts || 0);
+                    const rows = coverage.map((item) => {
+                        const apiField = String(item.api_field || '-');
+                        const localField = String(item.local_field || '-');
+                        const found = Number(item.found_count || 0);
+                        const totalRecords = Number(item.total_records || total);
+                        const pct = Number(item.percentage || 0).toFixed(2);
+                        return `<div>${escapeHtml(apiField)} \u2192 ${escapeHtml(localField)}: ${found}/${totalRecords} (${pct}%)</div>`;
+                    }).join('');
+                    return `
+                        <div class="mt-2 rounded border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600">
+                            <div class="font-medium text-slate-700 mb-1">Field coverage</div>
+                            <div class="space-y-0.5">${rows}</div>
+                        </div>
+                    `;
+                };
                 container.innerHTML = history.map(run => `
                     <div class="border border-gray-200 rounded-lg p-3">
                         <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -793,6 +885,7 @@
                             ${Number(run.processed_contacts || 0)}/${Number(run.total_contacts || 0)} •
                             Enriched ${Number(run.enriched_contacts || 0)} • Failed ${Number(run.failed_contacts || 0)} • Skipped ${Number(run.skipped_contacts || 0)}
                         </div>
+                        ${renderHistoryCoverage(run)}
                     </div>
                 `).join('');
             } catch (error) {
@@ -824,11 +917,19 @@
         }
 
         document.addEventListener('DOMContentLoaded', async () => {
+            populateMissingFieldOptions('');
+            updateMissingFieldToggleState();
             await loadCampaigns();
             await loadTemplates();
+            if (selectedCampaign) {
+                maybeShowSections();
+                await loadRunHistory();
+                await loadActiveRunForCampaign();
+            }
 
             document.getElementById('campaignSelect').addEventListener('change', async (event) => {
                 selectedCampaign = event.target.value || null;
+                saveCampaignId(selectedCampaign);
                 activeRunId = null;
                 stopPolling();
                 if (selectedCampaign) {
@@ -842,6 +943,7 @@
             document.getElementById('cancelCreateTemplate').addEventListener('click', closeCreateTemplateModal);
             document.getElementById('loadSchemaBtn').addEventListener('click', loadSchemaForTemplateCreation);
             document.getElementById('createTemplateForm').addEventListener('submit', createTemplate);
+            document.getElementById('runMissingFieldOnly').addEventListener('change', updateMissingFieldToggleState);
 
             document.getElementById('startEnrichmentBtn').addEventListener('click', startEnrichment);
             document.getElementById('testEnrichmentBtn').addEventListener('click', testEnrichment);

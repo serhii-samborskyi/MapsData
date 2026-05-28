@@ -802,6 +802,8 @@ def _serialize_enrichment_run(run: Optional[dict]) -> dict:
             "overwrite_existing": False,
             "skip_missing_input": True,
             "valid_emails_only": False,
+            "missing_field_only": False,
+            "missing_field_name": "",
             "timeout_seconds": DEFAULT_ENRICHMENT_TIMEOUT_SECONDS,
         }
 
@@ -836,6 +838,8 @@ def _serialize_enrichment_run(run: Optional[dict]) -> dict:
         "overwrite_existing": bool(run.get("overwrite_existing")),
         "skip_missing_input": bool(run.get("skip_missing_input")),
         "valid_emails_only": bool(run.get("valid_emails_only")),
+        "missing_field_only": bool(run.get("missing_field_only")),
+        "missing_field_name": str(run.get("missing_field_name") or "").strip(),
         "timeout_seconds": _normalize_enrichment_timeout(run.get("timeout_seconds")),
     }
 
@@ -966,6 +970,16 @@ def _normalize_mapping_value(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+ENRICHMENT_MISSING_VALUE_MARKERS = {"", "n/a", "none", "unknown", "null"}
+
+
+def _is_enrichment_field_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    normalized = str(value).strip().lower()
+    return normalized in ENRICHMENT_MISSING_VALUE_MARKERS
 
 
 def _resolve_enrichment_input_value(contact: dict, mapping_value: Any) -> str:
@@ -1930,10 +1944,11 @@ async def get_campaigns(
                 sc.status,
                 COALESCE(sc.maps_scrape_mode, 'slow') AS maps_scrape_mode,
                 COALESCE(sc.scrape_maps_only, FALSE) AS scrape_maps_only,
-                COALESCE(sc.daemon_ignore, FALSE) AS daemon_ignore
+                COALESCE(sc.daemon_ignore, FALSE) AS daemon_ignore,
+                COALESCE(sc.pinned, FALSE) AS pinned
             FROM search_campaigns sc
             {search_clause}
-            ORDER BY sc.id DESC
+            ORDER BY COALESCE(sc.pinned, FALSE) DESC, sc.id DESC
             LIMIT %s
             OFFSET %s
         """, tuple(search_params + [per_page, offset]))
@@ -2088,6 +2103,7 @@ async def get_campaigns(
                 campaign_id=campaign["id"],
                 active_run=active_enrichment_runs.get(campaign["id"]),
                 latest_run=latest_enrichment_runs.get(campaign["id"]),
+                cursor=cursor,
             )
             campaign["enrichment_status"] = enrichment["status"]
             campaign["enrichment_total_contacts"] = enrichment["total_contacts"]
@@ -2176,10 +2192,11 @@ def _compute_verification_progress_payload(
 def _compute_enrichment_progress_payload(
     campaign_id: int,
     active_run: Optional[dict],
-    latest_run: Optional[dict]
+    latest_run: Optional[dict],
+    cursor=None,
 ) -> dict:
     run = active_run or latest_run
-    serialized = _serialize_enrichment_run(run)
+    serialized = _serialize_enrichment_run_with_coverage(cursor, run) if cursor is not None else _serialize_enrichment_run(run)
     message = "Not started"
     if run:
         status = serialized["status"]
@@ -2235,7 +2252,11 @@ async def get_campaign_details(campaign_id: int, limit: int = 100):
                 twitter,
                 yelp,
                 status,
-                email_status
+                email_status,
+                firstname,
+                custom_1,
+                custom_2,
+                custom_3
             FROM contacts
             WHERE campaign_id = %s
             ORDER BY id DESC
@@ -2427,6 +2448,7 @@ async def get_dashboard_runtime_status(campaign_ids: str = ""):
                 campaign_id=campaign_id,
                 active_run=active_enrichment_runs.get(campaign_id),
                 latest_run=latest_enrichment_runs.get(campaign_id),
+                cursor=cursor,
             ),
         }
 
@@ -2564,6 +2586,39 @@ async def set_campaign_daemon_ignore(campaign_id: int, request: Request):
         "daemon_ignore": daemon_ignore,
     }
 
+
+@app.post("/api/campaign/{campaign_id}/pin")
+async def set_campaign_pinned(campaign_id: int, request: Request):
+    payload = await _read_json_body(request)
+    requested_value = payload.get("pinned")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COALESCE(pinned, FALSE) AS pinned FROM search_campaigns WHERE id = %s",
+            (campaign_id,),
+        )
+        existing = cursor.fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+
+        if requested_value is None:
+            pinned = not bool(existing.get("pinned"))
+        else:
+            pinned = _coerce_bool_flag(requested_value, False)
+
+        cursor.execute(
+            "UPDATE search_campaigns SET pinned = %s WHERE id = %s",
+            (pinned, campaign_id),
+        )
+        conn.commit()
+
+    return {
+        "status": "ok",
+        "campaign_id": campaign_id,
+        "pinned": pinned,
+    }
+
 @app.get("/api/campaign/{campaign_id}/complete")
 async def complete_campaign(campaign_id: int):
     with get_db() as conn:
@@ -2666,7 +2721,8 @@ async def get_active_campaigns():
                 status,
                 COALESCE(maps_scrape_mode, 'slow') AS maps_scrape_mode,
                 COALESCE(scrape_maps_only, FALSE) AS scrape_maps_only,
-                COALESCE(daemon_ignore, FALSE) AS daemon_ignore
+                COALESCE(daemon_ignore, FALSE) AS daemon_ignore,
+                COALESCE(pinned, FALSE) AS pinned
             FROM search_campaigns
             WHERE status = 'active'
               AND COALESCE(daemon_ignore, FALSE) = FALSE
@@ -2719,9 +2775,10 @@ async def get_all_campaigns():
                 status,
                 COALESCE(maps_scrape_mode, 'slow') AS maps_scrape_mode,
                 COALESCE(scrape_maps_only, FALSE) AS scrape_maps_only,
-                COALESCE(daemon_ignore, FALSE) AS daemon_ignore
+                COALESCE(daemon_ignore, FALSE) AS daemon_ignore,
+                COALESCE(pinned, FALSE) AS pinned
             FROM search_campaigns
-            ORDER BY status = 'active' DESC, name ASC
+            ORDER BY COALESCE(pinned, FALSE) DESC, status = 'active' DESC, name ASC
         """)
         campaigns = [dict(row) for row in cursor.fetchall()]
         campaign_ids = [int(row["id"]) for row in campaigns]
@@ -5977,6 +6034,8 @@ async def start_enrichment_run(campaign_id: int, request: Request):
     overwrite_existing = bool(data.get("overwrite_existing", False))
     skip_missing_input = bool(data.get("skip_missing_input", True))
     valid_emails_only = _coerce_bool_flag(data.get("valid_emails_only"), False)
+    missing_field_only = _coerce_bool_flag(data.get("missing_field_only"), False)
+    missing_field_name = str(data.get("missing_field_name") or "").strip()
 
     template_api_config = template.get("api_config") or {}
     api_url = str(data.get("api_url") or template_api_config.get("api_url") or DEFAULT_ENRICHMENT_API_URL).strip()
@@ -6005,6 +6064,13 @@ async def start_enrichment_run(campaign_id: int, request: Request):
         normalized_local_field = _normalize_mapping_value(local_field)
         if normalized_local_field and normalized_local_field not in ENRICHMENT_LOCAL_FIELD_SET:
             raise HTTPException(status_code=400, detail=f"Invalid local output field: {normalized_local_field}")
+    if missing_field_only:
+        if not missing_field_name:
+            raise HTTPException(status_code=400, detail="missing_field_name is required when missing_field_only=true")
+        if missing_field_name not in ENRICHMENT_LOCAL_FIELD_SET:
+            raise HTTPException(status_code=400, detail=f"Invalid missing_field_name: {missing_field_name}")
+    else:
+        missing_field_name = ""
 
     with get_db() as conn:
         cursor = conn.cursor()
@@ -6032,13 +6098,15 @@ async def start_enrichment_run(campaign_id: int, request: Request):
                 overwrite_existing,
                 skip_missing_input,
                 valid_emails_only,
+                missing_field_only,
+                missing_field_name,
                 timeout_seconds,
                 input_mapping,
                 output_mapping,
                 required_inputs,
                 created_by
             )
-            VALUES (%s, %s, 'queued', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, 'queued', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -6051,6 +6119,8 @@ async def start_enrichment_run(campaign_id: int, request: Request):
                 overwrite_existing,
                 skip_missing_input,
                 valid_emails_only,
+                missing_field_only,
+                missing_field_name,
                 timeout_seconds,
                 json.dumps(input_mapping or {}),
                 json.dumps(output_mapping or {}),
@@ -6068,6 +6138,13 @@ async def start_enrichment_run(campaign_id: int, request: Request):
         if valid_emails_only:
             filtered_contacts = [contact for contact in contacts if _is_valid_email_lead(contact)]
             skipped_invalid_email_count = len(contacts) - len(filtered_contacts)
+            contacts = filtered_contacts
+        skipped_non_missing_field_count = 0
+        if missing_field_only and missing_field_name:
+            filtered_contacts = [
+                contact for contact in contacts if _is_enrichment_field_missing(contact.get(missing_field_name))
+            ]
+            skipped_non_missing_field_count = len(contacts) - len(filtered_contacts)
             contacts = filtered_contacts
         pending_count = 0
         skipped_count = 0
@@ -6140,6 +6217,14 @@ async def start_enrichment_run(campaign_id: int, request: Request):
                 run_id,
                 campaign_id,
                 f"Filtered out non-valid-email leads: {skipped_invalid_email_count}",
+                "info",
+            )
+        if skipped_non_missing_field_count:
+            _append_enrichment_log(
+                cursor,
+                run_id,
+                campaign_id,
+                f"Filtered out leads where '{missing_field_name}' is already populated: {skipped_non_missing_field_count}",
                 "info",
             )
         if skipped_reason_aggregate["output_already_present"]:
@@ -6323,7 +6408,7 @@ async def get_campaign_enrichment_progress(campaign_id: int):
         cursor = conn.cursor()
         _ensure_campaign_exists(cursor, campaign_id)
         run = _load_active_enrichment_run(cursor, campaign_id) or _load_latest_enrichment_run(cursor, campaign_id)
-        return _serialize_enrichment_run(run)
+        return _serialize_enrichment_run_with_coverage(cursor, run)
 
 
 @app.post("/api/enrichment/runs/{run_id}/pause")
@@ -6436,7 +6521,7 @@ async def get_campaign_enrichment_history(campaign_id: int):
         rows = [dict(row) for row in cursor.fetchall()]
         history = []
         for row in rows:
-            item = _serialize_enrichment_run(row)
+            item = _serialize_enrichment_run_with_coverage(cursor, row)
             item["template_name"] = row.get("template_name")
             history.append(item)
         return {"history": history}
