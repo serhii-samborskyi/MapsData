@@ -4,6 +4,13 @@ from typing import Dict, List, Optional
 from database import get_db
 
 
+def _normalize_base_url(value: Optional[str], default: str) -> str:
+    base_url = str(value or "").strip().rstrip("/")
+    if base_url and not base_url.startswith(("http://", "https://")):
+        base_url = f"https://{base_url}"
+    return base_url or default
+
+
 def _looks_like_city(value: str) -> bool:
     candidate = str(value or "").strip()
     if len(candidate) < 2:
@@ -132,9 +139,9 @@ class TemplateManager:
             conn.commit()
 
 class ManyReachIntegration:
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, base_url: Optional[str] = None):
         self.api_key = api_key
-        self.base_url = "https://app.manyreach.com"
+        self.base_url = _normalize_base_url(base_url, "https://app.manyreach.com")
         self.rate_limit = 60  # requests per minute
 
     def get_default_field_mapping(self):
@@ -330,9 +337,9 @@ class ManyReachIntegration:
 
 
 class SmartLeadIntegration:
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, base_url: Optional[str] = None):
         self.api_key = api_key
-        self.base_url = "https://server.smartlead.ai/api/v1"
+        self.base_url = _normalize_base_url(base_url, "https://server.smartlead.ai/api/v1")
         # Smartlead rate limit: 10 requests / 2 seconds (~300 per minute).
         self.rate_limit = 300
         self.max_leads_per_request = 400
@@ -552,9 +559,9 @@ class SmartLeadIntegration:
 
 
 class SendReadIntegration:
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, base_url: Optional[str] = None):
         self.api_key = api_key
-        self.base_url = "https://app.sendread.co"
+        self.base_url = _normalize_base_url(base_url, "https://app.sendread.co")
         self.rate_limit = 120
         self._email_pattern = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 

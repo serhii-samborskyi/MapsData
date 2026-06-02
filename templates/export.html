@@ -208,6 +208,11 @@
                         <input type="password" id="editTemplateApiKey" class="w-full p-2 border border-gray-300 rounded-lg" required>
                     </div>
                     <div class="mb-4">
+                        <label class="block text-sm font-medium mb-2">API Domain</label>
+                        <input type="text" id="editTemplateApiBaseUrl" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="Use default provider domain">
+                        <div id="editTemplateApiBaseUrlHelp" class="text-xs text-gray-500 mt-1">Leave empty to use the default provider domain.</div>
+                    </div>
+                    <div class="mb-4">
                         <label id="editTemplateCampaignIdLabel" class="block text-sm font-medium mb-2">Campaign ID</label>
                         <div class="flex flex-col sm:flex-row gap-2 mb-2">
                             <button type="button" id="loadEditTemplateCampaignsBtn" class="px-3 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
@@ -553,9 +558,25 @@
             return JSON.parse(JSON.stringify(SERVICE_DEFAULT_MAPPINGS[service] || {}));
         }
 
-        function buildApiConfig(service, apiKey, campaignId) {
+        function getDefaultApiBaseUrl(service) {
+            if (service === 'smartlead') return 'https://server.smartlead.ai/api/v1';
+            if (service === 'sendread_campaign' || service === 'sendread_list') return 'https://app.sendread.co';
+            return 'https://app.manyreach.com';
+        }
+
+        function normalizeApiBaseUrl(value) {
+            const trimmed = String(value || '').trim().replace(/\/+$/, '');
+            if (!trimmed) return '';
+            if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+                return trimmed;
+            }
+            return `https://${trimmed}`;
+        }
+
+        function buildApiConfig(service, apiKey, campaignId, apiBaseUrl = '') {
+            const normalizedApiBaseUrl = normalizeApiBaseUrl(apiBaseUrl);
             if (service === 'smartlead') {
-                return {
+                const config = {
                     api_key: apiKey,
                     smartlead_campaign_id: campaignId,
                     settings: {
@@ -567,34 +588,42 @@
                     endpoint: "/campaigns/{campaign_id}/leads",
                     method: "POST"
                 };
+                if (normalizedApiBaseUrl) config.api_base_url = normalizedApiBaseUrl;
+                return config;
             }
 
             if (service === 'sendread_campaign') {
-                return {
+                const config = {
                     api_key: apiKey,
                     sendread_target_id: campaignId,
                     sendread_target_type: 'campaign',
                     endpoint: "/api/public/campaigns/{campaign_id}/leads",
                     method: "POST"
                 };
+                if (normalizedApiBaseUrl) config.api_base_url = normalizedApiBaseUrl;
+                return config;
             }
 
             if (service === 'sendread_list') {
-                return {
+                const config = {
                     api_key: apiKey,
                     sendread_target_id: campaignId,
                     sendread_target_type: 'ab_test_list',
                     endpoint: "/api/public/ab-test-lists/{list_id}/leads",
                     method: "POST"
                 };
+                if (normalizedApiBaseUrl) config.api_base_url = normalizedApiBaseUrl;
+                return config;
             }
 
-            return {
+            const config = {
                 api_key: apiKey,
                 manyreach_campaign_id: campaignId,
                 endpoint: "/api/campaigns/prospects/add/bulk",
                 method: "POST"
             };
+            if (normalizedApiBaseUrl) config.api_base_url = normalizedApiBaseUrl;
+            return config;
         }
 
         function getDefaultApiFieldSetForSelectedService() {
@@ -715,7 +744,7 @@
             });
         }
 
-        async function loadProviderCampaigns(service, apiKey, selectId, statusId, selectedCampaignId = '') {
+        async function loadProviderCampaigns(service, apiKey, selectId, statusId, selectedCampaignId = '', apiBaseUrl = '') {
             const status = document.getElementById(statusId);
             if (!apiKey || !apiKey.trim()) {
                 if (status) {
@@ -735,6 +764,7 @@
                     body: JSON.stringify({
                         service: service,
                         api_key: apiKey.trim(),
+                        api_base_url: normalizeApiBaseUrl(apiBaseUrl),
                         active_only: false
                     })
                 });
@@ -795,6 +825,8 @@
             const label = document.getElementById('editTemplateCampaignIdLabel');
             const input = document.getElementById('editTemplateCampaignId');
             const help = document.getElementById('editTemplateCampaignIdHelp');
+            const apiBaseUrlInput = document.getElementById('editTemplateApiBaseUrl');
+            const apiBaseUrlHelp = document.getElementById('editTemplateApiBaseUrlHelp');
 
             if (service === 'smartlead') {
                 label.textContent = 'Smartlead Campaign ID';
@@ -812,6 +844,12 @@
                 label.textContent = 'ManyReach Campaign ID';
                 input.placeholder = 'Enter your ManyReach campaign ID';
                 help.textContent = 'Campaign ID in ManyReach where prospects will be added.';
+            }
+
+            if (apiBaseUrlInput) {
+                const defaultBaseUrl = getDefaultApiBaseUrl(service);
+                apiBaseUrlInput.placeholder = defaultBaseUrl;
+                apiBaseUrlHelp.textContent = `Leave empty to use ${defaultBaseUrl}.`;
             }
 
             resetProviderCampaignSelector('editTemplateCampaignSelect', 'editTemplateCampaignLoadStatus');
@@ -1241,6 +1279,7 @@
                 document.getElementById('editTemplateName').value = template.name;
                 document.getElementById('editTemplateService').value = template.service;
                 document.getElementById('editTemplateApiKey').value = template.api_config.api_key || '';
+                document.getElementById('editTemplateApiBaseUrl').value = template.api_config.api_base_url || template.api_config.base_url || '';
                 let campaignId = '';
                 if (template.service === 'smartlead') {
                     campaignId = template.api_config.smartlead_campaign_id || '';
@@ -1259,7 +1298,8 @@
                         template.api_config.api_key || '',
                         'editTemplateCampaignSelect',
                         'editTemplateCampaignLoadStatus',
-                        campaignId
+                        campaignId,
+                        template.api_config.api_base_url || template.api_config.base_url || ''
                     );
                 }
             } catch (error) {
@@ -1607,7 +1647,8 @@
                 document.getElementById('editTemplateApiKey').value,
                 'editTemplateCampaignSelect',
                 'editTemplateCampaignLoadStatus',
-                document.getElementById('editTemplateCampaignId').value
+                document.getElementById('editTemplateCampaignId').value,
+                document.getElementById('editTemplateApiBaseUrl').value
             );
         });
         document.getElementById('editTemplateCampaignSelect').addEventListener('change', (event) => {
@@ -1617,6 +1658,9 @@
             }
         });
         document.getElementById('editTemplateApiKey').addEventListener('input', () => {
+            resetProviderCampaignSelector('editTemplateCampaignSelect', 'editTemplateCampaignLoadStatus');
+        });
+        document.getElementById('editTemplateApiBaseUrl').addEventListener('input', () => {
             resetProviderCampaignSelector('editTemplateCampaignSelect', 'editTemplateCampaignLoadStatus');
         });
         document.getElementById('cancelBatchExport').addEventListener('click', closeBatchExportModal);
@@ -1701,9 +1745,10 @@
             const name = document.getElementById('editTemplateName').value;
             const service = document.getElementById('editTemplateService').value;
             const apiKey = document.getElementById('editTemplateApiKey').value;
+            const apiBaseUrl = document.getElementById('editTemplateApiBaseUrl').value;
             const campaignId = document.getElementById('editTemplateCampaignId').value;
             const integration = editingTemplateFieldMappings || getDefaultMappingForService(service);
-            const apiConfig = buildApiConfig(service, apiKey, campaignId);
+            const apiConfig = buildApiConfig(service, apiKey, campaignId, apiBaseUrl);
 
             try {
                 const response = await fetch(`/api/templates/${editingTemplateId}`, {

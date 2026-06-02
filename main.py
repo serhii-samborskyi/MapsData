@@ -773,6 +773,12 @@ def _normalize_enrichment_timeout(value: Any) -> int:
     return max(MIN_ENRICHMENT_TIMEOUT_SECONDS, min(parsed, MAX_ENRICHMENT_TIMEOUT_SECONDS))
 
 
+def _export_api_base_url(api_config: Optional[dict]) -> str:
+    if not isinstance(api_config, dict):
+        return ""
+    return str(api_config.get("api_base_url") or api_config.get("base_url") or "").strip()
+
+
 def _serialize_enrichment_run(run: Optional[dict]) -> dict:
     if not run:
         return {
@@ -4914,6 +4920,7 @@ async def get_provider_campaigns(request: Request):
     data = await request.json()
     service = str(data.get("service", "")).strip().lower()
     api_key = str(data.get("api_key", "")).strip()
+    api_base_url = str(data.get("api_base_url") or data.get("base_url") or "").strip()
     active_only_raw = data.get("active_only", False)
     if isinstance(active_only_raw, bool):
         active_only = active_only_raw
@@ -4927,16 +4934,16 @@ async def get_provider_campaigns(request: Request):
 
     try:
         if service == "manyreach":
-            integration = ManyReachIntegration(api_key)
+            integration = ManyReachIntegration(api_key, api_base_url)
             campaigns = integration.get_campaigns()
         elif service == "smartlead":
-            integration = SmartLeadIntegration(api_key)
+            integration = SmartLeadIntegration(api_key, api_base_url)
             campaigns = integration.get_campaigns(active_only=active_only)
         elif service == "sendread_campaign":
-            integration = SendReadIntegration(api_key)
+            integration = SendReadIntegration(api_key, api_base_url)
             campaigns = integration.get_campaigns()
         else:
-            integration = SendReadIntegration(api_key)
+            integration = SendReadIntegration(api_key, api_base_url)
             campaigns = integration.get_ab_test_lists()
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to fetch {service} campaigns: {str(e)}")
@@ -5083,15 +5090,15 @@ async def export_campaign(campaign_id: int, request: Request):
         recent_exports = cursor.fetchone()['recent_exports']
 
         if template['service'] == 'manyreach':
-            integration = ManyReachIntegration(template['api_config'].get('api_key', ''))
+            integration = ManyReachIntegration(template['api_config'].get('api_key', ''), _export_api_base_url(template.get('api_config')))
             if recent_exports >= integration.rate_limit:
                 raise HTTPException(status_code=429, detail=f"Rate limit exceeded. Max {integration.rate_limit} exports per minute.")
         elif template['service'] == 'smartlead':
-            integration = SmartLeadIntegration(template['api_config'].get('api_key', ''))
+            integration = SmartLeadIntegration(template['api_config'].get('api_key', ''), _export_api_base_url(template.get('api_config')))
             if recent_exports >= integration.rate_limit:
                 raise HTTPException(status_code=429, detail=f"Rate limit exceeded. Max {integration.rate_limit} exports per minute.")
         elif template['service'] in ['sendread_campaign', 'sendread_list']:
-            integration = SendReadIntegration(template['api_config'].get('api_key', ''))
+            integration = SendReadIntegration(template['api_config'].get('api_key', ''), _export_api_base_url(template.get('api_config')))
             if recent_exports >= integration.rate_limit:
                 raise HTTPException(status_code=429, detail=f"Rate limit exceeded. Max {integration.rate_limit} exports per minute.")
 
@@ -5207,7 +5214,7 @@ async def export_campaign(campaign_id: int, request: Request):
 
         # Transform contacts using field_mappings from request (or template default)
         if template['service'] == 'manyreach':
-            integration = ManyReachIntegration(template['api_config'].get('api_key', ''))
+            integration = ManyReachIntegration(template['api_config'].get('api_key', ''), _export_api_base_url(template.get('api_config')))
             manyreach_campaign_id = template['api_config'].get('manyreach_campaign_id', '')
             transformed_contacts = []
 
@@ -5256,7 +5263,7 @@ async def export_campaign(campaign_id: int, request: Request):
                 raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
         if template['service'] == 'smartlead':
-            integration = SmartLeadIntegration(template['api_config'].get('api_key', ''))
+            integration = SmartLeadIntegration(template['api_config'].get('api_key', ''), _export_api_base_url(template.get('api_config')))
             smartlead_campaign_id = str(template['api_config'].get('smartlead_campaign_id', '')).strip()
 
             if not smartlead_campaign_id:
@@ -5308,7 +5315,7 @@ async def export_campaign(campaign_id: int, request: Request):
                 raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
         if template['service'] in ['sendread_campaign', 'sendread_list']:
-            integration = SendReadIntegration(template['api_config'].get('api_key', ''))
+            integration = SendReadIntegration(template['api_config'].get('api_key', ''), _export_api_base_url(template.get('api_config')))
             target_id = str(template['api_config'].get('sendread_target_id', '')).strip()
             target_type = str(template['api_config'].get('sendread_target_type', '')).strip().lower()
 
@@ -5489,7 +5496,7 @@ async def test_export_lead(campaign_id: int, request: Request):
         _apply_city_fallback_for_export([contact], request_city_map)
 
     if template["service"] == "manyreach":
-        integration = ManyReachIntegration(template["api_config"].get("api_key", ""))
+        integration = ManyReachIntegration(template["api_config"].get("api_key", ""), _export_api_base_url(template.get("api_config")))
         manyreach_campaign_id = str(template["api_config"].get("manyreach_campaign_id", "")).strip()
         if not manyreach_campaign_id:
             raise HTTPException(status_code=400, detail="ManyReach campaign ID is missing in template configuration")
@@ -5519,7 +5526,7 @@ async def test_export_lead(campaign_id: int, request: Request):
             raise HTTPException(status_code=500, detail=f"Test export failed: {str(e)}")
 
     if template["service"] == "smartlead":
-        integration = SmartLeadIntegration(template["api_config"].get("api_key", ""))
+        integration = SmartLeadIntegration(template["api_config"].get("api_key", ""), _export_api_base_url(template.get("api_config")))
         smartlead_campaign_id = str(template["api_config"].get("smartlead_campaign_id", "")).strip()
 
         if not smartlead_campaign_id:
@@ -5548,7 +5555,7 @@ async def test_export_lead(campaign_id: int, request: Request):
             raise HTTPException(status_code=500, detail=f"Test export failed: {str(e)}")
 
     if template["service"] in ["sendread_campaign", "sendread_list"]:
-        integration = SendReadIntegration(template["api_config"].get("api_key", ""))
+        integration = SendReadIntegration(template["api_config"].get("api_key", ""), _export_api_base_url(template.get("api_config")))
         target_id = str(template["api_config"].get("sendread_target_id", "")).strip()
         target_type = str(template["api_config"].get("sendread_target_type", "")).strip().lower()
 
