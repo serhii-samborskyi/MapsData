@@ -3610,7 +3610,7 @@ async def claim_pipeline_stage(request: Request):
                 CASE WHEN pr.status = 'running' THEN 0 ELSE 1 END,
                 pr.updated_at ASC,
                 pr.id ASC
-            FOR UPDATE SKIP LOCKED
+            FOR UPDATE OF pr SKIP LOCKED
         """, (machine_id,))
         candidate_runs = [dict(row) for row in cursor.fetchall()]
 
