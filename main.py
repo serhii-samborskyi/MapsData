@@ -3603,6 +3603,7 @@ async def claim_pipeline_stage(request: Request):
             JOIN search_campaigns sc ON sc.id = pr.campaign_id
             LEFT JOIN source_templates st ON st.id = sc.source_template_id
             WHERE pr.status IN ('pending', 'running')
+              AND sc.status = 'active'
               AND COALESCE(sc.daemon_ignore, FALSE) = FALSE
             ORDER BY
                 CASE WHEN COALESCE(pr.worker_id, '') = %s THEN 0 ELSE 1 END,
@@ -3821,8 +3822,14 @@ async def debug_pipeline_claimability(
             params.append(campaign_id)
 
         cursor.execute(f"""
-            SELECT pr.*, prl.worker_id AS lock_worker_id, prl.lease_expires_at AS lock_lease_expires_at
+            SELECT
+                pr.*,
+                sc.status AS campaign_status,
+                COALESCE(sc.daemon_ignore, FALSE) AS campaign_daemon_ignore,
+                prl.worker_id AS lock_worker_id,
+                prl.lease_expires_at AS lock_lease_expires_at
             FROM pipeline_runs pr
+            JOIN search_campaigns sc ON sc.id = pr.campaign_id
             LEFT JOIN pipeline_run_locks prl ON prl.run_id = pr.id
             WHERE pr.status IN ('pending', 'running', 'failed', 'completed', 'canceled')
             {campaign_clause}
@@ -3848,6 +3855,10 @@ async def debug_pipeline_claimability(
                 reason = "run_not_started"
             elif not actor_allowed:
                 reason = "actor_not_allowed"
+            elif str(run.get("campaign_status") or "").strip().lower() != "active":
+                reason = "campaign_not_active"
+            elif bool(run.get("campaign_daemon_ignore")):
+                reason = "daemon_ignored"
             elif not stage_row:
                 reason = "no_pending_stages"
             elif stage_row["status"] not in {"pending", "running"}:
@@ -3865,6 +3876,8 @@ async def debug_pipeline_claimability(
             diagnostics.append({
                 "run_id": run["id"],
                 "campaign_id": run["campaign_id"],
+                "campaign_status": run.get("campaign_status"),
+                "campaign_daemon_ignore": bool(run.get("campaign_daemon_ignore")),
                 "run_status": run["status"],
                 "current_stage": run.get("current_stage"),
                 "owner_machine_id": run.get("worker_id"),
