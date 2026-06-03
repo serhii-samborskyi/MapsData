@@ -406,7 +406,7 @@ class PipelineEndpointTests(unittest.TestCase):
     def test_source_template_config_accepts_xpath_regex_dynamic_fields(self):
         config = self.main._normalize_source_template_config({
             "start_url_template": "https://example.com/search?q={query}",
-            "navigation": {"type": "scroll", "max_scrolls": 5},
+            "navigation": {"type": "scroll", "max_scrolls": 5, "all_the_way_down_scrolls": True},
             "fast": {
                 "block_xpath": "//div[@class='card']",
                 "fields": [
@@ -418,6 +418,7 @@ class PipelineEndpointTests(unittest.TestCase):
         })
 
         self.assertEqual(config["navigation"]["type"], "scroll")
+        self.assertTrue(config["navigation"]["all_the_way_down_scrolls"])
         self.assertEqual(config["fast"]["fields"][0]["target_field"], "business_name")
         self.assertEqual(config["fast"]["fields"][1]["target_type"], "dynamic")
         self.assertEqual(config["fast"]["fields"][1]["target_field"], "license_number")

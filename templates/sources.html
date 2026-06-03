@@ -96,6 +96,13 @@
                                 <span class="block text-sm font-semibold text-slate-700 mb-1">Scroll Container XPath</span>
                                 <input id="scrollContainerXPath" data-xpath class="w-full rounded-xl border border-slate-300 px-4 py-3" placeholder="//div[@role='feed'] or blank for page">
                             </label>
+                            <label class="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                <input id="allTheWayDownScrolls" type="checkbox" class="rounded border-slate-300 text-sky-600">
+                                <span>
+                                    <span class="block text-sm font-semibold text-slate-700">All the way down scrolls</span>
+                                    <span class="block text-xs text-slate-500">Use absolute scroll-to-bottom for long dynamic pages like Facebook Ads Library.</span>
+                                </span>
+                            </label>
                             <label id="nextButtonWrap" class="block hidden">
                                 <span class="block text-sm font-semibold text-slate-700 mb-1">Next Button XPath</span>
                                 <input id="nextButtonXPath" data-xpath class="w-full rounded-xl border border-slate-300 px-4 py-3" placeholder="//button[contains(., 'Next')]">
@@ -291,6 +298,7 @@
                         scroll_container_xpath: document.getElementById('scrollContainerXPath').value.trim(),
                         next_button_xpath: document.getElementById('nextButtonXPath').value.trim(),
                         load_more_button_xpath: document.getElementById('loadMoreButtonXPath').value.trim(),
+                        all_the_way_down_scrolls: document.getElementById('allTheWayDownScrolls').checked,
                         max_scrolls: Number(document.getElementById('maxScrolls').value || 60),
                         max_pages: Number(document.getElementById('maxPages').value || 10),
                         stable_cycles: Number(document.getElementById('stableCycles').value || 3),
@@ -382,6 +390,7 @@
             document.getElementById('scrollContainerXPath').value = nav.scroll_container_xpath || '';
             document.getElementById('nextButtonXPath').value = nav.next_button_xpath || '';
             document.getElementById('loadMoreButtonXPath').value = nav.load_more_button_xpath || '';
+            document.getElementById('allTheWayDownScrolls').checked = Boolean(nav.all_the_way_down_scrolls);
             document.getElementById('maxScrolls').value = nav.max_scrolls || 60;
             document.getElementById('maxPages').value = nav.max_pages || 10;
             document.getElementById('stableCycles').value = nav.stable_cycles || 3;

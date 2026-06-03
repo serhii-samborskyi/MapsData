@@ -553,11 +553,26 @@ def _normalize_source_template_config(raw_config: Any) -> dict:
         parsed = _safe_int(value, default)
         return max(1, min(parsed, upper))
 
+    def _safe_bool(value: Any, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return default
+
     normalized_navigation = {
         "type": navigation_type,
         "scroll_container_xpath": str(navigation.get("scroll_container_xpath") or "").strip(),
         "next_button_xpath": str(navigation.get("next_button_xpath") or "").strip(),
         "load_more_button_xpath": str(navigation.get("load_more_button_xpath") or "").strip(),
+        "all_the_way_down_scrolls": _safe_bool(navigation.get("all_the_way_down_scrolls"), False),
         "max_scrolls": _positive_int(navigation.get("max_scrolls"), 60, 500),
         "max_pages": _positive_int(navigation.get("max_pages"), 10, 200),
         "stable_cycles": _positive_int(navigation.get("stable_cycles"), 3, 20),
