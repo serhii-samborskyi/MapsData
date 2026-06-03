@@ -3738,6 +3738,8 @@ async def claim_pipeline_stage(request: Request):
             lock_row_raw = cursor.fetchone()
             lock_row = dict(lock_row_raw) if lock_row_raw else None
             lock_active_other_machine = _claim_lock_is_active(lock_row, machine_id, now)
+            lock_lease_expires_at = lock_row.get("lease_expires_at") if lock_row else None
+            lock_lease_active = bool(lock_lease_expires_at and lock_lease_expires_at > now)
 
             stage_row = _resolve_run_stage_pointer(run, stage_rows)
             if not stage_row:
@@ -3763,6 +3765,13 @@ async def claim_pipeline_stage(request: Request):
 
             if stage_row["status"] not in {"pending", "running"}:
                 saw_non_claimable_stage = True
+                continue
+
+            if stage_row["status"] == "running" and lock_lease_active:
+                # The machine owns the campaign, but the current stage is already
+                # leased by one daemon process on that machine. Do not let the
+                # sibling maps/email process duplicate the same running stage.
+                saw_all_leased = True
                 continue
 
             if stage_row["status"] == "running" and _stage_recently_heartbeated_by_other_worker(run, stage_row, machine_id, now):
