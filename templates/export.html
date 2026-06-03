@@ -412,6 +412,7 @@
             CONTACT_FIELD_OPTIONS.push({ value: `custom_${i}`, label: `Custom ${i}` });
         }
         const CONTACT_FIELD_SET = new Set(CONTACT_FIELD_OPTIONS.map(field => field.value));
+        const SOURCE_DATA_FIELD_SET = new Set();
         const SERVICE_DEFAULT_MAPPINGS = {
             manyreach: {
                 "email": "email",
@@ -874,6 +875,25 @@
             return optionsHtml;
         }
 
+        async function loadSourceDataFieldsForCampaign(campaignId) {
+            if (!campaignId) return;
+            try {
+                const response = await fetch(`/api/campaign/${campaignId}/source-data-fields`);
+                if (!response.ok) return;
+                const data = await response.json();
+                (data.fields || []).forEach(field => {
+                    if (!field.value || CONTACT_FIELD_SET.has(field.value) || SOURCE_DATA_FIELD_SET.has(field.value)) {
+                        return;
+                    }
+                    SOURCE_DATA_FIELD_SET.add(field.value);
+                    CONTACT_FIELD_SET.add(field.value);
+                    CONTACT_FIELD_OPTIONS.push({ value: field.value, label: field.label || field.value });
+                });
+            } catch (error) {
+                console.warn('Could not load source data fields:', error);
+            }
+        }
+
         // Load campaigns and templates on page load
         document.addEventListener('DOMContentLoaded', async () => {
             await loadCampaigns();
@@ -896,8 +916,9 @@
                     select.appendChild(option);
                 });
 
-                select.addEventListener('change', (e) => {
+                select.addEventListener('change', async (e) => {
                     selectedCampaign = e.target.value;
+                    await loadSourceDataFieldsForCampaign(selectedCampaign);
                     if (selectedCampaign && selectedTemplate) {
                         showFieldMapping();
                     }

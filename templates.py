@@ -56,6 +56,20 @@ def resolve_contact_value(contact: Dict, contact_field: str) -> Optional[str]:
         return None
 
     normalized_field = str(contact_field).lower().replace(' ', '_')
+    if normalized_field.startswith("source_data."):
+        source_key = normalized_field.split(".", 1)[1].strip()
+        source_data = contact.get("source_data") or {}
+        if isinstance(source_data, str):
+            try:
+                source_data = json.loads(source_data)
+            except Exception:
+                source_data = {}
+        if isinstance(source_data, dict):
+            value = source_data.get(source_key)
+            cleaned = str(value).strip() if value is not None else ""
+            return cleaned or None
+        return None
+
     if normalized_field in contact:
         value = contact[normalized_field]
         from_contact = True

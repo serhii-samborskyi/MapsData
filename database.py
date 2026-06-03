@@ -22,9 +22,22 @@ def init_db():
                 name TEXT NOT NULL,
                 status TEXT NOT NULL,
                 maps_scrape_mode TEXT NOT NULL DEFAULT 'slow',
+                source_template_id INTEGER,
                 scrape_maps_only BOOLEAN NOT NULL DEFAULT FALSE,
                 daemon_ignore BOOLEAN NOT NULL DEFAULT FALSE,
                 pinned BOOLEAN NOT NULL DEFAULT FALSE
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS source_templates (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL DEFAULT '',
+                source_type TEXT NOT NULL DEFAULT 'generic',
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                config TEXT NOT NULL DEFAULT '{}',
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         cursor.execute('''
@@ -95,6 +108,7 @@ def init_db():
                 custom_18 TEXT,
                 custom_19 TEXT,
                 custom_20 TEXT,
+                source_data JSONB NOT NULL DEFAULT '{}'::jsonb,
                 email_status TEXT DEFAULT 'unverified',
                 nomail_pulled_at TIMESTAMP,
                 FOREIGN KEY (campaign_id) REFERENCES search_campaigns(id),
@@ -296,15 +310,19 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_run_contacts_run_status ON enrichment_run_contacts(run_id, status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_run_contacts_campaign_status ON enrichment_run_contacts(campaign_id, status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_run_logs_run_created ON enrichment_run_logs(run_id, created_at DESC)")
+        cursor.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS source_data JSONB NOT NULL DEFAULT '{}'::jsonb")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_requests_campaign_id ON requests(campaign_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_requests_campaign_status ON requests(campaign_id, status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_contacts_campaign_id ON contacts(campaign_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_contacts_source_data_gin ON contacts USING GIN (source_data)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_source_templates_enabled ON source_templates(enabled, name)")
         cursor.execute('''
             CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_active_run_per_campaign
             ON pipeline_runs(campaign_id)
             WHERE status IN ('pending', 'running')
         ''')
         cursor.execute("ALTER TABLE search_campaigns ADD COLUMN IF NOT EXISTS maps_scrape_mode TEXT")
+        cursor.execute("ALTER TABLE search_campaigns ADD COLUMN IF NOT EXISTS source_template_id INTEGER")
         cursor.execute("""
             UPDATE search_campaigns
             SET maps_scrape_mode = 'slow'
@@ -325,6 +343,7 @@ def init_db():
         cursor.execute("UPDATE search_campaigns SET pinned = FALSE WHERE pinned IS NULL")
         cursor.execute("ALTER TABLE search_campaigns ALTER COLUMN pinned SET DEFAULT FALSE")
         cursor.execute("ALTER TABLE search_campaigns ALTER COLUMN pinned SET NOT NULL")
+        cursor.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS source_data JSONB NOT NULL DEFAULT '{}'::jsonb")
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS input_mapping TEXT DEFAULT '{}'")
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS output_mapping TEXT DEFAULT '{}'")
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS required_inputs TEXT DEFAULT '[]'")
@@ -420,6 +439,7 @@ def init_db():
                 ('custom_18', 'TEXT'),
                 ('custom_19', 'TEXT'),
                 ('custom_20', 'TEXT'),
+                ('source_data', "JSONB NOT NULL DEFAULT '{}'::jsonb"),
                 ('email_status', "TEXT DEFAULT 'unverified'"),
                 ('nomail_pulled_at', 'TIMESTAMP')
             ]

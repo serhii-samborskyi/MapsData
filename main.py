@@ -83,6 +83,48 @@ DEFAULT_ENRICHMENT_SCHEMA_URL = "https://promising-investments-complexity-munici
 DEFAULT_ENRICHMENT_TIMEOUT_SECONDS = 120
 MIN_ENRICHMENT_TIMEOUT_SECONDS = 15
 MAX_ENRICHMENT_TIMEOUT_SECONDS = 600
+SOURCE_NAVIGATION_TYPES = {"scroll", "pagination", "load_more"}
+SOURCE_TARGET_TYPES = {"core", "dynamic"}
+SOURCE_TEMPLATE_CONFIG_VERSION = 1
+SOURCE_CORE_FIELDS = [
+    "business_name",
+    "address",
+    "category",
+    "phone",
+    "email",
+    "domain",
+    "rating",
+    "review_count",
+    "facebook",
+    "instagram",
+    "twitter",
+    "yelp",
+    "full_name",
+    "firstname",
+    "lastname",
+    "industry",
+    "city",
+    "state",
+    "country",
+    "personal_job_position",
+    "personal_prospect_location",
+    "personal_user_social",
+    "company",
+    "company_social",
+    "company_size",
+    "www",
+    "icebreaker",
+    "time_zone_offset_min",
+    "notes",
+    "tags_import",
+    "screenshot",
+    "logo",
+    "place_id",
+]
+for _source_custom_idx in range(1, 21):
+    SOURCE_CORE_FIELDS.append(f"custom_{_source_custom_idx}")
+SOURCE_CORE_FIELD_SET = set(SOURCE_CORE_FIELDS)
+SOURCE_DYNAMIC_FIELD_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 def _now_utc() -> datetime:
@@ -412,6 +454,189 @@ def _normalize_maps_scrape_mode(value: Any, default: str = "slow") -> str:
     if mode in MAPS_SCRAPE_MODES:
         return mode
     return default if default in MAPS_SCRAPE_MODES else "slow"
+
+
+def _safe_json_parse(value: Any, default: Any):
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        parsed = json.loads(value)
+        return parsed if parsed is not None else default
+    except Exception:
+        return default
+
+
+def _normalize_source_template_id(value: Any) -> Optional[int]:
+    raw = str(value or "").strip()
+    if not raw or raw in {"0", "google", "google_maps", "builtin_google_maps"}:
+        return None
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid source_template_id")
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _normalize_dynamic_field_name(value: Any) -> str:
+    key = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    key = re.sub(r"[^a-z0-9_]+", "_", key)
+    key = re.sub(r"_+", "_", key).strip("_")
+    if not key or not SOURCE_DYNAMIC_FIELD_RE.fullmatch(key):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid dynamic field name '{value}'. Use lowercase letters, numbers, and underscores; start with a letter.",
+        )
+    if key in SOURCE_CORE_FIELD_SET:
+        raise HTTPException(status_code=400, detail=f"Dynamic field '{key}' conflicts with a built-in contact field")
+    return key
+
+
+def _validate_xpath_field(field: dict, path_label: str) -> dict:
+    if not isinstance(field, dict):
+        raise HTTPException(status_code=400, detail=f"{path_label} must be an object")
+    label = str(field.get("label") or "").strip()
+    target_type = str(field.get("target_type") or "core").strip().lower()
+    target_field = str(field.get("target_field") or "").strip()
+    xpath = str(field.get("xpath") or "").strip()
+    regex_value = str(field.get("regex") or "").strip()
+    required = _coerce_bool_flag(field.get("required"), False)
+
+    if not label:
+        label = target_field or path_label
+    if target_type not in SOURCE_TARGET_TYPES:
+        raise HTTPException(status_code=400, detail=f"{path_label}: target_type must be core or dynamic")
+    if target_type == "core":
+        target_field = target_field.lower().replace(" ", "_")
+        if target_field not in SOURCE_CORE_FIELD_SET:
+            raise HTTPException(status_code=400, detail=f"{path_label}: invalid core target field '{target_field}'")
+    else:
+        target_field = _normalize_dynamic_field_name(target_field)
+    if not xpath:
+        raise HTTPException(status_code=400, detail=f"{path_label}: XPath is required")
+    if regex_value:
+        try:
+            re.compile(regex_value)
+        except re.error as exc:
+            raise HTTPException(status_code=400, detail=f"{path_label}: invalid regex: {exc}")
+
+    return {
+        "label": label,
+        "target_type": target_type,
+        "target_field": target_field,
+        "xpath": xpath,
+        "regex": regex_value,
+        "required": required,
+    }
+
+
+def _normalize_source_template_config(raw_config: Any) -> dict:
+    config = _safe_json_parse(raw_config, {})
+    if not isinstance(config, dict):
+        raise HTTPException(status_code=400, detail="config must be a JSON object")
+
+    start_url_template = str(config.get("start_url_template") or "").strip()
+    if not start_url_template:
+        raise HTTPException(status_code=400, detail="start_url_template is required")
+    if "{query}" not in start_url_template:
+        raise HTTPException(status_code=400, detail="start_url_template must include {query}")
+
+    navigation = config.get("navigation") if isinstance(config.get("navigation"), dict) else {}
+    navigation_type = str(navigation.get("type") or "scroll").strip().lower()
+    if navigation_type not in SOURCE_NAVIGATION_TYPES:
+        raise HTTPException(status_code=400, detail="navigation.type must be scroll, pagination, or load_more")
+
+    def _positive_int(value: Any, default: int, upper: int) -> int:
+        parsed = _safe_int(value, default)
+        return max(1, min(parsed, upper))
+
+    normalized_navigation = {
+        "type": navigation_type,
+        "scroll_container_xpath": str(navigation.get("scroll_container_xpath") or "").strip(),
+        "next_button_xpath": str(navigation.get("next_button_xpath") or "").strip(),
+        "load_more_button_xpath": str(navigation.get("load_more_button_xpath") or "").strip(),
+        "max_scrolls": _positive_int(navigation.get("max_scrolls"), 60, 500),
+        "max_pages": _positive_int(navigation.get("max_pages"), 10, 200),
+        "stable_cycles": _positive_int(navigation.get("stable_cycles"), 3, 20),
+        "pause_min_ms": _positive_int(navigation.get("pause_min_ms"), 800, 60000),
+        "pause_max_ms": _positive_int(navigation.get("pause_max_ms"), 1800, 60000),
+    }
+    if normalized_navigation["pause_max_ms"] < normalized_navigation["pause_min_ms"]:
+        normalized_navigation["pause_max_ms"] = normalized_navigation["pause_min_ms"]
+    if navigation_type == "pagination" and not normalized_navigation["next_button_xpath"]:
+        raise HTTPException(status_code=400, detail="navigation.next_button_xpath is required for pagination")
+    if navigation_type == "load_more" and not normalized_navigation["load_more_button_xpath"]:
+        raise HTTPException(status_code=400, detail="navigation.load_more_button_xpath is required for load-more")
+
+    fast = config.get("fast") if isinstance(config.get("fast"), dict) else {}
+    block_xpath = str(fast.get("block_xpath") or "").strip()
+    if not block_xpath:
+        raise HTTPException(status_code=400, detail="fast.block_xpath is required")
+    fields_raw = fast.get("fields") if isinstance(fast.get("fields"), list) else []
+    if not fields_raw:
+        raise HTTPException(status_code=400, detail="At least one fast field is required")
+    fast_fields = [_validate_xpath_field(item, f"fast.fields[{idx}]") for idx, item in enumerate(fields_raw)]
+
+    slow = config.get("slow") if isinstance(config.get("slow"), dict) else {}
+    slow_enabled = _coerce_bool_flag(slow.get("enabled"), False)
+    slow_fields_raw = slow.get("fields") if isinstance(slow.get("fields"), list) else []
+    normalized_slow = {
+        "enabled": slow_enabled,
+        "detail_url_xpath": str(slow.get("detail_url_xpath") or "").strip(),
+        "wait_xpath": str(slow.get("wait_xpath") or "").strip(),
+        "fields": [],
+    }
+    if slow_enabled:
+        if not normalized_slow["detail_url_xpath"]:
+            raise HTTPException(status_code=400, detail="slow.detail_url_xpath is required when slow mode is enabled")
+        if not slow_fields_raw:
+            raise HTTPException(status_code=400, detail="At least one slow field is required when slow mode is enabled")
+        normalized_slow["fields"] = [
+            _validate_xpath_field(item, f"slow.fields[{idx}]")
+            for idx, item in enumerate(slow_fields_raw)
+        ]
+
+    return {
+        "version": SOURCE_TEMPLATE_CONFIG_VERSION,
+        "start_url_template": start_url_template,
+        "navigation": normalized_navigation,
+        "fast": {
+            "block_xpath": block_xpath,
+            "fields": fast_fields,
+        },
+        "slow": normalized_slow,
+    }
+
+
+def _serialize_source_template(row: dict) -> dict:
+    item = dict(row)
+    item["config"] = _safe_json_parse(item.get("config"), {})
+    item["enabled"] = bool(item.get("enabled"))
+    if item.get("created_at") is not None:
+        item["created_at"] = _iso(item.get("created_at"))
+    if item.get("updated_at") is not None:
+        item["updated_at"] = _iso(item.get("updated_at"))
+    return item
+
+
+def _get_source_template(cursor, template_id: int) -> Optional[dict]:
+    cursor.execute("SELECT * FROM source_templates WHERE id = %s", (template_id,))
+    row = cursor.fetchone()
+    return _serialize_source_template(dict(row)) if row else None
+
+
+def _ensure_source_template(cursor, template_id: Optional[int]) -> Optional[dict]:
+    if template_id is None:
+        return None
+    template = _get_source_template(cursor, template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Source template not found")
+    if not bool(template.get("enabled")):
+        raise HTTPException(status_code=400, detail="Source template is disabled")
+    return template
 
 
 def _resolve_claim_machine_id(payload: dict) -> str:
@@ -1854,6 +2079,17 @@ async def get_enrichment_page(request: Request):
     return templates.TemplateResponse("enrichment.html", {"request": request})
 
 
+@app.get("/sources", response_class=HTMLResponse)
+async def get_sources_page(request: Request):
+    auth_redirect = _require_ui_auth(request)
+    if auth_redirect:
+        return auth_redirect
+    return templates.TemplateResponse("sources.html", {
+        "request": request,
+        "core_fields": SOURCE_CORE_FIELDS,
+    })
+
+
 @app.get("/auth/login", response_class=HTMLResponse)
 async def get_login_page(request: Request, next: str = "/"):
     next_path = _sanitize_next_path(next)
@@ -1951,10 +2187,14 @@ async def get_campaigns(
                 sc.name,
                 sc.status,
                 COALESCE(sc.maps_scrape_mode, 'slow') AS maps_scrape_mode,
+                sc.source_template_id,
+                COALESCE(st.name, 'Google Maps (built-in)') AS source_name,
+                CASE WHEN sc.source_template_id IS NULL THEN 'builtin_google_maps' ELSE COALESCE(st.source_type, 'generic') END AS source_type,
                 COALESCE(sc.scrape_maps_only, FALSE) AS scrape_maps_only,
                 COALESCE(sc.daemon_ignore, FALSE) AS daemon_ignore,
                 COALESCE(sc.pinned, FALSE) AS pinned
             FROM search_campaigns sc
+            LEFT JOIN source_templates st ON st.id = sc.source_template_id
             {search_clause}
             ORDER BY COALESCE(sc.pinned, FALSE) DESC, sc.id DESC
             LIMIT %s
@@ -2647,6 +2887,7 @@ async def create_campaign(
     name: str = Form(...),
     search_phrases: str = Form(...),
     maps_scrape_mode: str = Form("slow"),
+    source_template_id: Optional[str] = Form(None),
     scrape_maps_only: Optional[str] = Form(None),
 ):
     phrases = [p.strip() for p in search_phrases.split("\n") if p.strip()]
@@ -2655,11 +2896,13 @@ async def create_campaign(
         raise HTTPException(status_code=400, detail="Invalid maps_scrape_mode")
     normalized_mode = _normalize_maps_scrape_mode(requested_mode or "slow")
     normalized_scrape_maps_only = _coerce_bool_flag(scrape_maps_only, False)
+    normalized_source_template_id = _normalize_source_template_id(source_template_id)
     with get_db() as conn:
         cursor = conn.cursor()
+        _ensure_source_template(cursor, normalized_source_template_id)
         cursor.execute(
-            "INSERT INTO search_campaigns (name, status, maps_scrape_mode, scrape_maps_only) VALUES (%s, %s, %s, %s) RETURNING id",
-            (name, "active", normalized_mode, normalized_scrape_maps_only)
+            "INSERT INTO search_campaigns (name, status, maps_scrape_mode, source_template_id, scrape_maps_only) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (name, "active", normalized_mode, normalized_source_template_id, normalized_scrape_maps_only)
         )
         campaign_id = cursor.fetchone()['id']
         for phrase in phrases:
@@ -2672,6 +2915,7 @@ async def create_campaign(
         "status": "Campaign created",
         "campaign_id": campaign_id,
         "maps_scrape_mode": normalized_mode,
+        "source_template_id": normalized_source_template_id,
         "scrape_maps_only": normalized_scrape_maps_only,
     }
 
@@ -2728,6 +2972,7 @@ async def get_active_campaigns():
                 name,
                 status,
                 COALESCE(maps_scrape_mode, 'slow') AS maps_scrape_mode,
+                source_template_id,
                 COALESCE(scrape_maps_only, FALSE) AS scrape_maps_only,
                 COALESCE(daemon_ignore, FALSE) AS daemon_ignore,
                 COALESCE(pinned, FALSE) AS pinned
@@ -2782,6 +3027,7 @@ async def get_all_campaigns():
                 name,
                 status,
                 COALESCE(maps_scrape_mode, 'slow') AS maps_scrape_mode,
+                source_template_id,
                 COALESCE(scrape_maps_only, FALSE) AS scrape_maps_only,
                 COALESCE(daemon_ignore, FALSE) AS daemon_ignore,
                 COALESCE(pinned, FALSE) AS pinned
@@ -2831,6 +3077,203 @@ async def get_all_campaigns():
             campaign["email_count"] = metrics["email_count"]
             campaign["valid_email_count"] = metrics["valid_email_count"]
         return {"campaigns": campaigns}
+
+
+@app.get("/api/sources")
+async def list_source_templates(include_disabled: bool = False):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        if include_disabled:
+            cursor.execute("SELECT * FROM source_templates ORDER BY enabled DESC, name ASC")
+        else:
+            cursor.execute("SELECT * FROM source_templates WHERE enabled = TRUE ORDER BY name ASC")
+        rows = [_serialize_source_template(dict(row)) for row in cursor.fetchall()]
+    return {
+        "default_source": {
+            "id": None,
+            "name": "Google Maps (built-in)",
+            "source_type": "builtin_google_maps",
+            "enabled": True,
+        },
+        "sources": rows,
+        "core_fields": SOURCE_CORE_FIELDS,
+    }
+
+
+@app.post("/api/source-template/validate")
+async def validate_source_template_config_alt(request: Request):
+    data = await _read_json_body(request)
+    config = _normalize_source_template_config(data.get("config") or data)
+    return {"status": "ok", "config": config}
+
+
+@app.get("/api/sources/{source_id}")
+async def get_source_template(source_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        template = _get_source_template(cursor, source_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Source template not found")
+    return template
+
+
+@app.post("/api/sources")
+async def create_source_template(request: Request):
+    data = await _read_json_body(request)
+    name = str(data.get("name") or "").strip()
+    description = str(data.get("description") or "").strip()
+    enabled = _coerce_bool_flag(data.get("enabled"), True)
+    if not name:
+        raise HTTPException(status_code=400, detail="Source name is required")
+    config = _normalize_source_template_config(data.get("config") or {})
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO source_templates (name, description, source_type, enabled, config, updated_at)
+                VALUES (%s, %s, 'generic', %s, %s, CURRENT_TIMESTAMP)
+                RETURNING *
+            """, (name, description, enabled, json.dumps(config)))
+        except IntegrityError:
+            conn.rollback()
+            raise HTTPException(status_code=400, detail="Source name already exists")
+        row = cursor.fetchone()
+        conn.commit()
+    return {"status": "created", "source": _serialize_source_template(dict(row))}
+
+
+@app.put("/api/sources/{source_id}")
+async def update_source_template(source_id: int, request: Request):
+    data = await _read_json_body(request)
+    name = str(data.get("name") or "").strip()
+    description = str(data.get("description") or "").strip()
+    enabled = _coerce_bool_flag(data.get("enabled"), True)
+    if not name:
+        raise HTTPException(status_code=400, detail="Source name is required")
+    config = _normalize_source_template_config(data.get("config") or {})
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                UPDATE source_templates
+                SET name = %s,
+                    description = %s,
+                    enabled = %s,
+                    config = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+                RETURNING *
+            """, (name, description, enabled, json.dumps(config), source_id))
+        except IntegrityError:
+            conn.rollback()
+            raise HTTPException(status_code=400, detail="Source name already exists")
+        row = cursor.fetchone()
+        if not row:
+            conn.rollback()
+            raise HTTPException(status_code=404, detail="Source template not found")
+        conn.commit()
+    return {"status": "updated", "source": _serialize_source_template(dict(row))}
+
+
+@app.delete("/api/sources/{source_id}")
+async def delete_source_template(source_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM search_campaigns WHERE source_template_id = %s LIMIT 1", (source_id,))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Source is used by campaigns. Disable it instead of deleting.")
+        cursor.execute("DELETE FROM source_templates WHERE id = %s RETURNING id", (source_id,))
+        deleted = cursor.fetchone()
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Source template not found")
+        conn.commit()
+    return {"status": "deleted", "source_id": source_id}
+
+
+@app.get("/api/campaign/{campaign_id}/source-template")
+async def get_campaign_source_template(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                sc.id,
+                sc.name,
+                sc.source_template_id,
+                COALESCE(sc.maps_scrape_mode, 'slow') AS maps_scrape_mode,
+                COALESCE(sc.scrape_maps_only, FALSE) AS scrape_maps_only,
+                st.id AS template_id,
+                st.name AS template_name,
+                st.description AS template_description,
+                st.source_type,
+                st.enabled,
+                st.config,
+                st.created_at,
+                st.updated_at
+            FROM search_campaigns sc
+            LEFT JOIN source_templates st ON st.id = sc.source_template_id
+            WHERE sc.id = %s
+        """, (campaign_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        data = dict(row)
+
+    source_template_id = data.get("source_template_id")
+    if not source_template_id:
+        return {
+            "campaign_id": campaign_id,
+            "campaign_name": data.get("name"),
+            "maps_scrape_mode": _normalize_maps_scrape_mode(data.get("maps_scrape_mode"), "slow"),
+            "scrape_maps_only": bool(data.get("scrape_maps_only")),
+            "source": {
+                "id": None,
+                "name": "Google Maps (built-in)",
+                "source_type": "builtin_google_maps",
+                "enabled": True,
+                "config": {},
+            },
+        }
+
+    if not bool(data.get("enabled")):
+        raise HTTPException(status_code=400, detail="Campaign source template is disabled")
+
+    return {
+        "campaign_id": campaign_id,
+        "campaign_name": data.get("name"),
+        "maps_scrape_mode": _normalize_maps_scrape_mode(data.get("maps_scrape_mode"), "slow"),
+        "scrape_maps_only": bool(data.get("scrape_maps_only")),
+        "source": {
+            "id": int(data.get("template_id")),
+            "name": data.get("template_name"),
+            "description": data.get("template_description") or "",
+            "source_type": data.get("source_type") or "generic",
+            "enabled": bool(data.get("enabled")),
+            "config": _safe_json_parse(data.get("config"), {}),
+            "created_at": _iso(data.get("created_at")),
+            "updated_at": _iso(data.get("updated_at")),
+        },
+    }
+
+
+@app.get("/api/campaign/{campaign_id}/source-data-fields")
+async def get_campaign_source_data_fields(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        _ensure_campaign_exists(cursor, campaign_id)
+        cursor.execute("""
+            SELECT DISTINCT key
+            FROM contacts c
+            CROSS JOIN LATERAL jsonb_object_keys(COALESCE(c.source_data, '{}'::jsonb)) AS key
+            WHERE c.campaign_id = %s
+            ORDER BY key ASC
+        """, (campaign_id,))
+        keys = [str(row["key"]) for row in cursor.fetchall()]
+    return {
+        "campaign_id": campaign_id,
+        "fields": [{"value": f"source_data.{key}", "label": f"Source: {key}"} for key in keys],
+    }
 
 
 def _ensure_campaign_exists(cursor, campaign_id: int):
@@ -3152,9 +3595,13 @@ async def claim_pipeline_stage(request: Request):
                 pr.*,
                 sc.name AS campaign_name,
                 COALESCE(sc.maps_scrape_mode, 'slow') AS maps_scrape_mode,
+                sc.source_template_id,
+                COALESCE(st.name, 'Google Maps (built-in)') AS source_name,
+                CASE WHEN sc.source_template_id IS NULL THEN 'builtin_google_maps' ELSE COALESCE(st.source_type, 'generic') END AS source_type,
                 COALESCE(sc.scrape_maps_only, FALSE) AS scrape_maps_only
             FROM pipeline_runs pr
             JOIN search_campaigns sc ON sc.id = pr.campaign_id
+            LEFT JOIN source_templates st ON st.id = sc.source_template_id
             WHERE pr.status IN ('pending', 'running')
               AND COALESCE(sc.daemon_ignore, FALSE) = FALSE
             ORDER BY
@@ -3273,6 +3720,9 @@ async def claim_pipeline_stage(request: Request):
                 "machine_id": machine_id,
                 "campaign_name": run.get("campaign_name"),
                 "maps_scrape_mode": _normalize_maps_scrape_mode(run.get("maps_scrape_mode"), "slow"),
+                "source_template_id": run.get("source_template_id"),
+                "source_name": run.get("source_name") or "Google Maps (built-in)",
+                "source_type": run.get("source_type") or "builtin_google_maps",
                 "scrape_maps_only": bool(run.get("scrape_maps_only")),
             }
 
@@ -4151,6 +4601,14 @@ async def save_contacts(request: Request):
                 else:
                     place_id = ""
 
+            source_data = contact.get("source_data", contact.get("sourceData", {}))
+            if source_data is None:
+                source_data = {}
+            if isinstance(source_data, str):
+                source_data = _safe_json_parse(source_data, {})
+            if not isinstance(source_data, dict):
+                raise HTTPException(status_code=400, detail=f"Contact {contact_index}: source_data must be an object")
+
             # Verify campaign exists.
             campaign_status = campaign_status_cache.get(campaign_id)
             if campaign_status is None:
@@ -4198,12 +4656,12 @@ async def save_contacts(request: Request):
                         full_name, industry, city, www, firstname, lastname, company, country, company_social, company_size, personal_job_position, personal_prospect_location,
                         personal_user_social, screenshot, logo, state, icebreaker, time_zone_offset_min, notes, tags_import,
                         custom_1, custom_2, custom_3, custom_4, custom_5, custom_6, custom_7, custom_8, custom_9, custom_10,
-                        custom_11, custom_12, custom_13, custom_14, custom_15, custom_16, custom_17, custom_18, custom_19, custom_20, email_status) 
+                        custom_11, custom_12, custom_13, custom_14, custom_15, custom_16, custom_17, custom_18, custom_19, custom_20, source_data, email_status) 
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                                %s, %s, %s, %s, %s, %s, %s, %s,
                                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
                     (
                         contact.get('address'),
                         business_name,
@@ -4262,6 +4720,7 @@ async def save_contacts(request: Request):
                         contact.get('custom_18'),
                         contact.get('custom_19'),
                         contact.get('custom_20'),
+                        Json(source_data),
                         contact.get('email_status', contact.get('emailStatus', 'unverified'))
                     )
                 )
@@ -4594,6 +5053,7 @@ async def duplicate_campaign(campaign_id: int, request: Request):
         # Create new campaign
         maps_scrape_mode = _normalize_maps_scrape_mode(original_campaign.get("maps_scrape_mode"), "slow")
         scrape_maps_only = bool(original_campaign.get("scrape_maps_only"))
+        source_template_id = original_campaign.get("source_template_id")
         source_daemon_ignore = bool(original_campaign.get("daemon_ignore"))
         duplicate_daemon_ignore = _coerce_bool_flag(duplicate_daemon_ignore_payload, source_daemon_ignore)
         source_campaign_status = str(original_campaign.get("status") or "active").strip().lower()
@@ -4617,8 +5077,8 @@ async def duplicate_campaign(campaign_id: int, request: Request):
             duplicate_campaign_status = "inactive"
 
         cursor.execute(
-            "INSERT INTO search_campaigns (name, status, maps_scrape_mode, scrape_maps_only, daemon_ignore) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (new_name, duplicate_campaign_status, maps_scrape_mode, scrape_maps_only, duplicate_daemon_ignore)
+            "INSERT INTO search_campaigns (name, status, maps_scrape_mode, source_template_id, scrape_maps_only, daemon_ignore) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (new_name, duplicate_campaign_status, maps_scrape_mode, source_template_id, scrape_maps_only, duplicate_daemon_ignore)
         )
         new_campaign_id = cursor.fetchone()['id']
 

@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScrapIQ - Sources Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="app-shell">
+    <div class="app-container">
+        <header class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mb-8">
+            <a href="/" class="flex items-center gap-4">
+                <div class="rounded-2xl border border-white/60 bg-white/80 p-3 shadow-sm">
+                    <svg class="w-8 h-8 text-sky-600" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"></path></svg>
+                </div>
+                <div>
+                    <p class="app-chip">ScrapIQ</p>
+                    <h1 class="section-title text-2xl md:text-3xl font-semibold text-slate-900">Sources Manager</h1>
+                    <p class="text-sm text-slate-600">Create generic XPath + regex scraping sources for daemon workers.</p>
+                </div>
+            </a>
+            <div class="flex flex-wrap items-center gap-2">
+                <a href="/" class="app-chip hover:text-slate-900">Dashboard</a>
+                <a href="/export" class="app-chip hover:text-slate-900">Export Manager</a>
+                <a href="/enrichment" class="app-chip hover:text-slate-900">Enrichment Manager</a>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 xl:grid-cols-[420px,1fr] gap-6">
+            <section class="app-card p-6">
+                <div class="flex items-center justify-between gap-3 mb-4">
+                    <div>
+                        <h2 class="text-xl font-semibold text-slate-900">Saved Sources</h2>
+                        <p class="text-sm text-slate-500">Google Maps remains built-in default.</p>
+                    </div>
+                    <button onclick="resetForm()" class="rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-700">New</button>
+                </div>
+                <div id="sourcesList" class="space-y-3"></div>
+            </section>
+
+            <section class="app-card p-6">
+                <div class="mb-5">
+                    <h2 id="formTitle" class="text-xl font-semibold text-slate-900">Create Source</h2>
+                    <p class="text-sm text-slate-500">Use XPath for extraction and optional regex to clean the extracted value.</p>
+                </div>
+
+                <form id="sourceForm" class="space-y-6">
+                    <input type="hidden" id="sourceId">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <label class="block">
+                            <span class="block text-sm font-semibold text-slate-700 mb-1">Source Name</span>
+                            <input id="sourceName" required class="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200" placeholder="Example Directory">
+                        </label>
+                        <label class="block">
+                            <span class="block text-sm font-semibold text-slate-700 mb-1">Enabled</span>
+                            <select id="sourceEnabled" class="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200">
+                                <option value="true">Enabled</option>
+                                <option value="false">Disabled</option>
+                            </select>
+                        </label>
+                    </div>
+                    <label class="block">
+                        <span class="block text-sm font-semibold text-slate-700 mb-1">Description</span>
+                        <textarea id="sourceDescription" rows="2" class="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200" placeholder="Optional notes for operators"></textarea>
+                    </label>
+                    <label class="block">
+                        <span class="block text-sm font-semibold text-slate-700 mb-1">Start URL Template</span>
+                        <input id="startUrlTemplate" required class="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200" placeholder="https://example.com/search?q={query}">
+                        <span class="text-xs text-slate-500">Must include <code>{query}</code>.</span>
+                    </label>
+
+                    <div class="rounded-2xl border border-slate-200 bg-white/80 p-4">
+                        <h3 class="font-semibold text-slate-900 mb-3">Navigation</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <label class="block">
+                                <span class="block text-sm font-semibold text-slate-700 mb-1">Type</span>
+                                <select id="navigationType" class="w-full rounded-xl border border-slate-300 px-4 py-3" onchange="syncNavigationInputs()">
+                                    <option value="scroll">Scroll</option>
+                                    <option value="pagination">Pagination next</option>
+                                    <option value="load_more">Load more button</option>
+                                </select>
+                            </label>
+                            <label class="block">
+                                <span class="block text-sm font-semibold text-slate-700 mb-1">Max Scrolls</span>
+                                <input id="maxScrolls" type="number" min="1" value="60" class="w-full rounded-xl border border-slate-300 px-4 py-3">
+                            </label>
+                            <label class="block">
+                                <span class="block text-sm font-semibold text-slate-700 mb-1">Max Pages/Clicks</span>
+                                <input id="maxPages" type="number" min="1" value="10" class="w-full rounded-xl border border-slate-300 px-4 py-3">
+                            </label>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                            <label class="block">
+                                <span class="block text-sm font-semibold text-slate-700 mb-1">Scroll Container XPath</span>
+                                <input id="scrollContainerXPath" data-xpath class="w-full rounded-xl border border-slate-300 px-4 py-3" placeholder="//div[@role='feed'] or blank for page">
+                            </label>
+                            <label id="nextButtonWrap" class="block hidden">
+                                <span class="block text-sm font-semibold text-slate-700 mb-1">Next Button XPath</span>
+                                <input id="nextButtonXPath" data-xpath class="w-full rounded-xl border border-slate-300 px-4 py-3" placeholder="//button[contains(., 'Next')]">
+                            </label>
+                            <label id="loadMoreWrap" class="block hidden">
+                                <span class="block text-sm font-semibold text-slate-700 mb-1">Load More Button XPath</span>
+                                <input id="loadMoreButtonXPath" data-xpath class="w-full rounded-xl border border-slate-300 px-4 py-3" placeholder="//button[contains(., 'Load more')]">
+                            </label>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                            <label class="block"><span class="block text-sm font-semibold text-slate-700 mb-1">Stable cycles</span><input id="stableCycles" type="number" min="1" value="3" class="w-full rounded-xl border border-slate-300 px-4 py-3"></label>
+                            <label class="block"><span class="block text-sm font-semibold text-slate-700 mb-1">Pause min ms</span><input id="pauseMinMs" type="number" min="1" value="800" class="w-full rounded-xl border border-slate-300 px-4 py-3"></label>
+                            <label class="block"><span class="block text-sm font-semibold text-slate-700 mb-1">Pause max ms</span><input id="pauseMaxMs" type="number" min="1" value="1800" class="w-full rounded-xl border border-slate-300 px-4 py-3"></label>
+                        </div>
+                    </div>
+
+                    <div class="rounded-2xl border border-slate-200 bg-white/80 p-4">
+                        <div class="flex items-center justify-between mb-3">
+                            <h3 class="font-semibold text-slate-900">Fast/List Extraction</h3>
+                            <button type="button" onclick="addFieldRow('fast')" class="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-sm font-semibold text-sky-700">Add Field</button>
+                        </div>
+                        <label class="block mb-4">
+                            <span class="block text-sm font-semibold text-slate-700 mb-1">Block XPath</span>
+                            <input id="fastBlockXPath" data-xpath required class="w-full rounded-xl border border-slate-300 px-4 py-3" placeholder="//div[contains(@class,'result-card')]">
+                        </label>
+                        <div id="fastFields" class="space-y-3"></div>
+                    </div>
+
+                    <div class="rounded-2xl border border-slate-200 bg-white/80 p-4">
+                        <label class="inline-flex items-center gap-2 mb-3">
+                            <input id="slowEnabled" type="checkbox" class="rounded border-slate-300 text-sky-600" onchange="syncSlowSection()">
+                            <span class="font-semibold text-slate-900">Enable Slow/Detail Page Extraction</span>
+                        </label>
+                        <div id="slowSection" class="hidden space-y-4">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <label class="block">
+                                    <span class="block text-sm font-semibold text-slate-700 mb-1">Detail URL XPath</span>
+                                    <input id="detailUrlXPath" data-xpath class="w-full rounded-xl border border-slate-300 px-4 py-3" placeholder=".//a/@href">
+                                </label>
+                                <label class="block">
+                                    <span class="block text-sm font-semibold text-slate-700 mb-1">Wait XPath</span>
+                                    <input id="waitXPath" data-xpath class="w-full rounded-xl border border-slate-300 px-4 py-3" placeholder="//h1">
+                                </label>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <h3 class="font-semibold text-slate-900">Detail Fields</h3>
+                                <button type="button" onclick="addFieldRow('slow')" class="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-sm font-semibold text-sky-700">Add Field</button>
+                            </div>
+                            <div id="slowFields" class="space-y-3"></div>
+                        </div>
+                    </div>
+
+                    <div id="formStatus" class="text-sm"></div>
+                    <div class="flex flex-col sm:flex-row gap-3">
+                        <button type="button" onclick="validateAndPreview()" class="rounded-xl border border-slate-300 px-5 py-3 font-semibold text-slate-700 hover:bg-slate-50">Validate</button>
+                        <button type="submit" class="rounded-xl bg-sky-600 px-5 py-3 font-semibold text-white hover:bg-sky-700">Save Source</button>
+                        <button type="button" onclick="resetForm()" class="rounded-xl border border-slate-300 px-5 py-3 font-semibold text-slate-700 hover:bg-slate-50">Reset</button>
+                    </div>
+                </form>
+            </section>
+        </div>
+    </div>
+
+    <script>
+        const CORE_FIELDS = {{ core_fields | tojson }};
+        let sources = [];
+
+        function escapeHtml(value) {
+            return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        function fieldTargetOptions(selected = 'business_name') {
+            return CORE_FIELDS.map(field => `<option value="${field}" ${field === selected ? 'selected' : ''}>${field}</option>`).join('');
+        }
+
+        function validateXPathSyntax(value, label) {
+            const xpath = String(value || '').trim();
+            if (!xpath) return;
+            try {
+                document.evaluate(xpath, document, null, XPathResult.ANY_TYPE, null);
+            } catch (error) {
+                throw new Error(`${label}: invalid XPath (${error.message})`);
+            }
+        }
+
+        function validateRegexSyntax(value, label) {
+            const regex = String(value || '').trim();
+            if (!regex) return;
+            try {
+                new RegExp(regex);
+            } catch (error) {
+                throw new Error(`${label}: invalid regex (${error.message})`);
+            }
+        }
+
+        function bindXPathValidation() {
+            document.querySelectorAll('[data-xpath]').forEach(input => {
+                input.onblur = () => {
+                    input.classList.remove('border-red-400', 'border-emerald-400');
+                    const value = input.value.trim();
+                    if (!value) return;
+                    try {
+                        validateXPathSyntax(value, input.previousElementSibling ? input.previousElementSibling.textContent : 'XPath');
+                        input.classList.add('border-emerald-400');
+                    } catch (error) {
+                        input.classList.add('border-red-400');
+                        setStatus(error.message, true);
+                    }
+                };
+            });
+        }
+
+        function addFieldRow(kind, data = {}) {
+            const container = document.getElementById(`${kind}Fields`);
+            const row = document.createElement('div');
+            row.className = 'rounded-xl border border-slate-200 bg-slate-50 p-3';
+            row.innerHTML = `
+                <div class="grid grid-cols-1 md:grid-cols-6 gap-3">
+                    <label class="block md:col-span-1"><span class="block text-xs font-semibold text-slate-600 mb-1">Label</span><input data-field-label class="w-full rounded-lg border border-slate-300 px-3 py-2" value="${escapeHtml(data.label || '')}" placeholder="Name"></label>
+                    <label class="block"><span class="block text-xs font-semibold text-slate-600 mb-1">Target</span><select data-target-type class="w-full rounded-lg border border-slate-300 px-3 py-2" onchange="syncFieldTarget(this)"><option value="core" ${(data.target_type || 'core') === 'core' ? 'selected' : ''}>Core</option><option value="dynamic" ${data.target_type === 'dynamic' ? 'selected' : ''}>Dynamic</option></select></label>
+                    <label class="block"><span class="block text-xs font-semibold text-slate-600 mb-1">Field</span><select data-core-field class="w-full rounded-lg border border-slate-300 px-3 py-2 ${(data.target_type === 'dynamic') ? 'hidden' : ''}">${fieldTargetOptions(data.target_field || 'business_name')}</select><input data-dynamic-field class="w-full rounded-lg border border-slate-300 px-3 py-2 ${(data.target_type === 'dynamic') ? '' : 'hidden'}" value="${escapeHtml(data.target_type === 'dynamic' ? data.target_field : '')}" placeholder="license_number"></label>
+                    <label class="block md:col-span-2"><span class="block text-xs font-semibold text-slate-600 mb-1">XPath</span><input data-field-xpath data-xpath class="w-full rounded-lg border border-slate-300 px-3 py-2" value="${escapeHtml(data.xpath || '')}" placeholder=".//span/text()"></label>
+                    <label class="block"><span class="block text-xs font-semibold text-slate-600 mb-1">Regex</span><input data-field-regex class="w-full rounded-lg border border-slate-300 px-3 py-2" value="${escapeHtml(data.regex || '')}" placeholder="optional"></label>
+                </div>
+                <div class="flex items-center justify-between mt-2">
+                    <label class="inline-flex items-center gap-2 text-sm text-slate-600"><input data-field-required type="checkbox" class="rounded border-slate-300 text-sky-600" ${data.required ? 'checked' : ''}> Required</label>
+                    <button type="button" onclick="this.closest('.rounded-xl').remove()" class="text-sm font-semibold text-red-600">Remove</button>
+                </div>
+            `;
+            container.appendChild(row);
+            bindXPathValidation();
+        }
+
+        function syncFieldTarget(select) {
+            const row = select.closest('.rounded-xl');
+            const core = row.querySelector('[data-core-field]');
+            const dynamic = row.querySelector('[data-dynamic-field]');
+            const isDynamic = select.value === 'dynamic';
+            core.classList.toggle('hidden', isDynamic);
+            dynamic.classList.toggle('hidden', !isDynamic);
+        }
+
+        function syncNavigationInputs() {
+            const type = document.getElementById('navigationType').value;
+            document.getElementById('nextButtonWrap').classList.toggle('hidden', type !== 'pagination');
+            document.getElementById('loadMoreWrap').classList.toggle('hidden', type !== 'load_more');
+        }
+
+        function syncSlowSection() {
+            document.getElementById('slowSection').classList.toggle('hidden', !document.getElementById('slowEnabled').checked);
+        }
+
+        function collectFieldRows(kind) {
+            return Array.from(document.querySelectorAll(`#${kind}Fields > div`)).map((row, index) => {
+                const targetType = row.querySelector('[data-target-type]').value;
+                const targetField = targetType === 'dynamic' ? row.querySelector('[data-dynamic-field]').value : row.querySelector('[data-core-field]').value;
+                const xpath = row.querySelector('[data-field-xpath]').value.trim();
+                const regex = row.querySelector('[data-field-regex]').value.trim();
+                validateXPathSyntax(xpath, `${kind} field ${index + 1}`);
+                validateRegexSyntax(regex, `${kind} field ${index + 1}`);
+                return {
+                    label: row.querySelector('[data-field-label]').value.trim() || targetField,
+                    target_type: targetType,
+                    target_field: targetField,
+                    xpath,
+                    regex,
+                    required: row.querySelector('[data-field-required]').checked,
+                };
+            });
+        }
+
+        function buildPayload() {
+            validateXPathSyntax(document.getElementById('fastBlockXPath').value, 'Fast block XPath');
+            validateXPathSyntax(document.getElementById('scrollContainerXPath').value, 'Scroll container XPath');
+            const navType = document.getElementById('navigationType').value;
+            if (navType === 'pagination') validateXPathSyntax(document.getElementById('nextButtonXPath').value, 'Next button XPath');
+            if (navType === 'load_more') validateXPathSyntax(document.getElementById('loadMoreButtonXPath').value, 'Load more button XPath');
+
+            const slowEnabled = document.getElementById('slowEnabled').checked;
+            if (slowEnabled) {
+                validateXPathSyntax(document.getElementById('detailUrlXPath').value, 'Detail URL XPath');
+                validateXPathSyntax(document.getElementById('waitXPath').value, 'Wait XPath');
+            }
+
+            return {
+                name: document.getElementById('sourceName').value.trim(),
+                description: document.getElementById('sourceDescription').value.trim(),
+                enabled: document.getElementById('sourceEnabled').value === 'true',
+                config: {
+                    start_url_template: document.getElementById('startUrlTemplate').value.trim(),
+                    navigation: {
+                        type: navType,
+                        scroll_container_xpath: document.getElementById('scrollContainerXPath').value.trim(),
+                        next_button_xpath: document.getElementById('nextButtonXPath').value.trim(),
+                        load_more_button_xpath: document.getElementById('loadMoreButtonXPath').value.trim(),
+                        max_scrolls: Number(document.getElementById('maxScrolls').value || 60),
+                        max_pages: Number(document.getElementById('maxPages').value || 10),
+                        stable_cycles: Number(document.getElementById('stableCycles').value || 3),
+                        pause_min_ms: Number(document.getElementById('pauseMinMs').value || 800),
+                        pause_max_ms: Number(document.getElementById('pauseMaxMs').value || 1800),
+                    },
+                    fast: {
+                        block_xpath: document.getElementById('fastBlockXPath').value.trim(),
+                        fields: collectFieldRows('fast'),
+                    },
+                    slow: {
+                        enabled: slowEnabled,
+                        detail_url_xpath: document.getElementById('detailUrlXPath').value.trim(),
+                        wait_xpath: document.getElementById('waitXPath').value.trim(),
+                        fields: slowEnabled ? collectFieldRows('slow') : [],
+                    },
+                },
+            };
+        }
+
+        function setStatus(message, isError = false) {
+            const el = document.getElementById('formStatus');
+            el.textContent = message || '';
+            el.className = `text-sm ${isError ? 'text-red-600' : 'text-emerald-700'}`;
+        }
+
+        async function validateAndPreview() {
+            try {
+                const payload = buildPayload();
+                const response = await fetch('/api/source-template/validate', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+                setStatus('Source template is valid.');
+            } catch (error) {
+                setStatus(error.message, true);
+            }
+        }
+
+        async function loadSources() {
+            const list = document.getElementById('sourcesList');
+            list.innerHTML = '<div class="text-sm text-slate-500">Loading...</div>';
+            const response = await fetch('/api/sources?include_disabled=true');
+            const data = await response.json();
+            sources = data.sources || [];
+            if (!sources.length) {
+                list.innerHTML = '<div class="rounded-xl border border-dashed border-slate-300 p-4 text-sm text-slate-500">No custom sources yet.</div>';
+                return;
+            }
+            list.innerHTML = sources.map(source => `
+                <div class="rounded-xl border border-slate-200 bg-white p-4">
+                    <div class="flex items-start justify-between gap-3">
+                        <div>
+                            <div class="font-semibold text-slate-900">${escapeHtml(source.name)}</div>
+                            <div class="text-xs text-slate-500">${source.enabled ? 'Enabled' : 'Disabled'} · generic</div>
+                            <div class="text-sm text-slate-600 mt-1">${escapeHtml(source.description || '')}</div>
+                        </div>
+                        <button onclick="editSource(${source.id})" class="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-sm font-semibold text-sky-700">Edit</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function resetForm() {
+            document.getElementById('sourceForm').reset();
+            document.getElementById('sourceId').value = '';
+            document.getElementById('formTitle').textContent = 'Create Source';
+            document.getElementById('fastFields').innerHTML = '';
+            document.getElementById('slowFields').innerHTML = '';
+            document.getElementById('slowSection').classList.add('hidden');
+            document.getElementById('slowEnabled').checked = false;
+            addFieldRow('fast', {label: 'Business Name', target_type: 'core', target_field: 'business_name', xpath: './/text()', required: true});
+            setStatus('');
+            syncNavigationInputs();
+            bindXPathValidation();
+        }
+
+        function editSource(id) {
+            const source = sources.find(item => Number(item.id) === Number(id));
+            if (!source) return;
+            const config = source.config || {};
+            document.getElementById('sourceId').value = source.id;
+            document.getElementById('formTitle').textContent = `Edit Source #${source.id}`;
+            document.getElementById('sourceName').value = source.name || '';
+            document.getElementById('sourceDescription').value = source.description || '';
+            document.getElementById('sourceEnabled').value = source.enabled ? 'true' : 'false';
+            document.getElementById('startUrlTemplate').value = config.start_url_template || '';
+            const nav = config.navigation || {};
+            document.getElementById('navigationType').value = nav.type || 'scroll';
+            document.getElementById('scrollContainerXPath').value = nav.scroll_container_xpath || '';
+            document.getElementById('nextButtonXPath').value = nav.next_button_xpath || '';
+            document.getElementById('loadMoreButtonXPath').value = nav.load_more_button_xpath || '';
+            document.getElementById('maxScrolls').value = nav.max_scrolls || 60;
+            document.getElementById('maxPages').value = nav.max_pages || 10;
+            document.getElementById('stableCycles').value = nav.stable_cycles || 3;
+            document.getElementById('pauseMinMs').value = nav.pause_min_ms || 800;
+            document.getElementById('pauseMaxMs').value = nav.pause_max_ms || 1800;
+            document.getElementById('fastBlockXPath').value = (config.fast || {}).block_xpath || '';
+            document.getElementById('fastFields').innerHTML = '';
+            ((config.fast || {}).fields || []).forEach(field => addFieldRow('fast', field));
+            document.getElementById('slowEnabled').checked = Boolean((config.slow || {}).enabled);
+            document.getElementById('detailUrlXPath').value = (config.slow || {}).detail_url_xpath || '';
+            document.getElementById('waitXPath').value = (config.slow || {}).wait_xpath || '';
+            document.getElementById('slowFields').innerHTML = '';
+            ((config.slow || {}).fields || []).forEach(field => addFieldRow('slow', field));
+            syncNavigationInputs();
+            syncSlowSection();
+            setStatus('');
+            window.scrollTo({top: 0, behavior: 'smooth'});
+        }
+
+        document.getElementById('sourceForm').addEventListener('submit', async (event) => {
+            event.preventDefault();
+            try {
+                const payload = buildPayload();
+                const sourceId = document.getElementById('sourceId').value;
+                const response = await fetch(sourceId ? `/api/sources/${sourceId}` : '/api/sources', {
+                    method: sourceId ? 'PUT' : 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload),
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+                setStatus(sourceId ? 'Source updated.' : 'Source created.');
+                await loadSources();
+                if (!sourceId) resetForm();
+            } catch (error) {
+                setStatus(error.message, true);
+            }
+        });
+
+        document.addEventListener('DOMContentLoaded', () => {
+            resetForm();
+            loadSources();
+        });
+    </script>
+</body>
+</html>

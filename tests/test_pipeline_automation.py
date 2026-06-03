@@ -403,6 +403,53 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(response["reason"], "all_leased")
         self.assertIsNone(response["run_id"])
 
+    def test_source_template_config_accepts_xpath_regex_dynamic_fields(self):
+        config = self.main._normalize_source_template_config({
+            "start_url_template": "https://example.com/search?q={query}",
+            "navigation": {"type": "scroll", "max_scrolls": 5},
+            "fast": {
+                "block_xpath": "//div[@class='card']",
+                "fields": [
+                    {"label": "Name", "target_type": "core", "target_field": "business_name", "xpath": ".//h2/text()", "required": True},
+                    {"label": "License", "target_type": "dynamic", "target_field": "license_number", "xpath": ".//span/text()", "regex": "License: (\\w+)"},
+                ],
+            },
+            "slow": {"enabled": False},
+        })
+
+        self.assertEqual(config["navigation"]["type"], "scroll")
+        self.assertEqual(config["fast"]["fields"][0]["target_field"], "business_name")
+        self.assertEqual(config["fast"]["fields"][1]["target_type"], "dynamic")
+        self.assertEqual(config["fast"]["fields"][1]["target_field"], "license_number")
+
+    def test_source_template_config_rejects_bad_regex(self):
+        with self.assertRaises(Exception) as ctx:
+            self.main._normalize_source_template_config({
+                "start_url_template": "https://example.com/search?q={query}",
+                "navigation": {"type": "scroll"},
+                "fast": {
+                    "block_xpath": "//div",
+                    "fields": [
+                        {"label": "Name", "target_type": "core", "target_field": "business_name", "xpath": ".//h2/text()", "regex": "("},
+                    ],
+                },
+            })
+        self.assertIn("invalid regex", str(getattr(ctx.exception, "detail", ctx.exception)).lower())
+
+    def test_source_template_config_rejects_dynamic_core_collision(self):
+        with self.assertRaises(Exception) as ctx:
+            self.main._normalize_source_template_config({
+                "start_url_template": "https://example.com/search?q={query}",
+                "navigation": {"type": "scroll"},
+                "fast": {
+                    "block_xpath": "//div",
+                    "fields": [
+                        {"label": "Name", "target_type": "dynamic", "target_field": "business_name", "xpath": ".//h2/text()"},
+                    ],
+                },
+            })
+        self.assertIn("conflicts", str(getattr(ctx.exception, "detail", ctx.exception)).lower())
+
     def test_stage_complete_advances_to_next_stage(self):
         self._patch_db([
             {
