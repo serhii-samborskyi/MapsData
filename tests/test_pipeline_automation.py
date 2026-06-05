@@ -411,7 +411,14 @@ class PipelineEndpointTests(unittest.TestCase):
                 "block_xpath": "//div[@class='card']",
                 "fields": [
                     {"label": "Name", "target_type": "core", "target_field": "business_name", "xpath": ".//h2/text()", "required": True},
-                    {"label": "License", "target_type": "dynamic", "target_field": "license_number", "xpath": ".//span/text()", "regex": "License: (\\w+)"},
+                    {
+                        "label": "License",
+                        "target_type": "dynamic",
+                        "target_field": "license_number",
+                        "xpath": ".//span",
+                        "regex": "License: (\\w+)",
+                        "run_regex_within_xpath_content": True,
+                    },
                 ],
             },
             "slow": {"enabled": False},
@@ -422,6 +429,7 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(config["fast"]["fields"][0]["target_field"], "business_name")
         self.assertEqual(config["fast"]["fields"][1]["target_type"], "dynamic")
         self.assertEqual(config["fast"]["fields"][1]["target_field"], "license_number")
+        self.assertTrue(config["fast"]["fields"][1]["run_regex_within_xpath_content"])
 
     def test_source_template_config_rejects_bad_regex(self):
         with self.assertRaises(Exception) as ctx:
