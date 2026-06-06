@@ -421,7 +421,7 @@ class PipelineEndpointTests(unittest.TestCase):
                     },
                 ],
             },
-            "slow": {"enabled": False},
+            "slow": {"enabled": False, "detail_url_within_block": False},
         })
 
         self.assertEqual(config["navigation"]["type"], "scroll")
@@ -430,6 +430,7 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(config["fast"]["fields"][1]["target_type"], "dynamic")
         self.assertEqual(config["fast"]["fields"][1]["target_field"], "license_number")
         self.assertTrue(config["fast"]["fields"][1]["run_regex_within_xpath_content"])
+        self.assertFalse(config["slow"]["detail_url_within_block"])
 
     def test_source_template_config_rejects_bad_regex(self):
         with self.assertRaises(Exception) as ctx:

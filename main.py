@@ -603,6 +603,7 @@ def _normalize_source_template_config(raw_config: Any) -> dict:
     normalized_slow = {
         "enabled": slow_enabled,
         "detail_url_xpath": str(slow.get("detail_url_xpath") or "").strip(),
+        "detail_url_within_block": _coerce_bool_flag(slow.get("detail_url_within_block"), True),
         "wait_xpath": str(slow.get("wait_xpath") or "").strip(),
         "fields": [],
     }
