@@ -35,7 +35,11 @@
                         <h2 class="text-xl font-semibold text-slate-900">Saved Sources</h2>
                         <p class="text-sm text-slate-500">Google Maps remains built-in default.</p>
                     </div>
-                    <button onclick="resetForm()" class="rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-700">New</button>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button onclick="document.getElementById('sourceImportFile').click()" class="rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-100">Import JSON</button>
+                        <button onclick="resetForm()" class="rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-700">New</button>
+                        <input id="sourceImportFile" type="file" accept=".json,application/json" class="hidden" onchange="importSourceFile(event)">
+                    </div>
                 </div>
                 <div id="sourcesList" class="space-y-3"></div>
             </section>
@@ -166,6 +170,7 @@
                     <div class="flex flex-col sm:flex-row gap-3">
                         <button type="button" onclick="validateAndPreview()" class="rounded-xl border border-slate-300 px-5 py-3 font-semibold text-slate-700 hover:bg-slate-50">Validate</button>
                         <button type="button" onclick="startSourceDebug()" class="rounded-xl border border-emerald-300 bg-emerald-50 px-5 py-3 font-semibold text-emerald-800 hover:bg-emerald-100">Test in Daemon Browser</button>
+                        <button type="button" onclick="exportDraftSource()" class="rounded-xl border border-indigo-300 bg-indigo-50 px-5 py-3 font-semibold text-indigo-800 hover:bg-indigo-100">Export Draft JSON</button>
                         <button type="submit" class="rounded-xl bg-sky-600 px-5 py-3 font-semibold text-white hover:bg-sky-700">Save Source</button>
                         <button type="button" onclick="resetForm()" class="rounded-xl border border-slate-300 px-5 py-3 font-semibold text-slate-700 hover:bg-slate-50">Reset</button>
                     </div>
@@ -372,6 +377,52 @@
             el.className = `text-sm ${isError ? 'text-red-600' : 'text-emerald-700'}`;
         }
 
+        function sourceTemplateExportPayload(source) {
+            return {
+                schema: 'scrapiq.source_template',
+                version: 1,
+                name: source.name || 'Untitled Source',
+                description: source.description || '',
+                enabled: source.enabled !== false,
+                source_type: 'generic',
+                config: source.config || {},
+                test: source.test || {},
+            };
+        }
+
+        function sourceTemplateFilename(name) {
+            const slug = String(name || 'source-template')
+                .trim()
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '-')
+                .replace(/^-+|-+$/g, '') || 'source-template';
+            return `${slug}.scrapiq-source-template.v1.json`;
+        }
+
+        function downloadJson(filename, data) {
+            const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = filename;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(url);
+        }
+
+        function exportDraftSource() {
+            try {
+                const payload = buildPayload();
+                if (!payload.name) throw new Error('Source Name is required before exporting.');
+                const versioned = sourceTemplateExportPayload(payload);
+                downloadJson(sourceTemplateFilename(payload.name), versioned);
+                setStatus('Draft source JSON exported.');
+            } catch (error) {
+                setStatus(error.message, true);
+            }
+        }
+
         async function validateAndPreview() {
             try {
                 const payload = buildPayload();
@@ -381,6 +432,41 @@
                 setStatus('Source template is valid.');
             } catch (error) {
                 setStatus(error.message, true);
+            }
+        }
+
+        async function exportSource(id) {
+            try {
+                const response = await fetch(`/api/sources/${id}/export`);
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+                downloadJson(sourceTemplateFilename(data.name), data);
+                setStatus('Source JSON exported.');
+            } catch (error) {
+                setStatus(error.message, true);
+            }
+        }
+
+        async function importSourceFile(event) {
+            const input = event.target;
+            const file = input.files && input.files[0];
+            if (!file) return;
+            try {
+                const payload = JSON.parse(await file.text());
+                const response = await fetch('/api/sources/import', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload),
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+                setStatus(`Imported source "${data.source.name}".`);
+                await loadSources();
+                editSource(data.source.id);
+            } catch (error) {
+                setStatus(error.message, true);
+            } finally {
+                input.value = '';
             }
         }
 
@@ -402,7 +488,10 @@
                             <div class="text-xs text-slate-500">${source.enabled ? 'Enabled' : 'Disabled'} · generic</div>
                             <div class="text-sm text-slate-600 mt-1">${escapeHtml(source.description || '')}</div>
                         </div>
-                        <button onclick="editSource(${source.id})" class="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-sm font-semibold text-sky-700">Edit</button>
+                        <div class="flex flex-wrap justify-end gap-2">
+                            <button onclick="exportSource(${source.id})" class="rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-sm font-semibold text-indigo-700">Export</button>
+                            <button onclick="editSource(${source.id})" class="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-sm font-semibold text-sky-700">Edit</button>
+                        </div>
                     </div>
                 </div>
             `).join('');

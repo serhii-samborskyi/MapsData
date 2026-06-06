@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Form, Request, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from database import init_db, get_db
@@ -86,6 +86,8 @@ MAX_ENRICHMENT_TIMEOUT_SECONDS = 600
 SOURCE_NAVIGATION_TYPES = {"scroll", "pagination", "load_more"}
 SOURCE_TARGET_TYPES = {"core", "dynamic"}
 SOURCE_TEMPLATE_CONFIG_VERSION = 1
+SOURCE_TEMPLATE_EXPORT_SCHEMA = "scrapiq.source_template"
+SOURCE_TEMPLATE_EXPORT_VERSION = 1
 SOURCE_CORE_FIELDS = [
     "business_name",
     "address",
@@ -638,6 +640,58 @@ def _serialize_source_template(row: dict) -> dict:
     if item.get("updated_at") is not None:
         item["updated_at"] = _iso(item.get("updated_at"))
     return item
+
+
+def _source_template_export_payload(source: dict) -> dict:
+    serialized = _serialize_source_template(source)
+    return {
+        "schema": SOURCE_TEMPLATE_EXPORT_SCHEMA,
+        "version": SOURCE_TEMPLATE_EXPORT_VERSION,
+        "name": str(serialized.get("name") or "").strip(),
+        "description": str(serialized.get("description") or "").strip(),
+        "enabled": bool(serialized.get("enabled", True)),
+        "source_type": str(serialized.get("source_type") or "generic").strip() or "generic",
+        "config": _normalize_source_template_config(serialized.get("config") or {}),
+        "test": serialized.get("test") if isinstance(serialized.get("test"), dict) else {},
+    }
+
+
+def _source_template_export_filename(source_name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(source_name or "").strip().lower()).strip("-")
+    if not slug:
+        slug = "source-template"
+    return f"{slug}.scrapiq-source-template.v{SOURCE_TEMPLATE_EXPORT_VERSION}.json"
+
+
+def _normalize_source_template_import_payload(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Import payload must be a JSON object")
+
+    schema = str(payload.get("schema") or "").strip()
+    if schema and schema != SOURCE_TEMPLATE_EXPORT_SCHEMA:
+        raise HTTPException(status_code=400, detail=f"Unsupported source template schema '{schema}'")
+
+    version = _safe_int(payload.get("version"), SOURCE_TEMPLATE_EXPORT_VERSION)
+    if version != SOURCE_TEMPLATE_EXPORT_VERSION:
+        raise HTTPException(status_code=400, detail=f"Unsupported source template version '{version}'")
+
+    name = str(payload.get("name") or "").strip()
+    description = str(payload.get("description") or "").strip()
+    source_type = str(payload.get("source_type") or "generic").strip().lower()
+    if source_type not in {"generic", ""}:
+        raise HTTPException(status_code=400, detail="Only generic source templates can be imported")
+    if not name:
+        raise HTTPException(status_code=400, detail="Source name is required")
+
+    config = payload.get("config") if "config" in payload else payload
+    return {
+        "name": name,
+        "description": description,
+        "enabled": _coerce_bool_flag(payload.get("enabled"), True),
+        "source_type": "generic",
+        "config": _normalize_source_template_config(config or {}),
+        "test": payload.get("test") if isinstance(payload.get("test"), dict) else {},
+    }
 
 
 def _get_source_template(cursor, template_id: int) -> Optional[dict]:
@@ -3123,6 +3177,44 @@ async def validate_source_template_config_alt(request: Request):
     data = await _read_json_body(request)
     config = _normalize_source_template_config(data.get("config") or data)
     return {"status": "ok", "config": config}
+
+
+@app.post("/api/sources/import")
+async def import_source_template(request: Request):
+    data = await _read_json_body(request)
+    source = _normalize_source_template_import_payload(data)
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO source_templates (name, description, source_type, enabled, config, updated_at)
+                VALUES (%s, %s, 'generic', %s, %s, CURRENT_TIMESTAMP)
+                RETURNING *
+            """, (source["name"], source["description"], source["enabled"], json.dumps(source["config"])))
+        except IntegrityError:
+            conn.rollback()
+            raise HTTPException(status_code=400, detail="Source name already exists")
+        row = cursor.fetchone()
+        conn.commit()
+
+    return {"status": "imported", "source": _serialize_source_template(dict(row))}
+
+
+@app.get("/api/sources/{source_id}/export")
+async def export_source_template(source_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        template = _get_source_template(cursor, source_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Source template not found")
+
+    payload = _source_template_export_payload(template)
+    filename = _source_template_export_filename(payload["name"])
+    return JSONResponse(
+        payload,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/api/sources/{source_id}")

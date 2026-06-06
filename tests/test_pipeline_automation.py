@@ -54,6 +54,7 @@ def _install_stub_modules():
 
     fastapi_responses = types.ModuleType("fastapi.responses")
     fastapi_responses.HTMLResponse = type("HTMLResponse", (), {})
+    fastapi_responses.JSONResponse = type("JSONResponse", (), {"__init__": lambda self, *a, **k: None})
     sys.modules["fastapi.responses"] = fastapi_responses
 
     fastapi_staticfiles = types.ModuleType("fastapi.staticfiles")
@@ -459,6 +460,58 @@ class PipelineEndpointTests(unittest.TestCase):
                 },
             })
         self.assertIn("conflicts", str(getattr(ctx.exception, "detail", ctx.exception)).lower())
+
+    def test_source_template_export_payload_uses_versioned_schema(self):
+        payload = self.main._source_template_export_payload({
+            "id": 5,
+            "name": "Facebook Ads",
+            "description": "FB library scraper",
+            "source_type": "generic",
+            "enabled": True,
+            "config": {
+                "start_url_template": "https://example.com/search?q={query}",
+                "navigation": {"type": "scroll", "max_scrolls": 5},
+                "fast": {
+                    "block_xpath": "//div[@class='card']",
+                    "fields": [
+                        {"label": "Name", "target_type": "core", "target_field": "business_name", "xpath": ".//h2/text()"},
+                    ],
+                },
+            },
+        })
+
+        self.assertEqual(payload["schema"], "scrapiq.source_template")
+        self.assertEqual(payload["version"], 1)
+        self.assertEqual(payload["name"], "Facebook Ads")
+        self.assertEqual(payload["source_type"], "generic")
+        self.assertEqual(payload["config"]["version"], 1)
+
+    def test_source_template_import_payload_validates_and_normalizes(self):
+        payload = self.main._normalize_source_template_import_payload({
+            "schema": "scrapiq.source_template",
+            "version": 1,
+            "name": "Directory",
+            "description": "Imported",
+            "enabled": False,
+            "source_type": "generic",
+            "config": {
+                "start_url_template": "https://example.com/search?q={query}",
+                "navigation": {"type": "scroll", "all_the_way_down_scrolls": True},
+                "fast": {
+                    "block_xpath": "//article",
+                    "fields": [
+                        {"label": "Name", "target_type": "core", "target_field": "business_name", "xpath": ".//h2"},
+                    ],
+                },
+            },
+            "test": {"query": "plumber chicago"},
+        })
+
+        self.assertEqual(payload["name"], "Directory")
+        self.assertFalse(payload["enabled"])
+        self.assertEqual(payload["source_type"], "generic")
+        self.assertTrue(payload["config"]["navigation"]["all_the_way_down_scrolls"])
+        self.assertEqual(payload["test"]["query"], "plumber chicago")
 
     def test_stage_complete_advances_to_next_stage(self):
         self._patch_db([
