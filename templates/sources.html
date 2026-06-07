@@ -290,6 +290,7 @@
                     <div class="flex flex-wrap items-center gap-4">
                         <label class="inline-flex items-center gap-2 text-sm text-slate-600"><input data-field-required type="checkbox" class="rounded border-slate-300 text-sky-600" ${data.required ? 'checked' : ''}> Required</label>
                         <label class="inline-flex items-center gap-2 text-sm text-slate-600"><input data-field-regex-within-content type="checkbox" class="rounded border-slate-300 text-sky-600" ${data.run_regex_within_xpath_content ? 'checked' : ''}> Run regex within XPath content</label>
+                        <label class="inline-flex items-center gap-2 text-sm text-slate-600"><input data-field-strip-html-before-regex type="checkbox" class="rounded border-slate-300 text-sky-600" ${data.strip_html_before_regex ? 'checked' : ''}> Strip HTML before regex</label>
                     </div>
                     <button type="button" onclick="this.closest('.rounded-xl').remove()" class="text-sm font-semibold text-red-600">Remove</button>
                 </div>
@@ -332,6 +333,7 @@
                     xpath,
                     regex,
                     run_regex_within_xpath_content: row.querySelector('[data-field-regex-within-content]').checked,
+                    strip_html_before_regex: row.querySelector('[data-field-strip-html-before-regex]').checked,
                     required: row.querySelector('[data-field-required]').checked,
                 };
             });

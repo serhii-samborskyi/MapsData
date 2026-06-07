@@ -419,6 +419,7 @@ class PipelineEndpointTests(unittest.TestCase):
                         "xpath": ".//span",
                         "regex": "License: (\\w+)",
                         "run_regex_within_xpath_content": True,
+                        "strip_html_before_regex": True,
                     },
                 ],
             },
@@ -431,6 +432,7 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(config["fast"]["fields"][1]["target_type"], "dynamic")
         self.assertEqual(config["fast"]["fields"][1]["target_field"], "license_number")
         self.assertTrue(config["fast"]["fields"][1]["run_regex_within_xpath_content"])
+        self.assertTrue(config["fast"]["fields"][1]["strip_html_before_regex"])
         self.assertFalse(config["slow"]["detail_url_within_block"])
 
     def test_source_template_config_rejects_bad_regex(self):

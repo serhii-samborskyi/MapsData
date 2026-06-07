@@ -507,6 +507,7 @@ def _validate_xpath_field(field: dict, path_label: str) -> dict:
     regex_value = str(field.get("regex") or "").strip()
     required = _coerce_bool_flag(field.get("required"), False)
     run_regex_within_xpath_content = _coerce_bool_flag(field.get("run_regex_within_xpath_content"), False)
+    strip_html_before_regex = _coerce_bool_flag(field.get("strip_html_before_regex"), False)
 
     if not label:
         label = target_field or path_label
@@ -533,6 +534,7 @@ def _validate_xpath_field(field: dict, path_label: str) -> dict:
         "xpath": xpath,
         "regex": regex_value,
         "run_regex_within_xpath_content": run_regex_within_xpath_content,
+        "strip_html_before_regex": strip_html_before_regex,
         "required": required,
     }
 
