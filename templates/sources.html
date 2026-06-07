@@ -482,6 +482,24 @@
             }
         }
 
+        async function deleteSource(id) {
+            const source = sources.find(item => Number(item.id) === Number(id));
+            const sourceName = source && source.name ? source.name : `Source #${id}`;
+            if (!confirm(`Remove source template "${sourceName}"? This cannot be undone.`)) return;
+            try {
+                const response = await fetch(`/api/sources/${id}`, {method: 'DELETE'});
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+                setStatus(`Removed source "${sourceName}".`);
+                if (Number(document.getElementById('sourceId').value || 0) === Number(id)) {
+                    resetForm();
+                }
+                await loadSources();
+            } catch (error) {
+                setStatus(error.message, true);
+            }
+        }
+
         async function loadSources() {
             const list = document.getElementById('sourcesList');
             list.innerHTML = '<div class="text-sm text-slate-500">Loading...</div>';
@@ -503,6 +521,7 @@
                         <div class="flex flex-wrap justify-end gap-2">
                             <button onclick="exportSource(${source.id})" class="rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-sm font-semibold text-indigo-700">Export</button>
                             <button onclick="editSource(${source.id})" class="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-sm font-semibold text-sky-700">Edit</button>
+                            <button onclick="deleteSource(${source.id})" class="rounded-full border border-red-200 bg-red-50 px-3 py-1 text-sm font-semibold text-red-700">Remove</button>
                         </div>
                     </div>
                 </div>
