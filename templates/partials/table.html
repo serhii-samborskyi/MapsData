@@ -59,11 +59,11 @@
                 </div>
                 <div class="mt-3 md:hidden">
                     <div class="flex items-center justify-between text-[11px] text-slate-500 mb-1">
-                        <span>Progress</span>
-                        <span>{{ completion }}%</span>
+                        <span>Request Progress</span>
+                        <span id="request-progress-mobile-label-{{ campaign.id }}">{{ completion }}%</span>
                     </div>
                     <div class="w-full bg-slate-200 rounded-full h-2">
-                        <div class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-sky-500 to-blue-600" style="width: {{ completion }}%"></div>
+                        <div id="request-progress-mobile-bar-{{ campaign.id }}" class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-sky-500 to-blue-600" style="width: {{ completion }}%"></div>
                     </div>
                 </div>
                 <div class="mt-3">
@@ -100,9 +100,9 @@
                     </details>
                 </div>
             </td>
-            <td data-label="Total Requests" class="text-sm text-slate-700">{{ campaign.total_requests or 0 }}</td>
-            <td data-label="Contacts" class="text-sm text-slate-700">{{ campaign.total_contacts or 0 }}</td>
-            <td data-label="Emails" class="text-sm text-slate-700" data-email-count="{{ campaign.email_count or 0 }}" data-valid-email-count="{{ campaign.valid_email_count or 0 }}">
+            <td data-label="Total Requests" id="request-count-{{ campaign.id }}" class="text-sm text-slate-700">{{ campaign.total_requests or 0 }}</td>
+            <td data-label="Contacts" id="contact-count-{{ campaign.id }}" class="text-sm text-slate-700">{{ campaign.total_contacts or 0 }}</td>
+            <td data-label="Emails" id="email-count-{{ campaign.id }}" class="text-sm text-slate-700" data-email-count="{{ campaign.email_count or 0 }}" data-valid-email-count="{{ campaign.valid_email_count or 0 }}">
                 {{ campaign.email_count or 0 }}
                 {% if campaign.valid_email_count is defined %}
                     <span class="text-green-600 font-medium">/ {{ campaign.valid_email_count or 0 }}</span>
@@ -159,9 +159,9 @@
             <td colspan="7" class="no-label px-4 py-2">
                 <div class="relative w-full">
                     <div class="w-full bg-slate-200 rounded-full h-2">
-                        <div class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-sky-500 to-blue-600" style="width: {{ completion }}%"></div>
+                        <div id="request-progress-bar-{{ campaign.id }}" class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-sky-500 to-blue-600" style="width: {{ completion }}%"></div>
                     </div>
-                    <div class="absolute w-full text-center text-xs text-slate-500 mt-1">{{ completion }}% complete</div>
+                    <div id="request-progress-label-{{ campaign.id }}" class="absolute w-full text-center text-xs text-slate-500 mt-1">{{ completion }}% complete</div>
                 </div>
             </td>
         </tr>

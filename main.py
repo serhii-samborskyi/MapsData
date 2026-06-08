@@ -2670,6 +2670,27 @@ async def get_dashboard_runtime_status(campaign_ids: str = ""):
         cursor.execute(f"""
             SELECT
                 campaign_id,
+                COUNT(*) AS total_requests,
+                COUNT(*) FILTER (WHERE status = 'completed') AS completed_requests,
+                COUNT(*) FILTER (WHERE status = 'pending') AS pending_requests,
+                COUNT(*) FILTER (WHERE status = 'inuse') AS inuse_requests
+            FROM requests
+            WHERE campaign_id IN ({placeholders})
+            GROUP BY campaign_id
+        """, tuple(campaign_id_list))
+        request_progress_by_campaign = {
+            int(row["campaign_id"]): {
+                "total_requests": int(row.get("total_requests") or 0),
+                "completed_requests": int(row.get("completed_requests") or 0),
+                "pending_requests": int(row.get("pending_requests") or 0),
+                "inuse_requests": int(row.get("inuse_requests") or 0),
+            }
+            for row in cursor.fetchall()
+        }
+
+        cursor.execute(f"""
+            SELECT
+                campaign_id,
                 MAX(updated_at) AS pipeline_updated_at
             FROM pipeline_runs
             WHERE campaign_id IN ({placeholders})
@@ -2762,10 +2783,20 @@ async def get_dashboard_runtime_status(campaign_ids: str = ""):
             active_job=active_jobs.get(campaign_id),
             latest_job=latest_jobs.get(campaign_id),
         )
+        request_progress = request_progress_by_campaign.get(campaign_id, {
+            "total_requests": 0,
+            "completed_requests": 0,
+            "pending_requests": 0,
+            "inuse_requests": 0,
+        })
+        total_requests = int(request_progress.get("total_requests") or 0)
+        completed_requests = int(request_progress.get("completed_requests") or 0)
+        request_progress["progress_percent"] = round(min(100, (completed_requests / total_requests) * 100), 2) if total_requests > 0 else 0
 
         result[str(campaign_id)] = {
             "pipeline": pipeline,
             "stats": stats,
+            "requests": request_progress,
             "verification": verification,
             "enrichment": _compute_enrichment_progress_payload(
                 campaign_id=campaign_id,

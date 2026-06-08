@@ -168,11 +168,11 @@
                                 </div>
                                 <div class="mt-3 md:hidden">
                                     <div class="flex items-center justify-between text-[11px] text-slate-500 mb-1">
-                                        <span>Progress</span>
-                                        <span>{{ completion }}%</span>
+                                        <span>Request Progress</span>
+                                        <span id="request-progress-mobile-label-{{ campaign.id }}">{{ completion }}%</span>
                                     </div>
                                     <div class="w-full bg-slate-200 rounded-full h-2">
-                                        <div class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-sky-500 to-blue-600" style="width: {{ completion }}%"></div>
+                                        <div id="request-progress-mobile-bar-{{ campaign.id }}" class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-sky-500 to-blue-600" style="width: {{ completion }}%"></div>
                                     </div>
                                 </div>
                                 <div class="mt-3">
@@ -209,9 +209,9 @@
                                     </details>
                                 </div>
                             </td>
-                            <td data-label="Total Requests" class="text-sm text-slate-700">{{ campaign.total_requests or 0 }}</td>
-                            <td data-label="Contacts" class="text-sm text-slate-700">{{ campaign.total_contacts or 0 }}</td>
-                            <td data-label="Emails" class="text-sm text-slate-700" data-email-count="{{ campaign.email_count or 0 }}" data-valid-email-count="{{ campaign.valid_email_count or 0 }}">
+                            <td data-label="Total Requests" id="request-count-{{ campaign.id }}" class="text-sm text-slate-700">{{ campaign.total_requests or 0 }}</td>
+                            <td data-label="Contacts" id="contact-count-{{ campaign.id }}" class="text-sm text-slate-700">{{ campaign.total_contacts or 0 }}</td>
+                            <td data-label="Emails" id="email-count-{{ campaign.id }}" class="text-sm text-slate-700" data-email-count="{{ campaign.email_count or 0 }}" data-valid-email-count="{{ campaign.valid_email_count or 0 }}">
                                 {{ campaign.email_count or 0 }}
                                 {% if campaign.valid_email_count is defined %}
                                     <span class="text-green-600 font-medium">/ {{ campaign.valid_email_count or 0 }}</span>
@@ -268,9 +268,9 @@
                             <td colspan="7" class="no-label px-4 py-2">
                                 <div class="relative w-full">
                                     <div class="w-full bg-slate-200 rounded-full h-2">
-                                        <div class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-sky-500 to-blue-600" style="width: {{ completion }}%"></div>
+                                        <div id="request-progress-bar-{{ campaign.id }}" class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-sky-500 to-blue-600" style="width: {{ completion }}%"></div>
                                     </div>
-                                    <div class="absolute w-full text-center text-xs text-slate-500 mt-1">{{ completion }}% complete</div>
+                                    <div id="request-progress-label-{{ campaign.id }}" class="absolute w-full text-center text-xs text-slate-500 mt-1">{{ completion }}% complete</div>
                                 </div>
                             </td>
                         </tr>
@@ -1064,7 +1064,24 @@
 
         function renderPipelineStats(campaignId, stats) {
             const statsContainer = document.getElementById(`pipeline-stats-${campaignId}`);
-            if (!statsContainer || !stats) return;
+            if (!stats) return;
+
+            const contactCount = document.getElementById(`contact-count-${campaignId}`);
+            const emailCount = document.getElementById(`email-count-${campaignId}`);
+            if (contactCount) {
+                contactCount.textContent = stats.total_contacts ?? 0;
+            }
+            if (emailCount) {
+                const validEmailCount = emailCount.dataset.validEmailCount;
+                const emailTotal = stats.contacts_with_email ?? 0;
+                if (validEmailCount !== undefined && validEmailCount !== '') {
+                    emailCount.innerHTML = `${emailTotal} <span class="text-green-600 font-medium">/ ${validEmailCount || 0}</span>`;
+                } else {
+                    emailCount.textContent = emailTotal;
+                }
+            }
+
+            if (!statsContainer) return;
 
             statsContainer.innerHTML = `
                 <div class="rounded border border-slate-200 bg-white px-2 py-1">Total: <span class="font-semibold">${stats.total_contacts ?? 0}</span></div>
@@ -1161,6 +1178,37 @@
             }
         }
 
+        function renderRequestProgress(campaignId, progress) {
+            if (!progress) return;
+            const total = Number(progress.total_requests || 0);
+            const completed = Number(progress.completed_requests || 0);
+            const pending = Number(progress.pending_requests || 0);
+            const inuse = Number(progress.inuse_requests || 0);
+            const percent = Math.max(0, Math.min(100, Number(progress.progress_percent || 0)));
+
+            const requestCount = document.getElementById(`request-count-${campaignId}`);
+            const desktopBar = document.getElementById(`request-progress-bar-${campaignId}`);
+            const desktopLabel = document.getElementById(`request-progress-label-${campaignId}`);
+            const mobileBar = document.getElementById(`request-progress-mobile-bar-${campaignId}`);
+            const mobileLabel = document.getElementById(`request-progress-mobile-label-${campaignId}`);
+
+            if (requestCount) {
+                requestCount.textContent = `${completed}/${total}`;
+                requestCount.title = `Pending: ${pending}, in use: ${inuse}`;
+            }
+            [desktopBar, mobileBar].filter(Boolean).forEach((bar) => {
+                bar.style.width = `${percent}%`;
+            });
+            if (desktopLabel) {
+                desktopLabel.textContent = `${percent}% complete (${completed}/${total})`;
+                desktopLabel.title = `Pending: ${pending}, in use: ${inuse}`;
+            }
+            if (mobileLabel) {
+                mobileLabel.textContent = `${percent}% (${completed}/${total})`;
+                mobileLabel.title = `Pending: ${pending}, in use: ${inuse}`;
+            }
+        }
+
         async function refreshRuntimeStatuses() {
             const campaignRows = Array.from(document.querySelectorAll('tr[id^="campaign-row-"]'));
             const campaignIds = campaignRows
@@ -1180,6 +1228,7 @@
                     const item = statusMap[campaignId] || statusMap[String(campaignId)];
                     if (!item) return;
                     renderPipelineState(campaignId, item.pipeline || {}, item.stats || {});
+                    renderRequestProgress(campaignId, item.requests || {});
                     renderVerificationProgress(campaignId, item.verification || {});
                     renderEnrichmentProgress(campaignId, item.enrichment || {});
                 });
