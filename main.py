@@ -3294,15 +3294,17 @@ async def update_source_template(source_id: int, request: Request):
 async def delete_source_template(source_id: int):
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id FROM search_campaigns WHERE source_template_id = %s LIMIT 1", (source_id,))
-        if cursor.fetchone():
-            raise HTTPException(status_code=400, detail="Source is used by campaigns. Disable it instead of deleting.")
+        cursor.execute("SELECT COUNT(*) AS count FROM search_campaigns WHERE source_template_id = %s", (source_id,))
+        used_row = cursor.fetchone() or {}
+        detached_campaign_count = int(used_row.get("count", 0) if isinstance(used_row, dict) else used_row[0])
+        if detached_campaign_count:
+            cursor.execute("UPDATE search_campaigns SET source_template_id = NULL WHERE source_template_id = %s", (source_id,))
         cursor.execute("DELETE FROM source_templates WHERE id = %s RETURNING id", (source_id,))
         deleted = cursor.fetchone()
         if not deleted:
             raise HTTPException(status_code=404, detail="Source template not found")
         conn.commit()
-    return {"status": "deleted", "source_id": source_id}
+    return {"status": "deleted", "source_id": source_id, "detached_campaign_count": detached_campaign_count}
 
 
 @app.get("/api/campaign/{campaign_id}/source-template")
