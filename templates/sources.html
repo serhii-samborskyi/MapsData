@@ -157,6 +157,11 @@
                                     <span class="block text-sm font-semibold text-slate-700 mb-1">Wait XPath</span>
                                     <input id="waitXPath" data-xpath class="w-full rounded-xl border border-slate-300 px-4 py-3" placeholder="//h1">
                                 </label>
+                                <label class="block">
+                                    <span class="block text-sm font-semibold text-slate-700 mb-1">Detail Page Scrolls</span>
+                                    <input id="detailScrolls" type="number" min="0" max="50" value="3" class="w-full rounded-xl border border-slate-300 px-4 py-3">
+                                    <span class="text-xs text-slate-500">Scroll detail pages before extracting fields. Use 0 to disable.</span>
+                                </label>
                             </div>
                             <div class="flex items-center justify-between">
                                 <h3 class="font-semibold text-slate-900">Detail Fields</h3>
@@ -383,6 +388,7 @@
                         detail_url_xpath: document.getElementById('detailUrlXPath').value.trim(),
                         detail_url_within_block: document.getElementById('detailUrlWithinBlock').checked,
                         wait_xpath: document.getElementById('waitXPath').value.trim(),
+                        detail_scrolls: Number(document.getElementById('detailScrolls').value || 0),
                         fields: slowEnabled ? collectFieldRows('slow') : [],
                     },
                 },
@@ -577,6 +583,7 @@
             document.getElementById('detailUrlXPath').value = (config.slow || {}).detail_url_xpath || '';
             document.getElementById('detailUrlWithinBlock').checked = (config.slow || {}).detail_url_within_block !== false;
             document.getElementById('waitXPath').value = (config.slow || {}).wait_xpath || '';
+            document.getElementById('detailScrolls').value = (config.slow || {}).detail_scrolls ?? 3;
             document.getElementById('slowFields').innerHTML = '';
             ((config.slow || {}).fields || []).forEach(field => addFieldRow('slow', field));
             syncNavigationInputs();

@@ -609,6 +609,7 @@ def _normalize_source_template_config(raw_config: Any) -> dict:
         "detail_url_xpath": str(slow.get("detail_url_xpath") or "").strip(),
         "detail_url_within_block": _coerce_bool_flag(slow.get("detail_url_within_block"), True),
         "wait_xpath": str(slow.get("wait_xpath") or "").strip(),
+        "detail_scrolls": max(0, min(_safe_int(slow.get("detail_scrolls"), 3), 50)),
         "fields": [],
     }
     if slow_enabled:

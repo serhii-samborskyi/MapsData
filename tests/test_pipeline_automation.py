@@ -433,6 +433,7 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(config["fast"]["fields"][1]["target_field"], "license_number")
         self.assertTrue(config["fast"]["fields"][1]["run_regex_within_xpath_content"])
         self.assertTrue(config["fast"]["fields"][1]["strip_html_before_regex"])
+        self.assertEqual(config["slow"]["detail_scrolls"], 3)
         self.assertFalse(config["slow"]["detail_url_within_block"])
 
     def test_source_template_config_rejects_bad_regex(self):
