@@ -2673,7 +2673,8 @@ async def get_dashboard_runtime_status(campaign_ids: str = ""):
                 COUNT(*) AS total_requests,
                 COUNT(*) FILTER (WHERE status = 'completed') AS completed_requests,
                 COUNT(*) FILTER (WHERE status = 'pending') AS pending_requests,
-                COUNT(*) FILTER (WHERE status = 'inuse') AS inuse_requests
+                COUNT(*) FILTER (WHERE status = 'inuse') AS inuse_requests,
+                COUNT(*) FILTER (WHERE status = 'reserved') AS reserved_requests
             FROM requests
             WHERE campaign_id IN ({placeholders})
             GROUP BY campaign_id
@@ -2684,6 +2685,7 @@ async def get_dashboard_runtime_status(campaign_ids: str = ""):
                 "completed_requests": int(row.get("completed_requests") or 0),
                 "pending_requests": int(row.get("pending_requests") or 0),
                 "inuse_requests": int(row.get("inuse_requests") or 0),
+                "reserved_requests": int(row.get("reserved_requests") or 0),
             }
             for row in cursor.fetchall()
         }
@@ -2788,9 +2790,11 @@ async def get_dashboard_runtime_status(campaign_ids: str = ""):
             "completed_requests": 0,
             "pending_requests": 0,
             "inuse_requests": 0,
+            "reserved_requests": 0,
         })
         total_requests = int(request_progress.get("total_requests") or 0)
         completed_requests = int(request_progress.get("completed_requests") or 0)
+        request_progress["unfinished_requests"] = max(0, total_requests - completed_requests)
         request_progress["progress_percent"] = round(min(100, (completed_requests / total_requests) * 100), 2) if total_requests > 0 else 0
 
         result[str(campaign_id)] = {
@@ -3428,6 +3432,32 @@ def _ensure_campaign_exists(cursor, campaign_id: int):
         raise HTTPException(status_code=404, detail="Campaign not found")
 
 
+def _get_campaign_request_progress(cursor, campaign_id: int) -> dict:
+    cursor.execute("""
+        SELECT
+            COUNT(*) AS total_requests,
+            COUNT(*) FILTER (WHERE status = 'completed') AS completed_requests,
+            COUNT(*) FILTER (WHERE status = 'pending') AS pending_requests,
+            COUNT(*) FILTER (WHERE status = 'inuse') AS inuse_requests,
+            COUNT(*) FILTER (WHERE status = 'reserved') AS reserved_requests
+        FROM requests
+        WHERE campaign_id = %s
+    """, (campaign_id,))
+    row = cursor.fetchone() or {}
+    progress = {
+        "total_requests": int(row.get("total_requests") or 0),
+        "completed_requests": int(row.get("completed_requests") or 0),
+        "pending_requests": int(row.get("pending_requests") or 0),
+        "inuse_requests": int(row.get("inuse_requests") or 0),
+        "reserved_requests": int(row.get("reserved_requests") or 0),
+    }
+    total_requests = progress["total_requests"]
+    completed_requests = progress["completed_requests"]
+    progress["unfinished_requests"] = max(0, total_requests - completed_requests)
+    progress["progress_percent"] = round(min(100, (completed_requests / total_requests) * 100), 2) if total_requests > 0 else 0
+    return progress
+
+
 def _load_latest_pipeline_run(cursor, campaign_id: int) -> Optional[dict]:
     cursor.execute("""
         SELECT *
@@ -3590,6 +3620,21 @@ async def start_campaign_pipeline(campaign_id: int, request: Request):
                 retries = int(previous_run.get("retries", 0)) + 1
 
         now = _now_utc()
+        request_progress = _get_campaign_request_progress(cursor, campaign_id)
+        if int(request_progress.get("unfinished_requests") or 0) > 0:
+            cursor.execute("""
+                UPDATE requests
+                SET status = 'pending'
+                WHERE campaign_id = %s
+                  AND status IN ('inuse', 'reserved')
+            """, (campaign_id,))
+            cursor.execute("""
+                UPDATE search_campaigns
+                SET status = 'active'
+                WHERE id = %s
+                  AND status != 'active'
+            """, (campaign_id,))
+
         try:
             cursor.execute("""
                 INSERT INTO pipeline_runs (
@@ -4189,6 +4234,16 @@ async def complete_pipeline_stage(run_id: int, request: Request):
             raise HTTPException(status_code=400, detail="Invalid stage")
         if stage_to_complete != current_stage:
             raise HTTPException(status_code=409, detail=f"Current stage is '{current_stage}'")
+        if stage_to_complete == "maps_scrape":
+            request_progress = _get_campaign_request_progress(cursor, run["campaign_id"])
+            if int(request_progress.get("unfinished_requests") or 0) > 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Maps scrape cannot complete while campaign requests are unfinished",
+                        **request_progress,
+                    },
+                )
 
         cursor.execute("SELECT * FROM pipeline_run_locks WHERE run_id = %s FOR UPDATE", (run_id,))
         lock_raw = cursor.fetchone()

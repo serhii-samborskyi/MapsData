@@ -651,6 +651,7 @@ class PipelineEndpointTests(unittest.TestCase):
             {"match": "select id from search_campaigns", "fetchone": {"id": 12}},
             {"match": "from pipeline_runs", "fetchone": None},
             {"match": "select retries", "fetchone": {"retries": 2}},
+            {"match": "from requests", "fetchone": {"total_requests": 0, "completed_requests": 0, "pending_requests": 0, "inuse_requests": 0, "reserved_requests": 0}},
             {"match": "insert into pipeline_runs", "fetchone": {"id": 99, "status": "pending", "current_stage": "maps_scrape"}},
             {"match": "insert into pipeline_run_stages", "rowcount": 1},
             {"match": "insert into pipeline_run_stages", "rowcount": 1},
