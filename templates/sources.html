@@ -206,6 +206,39 @@
                         <label class="block"><span class="block text-xs font-semibold text-amber-800 mb-1">Manual Detail Page URL</span><input id="debugDetailUrl" class="w-full rounded-xl border border-amber-200 px-3 py-2" placeholder="https://www.facebook.com/goodeplumbingllc4594/"></label>
                         <button type="button" onclick="startSourceDebug(true)" class="self-end rounded-xl border border-amber-300 bg-white px-4 py-2 font-semibold text-amber-800 hover:bg-amber-100">Test Detail URL Only</button>
                     </div>
+                    <div class="mt-3 rounded-2xl border border-cyan-200 bg-cyan-50/80 p-3">
+                        <div class="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                            <div>
+                                <div class="font-semibold text-slate-900">Live Slow XPath Debugger</div>
+                                <div class="text-xs text-slate-600">Opens the manual detail URL in a visible daemon browser and keeps it open while you test XPath + regex.</div>
+                            </div>
+                            <div id="liveDebugStatus" class="text-sm font-semibold text-cyan-800">Idle</div>
+                        </div>
+                        <div class="mt-3 flex flex-col gap-2 sm:flex-row">
+                            <button type="button" onclick="startLiveDetailDebug()" class="rounded-xl border border-cyan-300 bg-white px-4 py-2 font-semibold text-cyan-800 hover:bg-cyan-100">Open Live Browser</button>
+                            <button type="button" onclick="testLiveDetailXPath()" class="rounded-xl bg-cyan-700 px-4 py-2 font-semibold text-white hover:bg-cyan-800">Test XPath / Regex</button>
+                            <button type="button" onclick="stopLiveDetailDebug()" class="rounded-xl border border-red-200 bg-red-50 px-4 py-2 font-semibold text-red-700 hover:bg-red-100">Stop Live Browser</button>
+                        </div>
+                        <div class="mt-3 grid grid-cols-1 md:grid-cols-[1fr,1fr,130px] gap-3">
+                            <label class="block">
+                                <span class="block text-xs font-semibold text-cyan-900 mb-1">XPath to test</span>
+                                <input id="liveDebugXPath" data-xpath class="w-full rounded-xl border border-cyan-200 px-3 py-2" placeholder="//div[@role='listitem']">
+                            </label>
+                            <label class="block">
+                                <span class="block text-xs font-semibold text-cyan-900 mb-1">Regex to test inside each XPath match</span>
+                                <input id="liveDebugRegex" class="w-full rounded-xl border border-cyan-200 px-3 py-2" placeholder="([A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,})">
+                            </label>
+                            <label class="block">
+                                <span class="block text-xs font-semibold text-cyan-900 mb-1">Scrolls first</span>
+                                <input id="liveDebugScrolls" type="number" min="0" max="50" value="0" class="w-full rounded-xl border border-cyan-200 px-3 py-2">
+                            </label>
+                        </div>
+                        <label class="mt-3 inline-flex items-center gap-2 rounded-xl border border-cyan-100 bg-white/70 px-3 py-2">
+                            <input id="liveDebugStripHtml" type="checkbox" class="rounded border-slate-300 text-cyan-700" checked>
+                            <span class="text-sm text-slate-700">Strip HTML/scripts before regex and test every XPath match until regex matches</span>
+                        </label>
+                        <pre id="liveDebugResult" class="mt-3 max-h-96 overflow-auto rounded-xl bg-white p-3 text-xs text-slate-800 whitespace-pre-wrap">Open a live browser, then test XPath/regex here.</pre>
+                    </div>
                     <div class="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-4">
                         <div>
                             <div class="text-sm font-semibold text-slate-700 mb-2">Live Logs</div>
@@ -237,6 +270,8 @@
     <script>
         const CORE_FIELDS = {{ core_fields | tojson }};
         let sources = [];
+        let liveDetailDebugSessionId = '';
+        let liveDetailDebugBaseUrl = '';
 
         function escapeHtml(value) {
             return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -800,6 +835,139 @@
             } catch (error) {
                 status.textContent = 'Failed';
                 logs.textContent = error.message || 'Debug start failed';
+            }
+        }
+
+        function renderLiveDetailResult(data) {
+            const target = document.getElementById('liveDebugResult');
+            const result = data.result || data.last_result || data;
+            if (!result || result.ok === false) {
+                target.textContent = JSON.stringify(data, null, 2);
+                return;
+            }
+            const attempts = Array.isArray(result.attempts) ? result.attempts.slice(0, 30) : [];
+            const summary = [
+                `URL: ${result.url || data.final_url || ''}`,
+                `Title: ${result.title || data.title || ''}`,
+                `XPath matches with text: ${result.total_matches ?? 0}`,
+                `First value: ${result.first_value || ''}`,
+                `Matched attempt: ${result.matched_attempt_index || 0}`,
+                '',
+                'Attempts:',
+                ...attempts.map(attempt => [
+                    `#${attempt.index} ${attempt.matched ? 'MATCH' : 'no match'}${attempt.value ? ` -> ${attempt.value}` : ''}`,
+                    `text: ${attempt.preview || ''}`,
+                    attempt.html_preview ? `html: ${attempt.html_preview}` : '',
+                ].filter(Boolean).join('\n')),
+                '',
+                'Raw:',
+                JSON.stringify(result, null, 2),
+            ].join('\n\n');
+            target.textContent = summary;
+        }
+
+        async function pollLiveDetailDebug(baseUrl, sessionId) {
+            if (!sessionId || liveDetailDebugSessionId !== sessionId) return;
+            const response = await fetch(`${baseUrl}/api/source-debug/live/${sessionId}`);
+            const data = await response.json();
+            if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+            const status = document.getElementById('liveDebugStatus');
+            status.textContent = `${data.status || 'unknown'}${data.title ? ` · ${data.title}` : ''}`;
+            if (data.logs && data.logs.length && !data.last_result) {
+                document.getElementById('liveDebugResult').textContent = data.logs.join('\n');
+            }
+            if (data.last_result) renderLiveDetailResult(data);
+            if (['starting', 'ready'].includes(data.status || '') && liveDetailDebugSessionId === sessionId) {
+                setTimeout(() => pollLiveDetailDebug(baseUrl, sessionId).catch(error => {
+                    document.getElementById('liveDebugStatus').textContent = `Poll failed: ${error.message}`;
+                }), 1500);
+            }
+        }
+
+        async function startLiveDetailDebug() {
+            const status = document.getElementById('liveDebugStatus');
+            const result = document.getElementById('liveDebugResult');
+            try {
+                const baseUrl = getDebugDaemonUrl();
+                if (!baseUrl) throw new Error('Daemon Debug URL is required. Example: http://127.0.0.1:8095');
+                const detailUrl = document.getElementById('debugDetailUrl').value.trim();
+                if (!detailUrl) throw new Error('Manual Detail Page URL is required.');
+                status.textContent = 'Opening visible browser...';
+                result.textContent = 'Starting live browser session...';
+                const response = await fetch(`${baseUrl}/api/source-debug/live-start`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        detail_url: detailUrl,
+                        show_browser: true,
+                    }),
+                });
+                const data = await response.json();
+                if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+                liveDetailDebugSessionId = data.session_id;
+                liveDetailDebugBaseUrl = baseUrl;
+                status.textContent = `Starting ${data.session_id}`;
+                pollLiveDetailDebug(baseUrl, data.session_id);
+            } catch (error) {
+                status.textContent = 'Failed';
+                result.textContent = error.message || 'Live browser start failed';
+            }
+        }
+
+        async function testLiveDetailXPath() {
+            const status = document.getElementById('liveDebugStatus');
+            const result = document.getElementById('liveDebugResult');
+            try {
+                if (!liveDetailDebugSessionId || !liveDetailDebugBaseUrl) throw new Error('Open Live Browser first.');
+                const xpath = document.getElementById('liveDebugXPath').value.trim();
+                const regex = document.getElementById('liveDebugRegex').value.trim();
+                if (!xpath) throw new Error('XPath is required.');
+                validateXPathSyntax(xpath, 'Live XPath');
+                validateRegexSyntax(regex, 'Live Regex');
+                status.textContent = 'Testing XPath...';
+                result.textContent = 'Running XPath/regex against the open browser page...';
+                const response = await fetch(`${liveDetailDebugBaseUrl}/api/source-debug/live-eval`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        session_id: liveDetailDebugSessionId,
+                        xpath,
+                        regex,
+                        strip_html: document.getElementById('liveDebugStripHtml').checked,
+                        scrolls: Number(document.getElementById('liveDebugScrolls').value || 0),
+                    }),
+                });
+                const data = await response.json();
+                if (!response.ok || data.ok === false) throw new Error(data.detail || data.error || `HTTP ${response.status}`);
+                status.textContent = 'Ready';
+                renderLiveDetailResult(data);
+            } catch (error) {
+                status.textContent = 'Failed';
+                result.textContent = error.message || 'Live XPath test failed';
+            }
+        }
+
+        async function stopLiveDetailDebug() {
+            const status = document.getElementById('liveDebugStatus');
+            try {
+                if (!liveDetailDebugSessionId || !liveDetailDebugBaseUrl) {
+                    status.textContent = 'Idle';
+                    return;
+                }
+                const sessionId = liveDetailDebugSessionId;
+                const baseUrl = liveDetailDebugBaseUrl;
+                liveDetailDebugSessionId = '';
+                liveDetailDebugBaseUrl = '';
+                const response = await fetch(`${baseUrl}/api/source-debug/live-stop`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({session_id: sessionId}),
+                });
+                const data = await response.json();
+                if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+                status.textContent = 'Stopped';
+            } catch (error) {
+                status.textContent = `Stop failed: ${error.message}`;
             }
         }
 
