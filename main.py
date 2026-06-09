@@ -1076,6 +1076,36 @@ def _normalize_enrichment_timeout(value: Any) -> int:
     return max(MIN_ENRICHMENT_TIMEOUT_SECONDS, min(parsed, MAX_ENRICHMENT_TIMEOUT_SECONDS))
 
 
+def _response_reports_missing_sent_enrichment_field(response: Any, payload: dict) -> bool:
+    if response.status_code != 400 or not isinstance(payload, dict) or not payload:
+        return False
+    try:
+        response_data = response.json()
+    except Exception:
+        response_data = {}
+    if isinstance(response_data, dict):
+        text = " ".join(str(response_data.get(key) or "") for key in ("error", "message", "detail"))
+    else:
+        text = response.text or ""
+    if "missing required input fields" not in text.lower():
+        return False
+    return any(str(key) in text for key in payload.keys())
+
+
+def _wrapped_enrichment_payload(payload: dict) -> dict:
+    return {"input": payload if isinstance(payload, dict) else {}}
+
+
+def _post_enrichment_request(api_url: str, headers: dict, payload: dict, timeout_seconds: int) -> tuple[Any, str, dict]:
+    request_body = _wrapped_enrichment_payload(payload)
+    response = requests.post(api_url, headers=headers, json=request_body, timeout=max(1, int(timeout_seconds)))
+    if not _response_reports_missing_sent_enrichment_field(response, payload):
+        return response, "json_input", request_body
+
+    response = requests.post(api_url, headers=headers, json=payload, timeout=max(1, int(timeout_seconds)))
+    return response, "json_flat", payload
+
+
 def _export_api_base_url(api_config: Optional[dict]) -> str:
     if not isinstance(api_config, dict):
         return ""
@@ -1866,7 +1896,7 @@ def _process_enrichment_contact_task(
         last_error = "Unknown enrichment error"
         for attempts in range(1, max(1, int(max_retries)) + 1):
             try:
-                response = requests.post(api_url, headers=headers, json=payload, timeout=max(1, int(timeout_seconds)))
+                response, request_encoding, _request_body = _post_enrichment_request(api_url, headers, payload, timeout_seconds)
                 if response.status_code >= 400:
                     raise RuntimeError(f"HTTP {response.status_code}: {response.text[:300]}")
                 response_data = response.json() if response.content else {}
@@ -1878,6 +1908,7 @@ def _process_enrichment_contact_task(
 
                 updated_fields = ", ".join(sorted(updates.keys())) if updates else "no mapped fields updated"
                 response_preview = json.dumps(response_data, ensure_ascii=True)[:220]
+                encoding_note = "" if request_encoding == "json_input" else f" | request_encoding={request_encoding}"
                 _finalize_enrichment_contact_result(
                     cursor=cursor,
                     run_id=run_id,
@@ -1887,7 +1918,7 @@ def _process_enrichment_contact_task(
                     contact_name=contact_name,
                     status="enriched",
                     attempts=attempts,
-                    message=f"{updated_fields} | response={response_preview}",
+                    message=f"{updated_fields}{encoding_note} | response={response_preview}",
                     response_payload=response_data,
                 )
                 conn.commit()
@@ -7112,7 +7143,7 @@ async def test_enrichment_run(campaign_id: int, request: Request):
     headers = {"Content-Type": "application/json", "x-api-key": api_key}
     start_time = time.time()
     try:
-        response = requests.post(api_url, headers=headers, json=selected_payload, timeout=timeout_seconds)
+        response, request_encoding, request_body = _post_enrichment_request(api_url, headers, selected_payload, timeout_seconds)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Enrichment test request failed: {str(exc)}")
 
@@ -7134,7 +7165,9 @@ async def test_enrichment_run(campaign_id: int, request: Request):
                 "latency_ms": latency_ms,
                 "contact_id": selected_contact.get("id"),
                 "contact_name": selected_contact.get("business_name"),
+                "request_encoding": request_encoding,
                 "request_payload": selected_payload,
+                "request_body": request_body,
                 "response_text": response_text,
                 "response_json": response_json,
             },
@@ -7147,7 +7180,9 @@ async def test_enrichment_run(campaign_id: int, request: Request):
         "timeout_seconds": timeout_seconds,
         "contact_id": selected_contact.get("id"),
         "contact_name": selected_contact.get("business_name"),
+        "request_encoding": request_encoding,
         "request_payload": selected_payload,
+        "request_body": request_body,
         "response_json": response_json,
         "mapped_local_updates_preview": mapped_preview,
     }

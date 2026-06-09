@@ -896,6 +896,43 @@ class PipelineUnitLogicTests(unittest.TestCase):
         self.assertEqual(payload["state"], "WI")
         self.assertIn("city", missing)
 
+    def test_enrichment_post_sends_wrapped_input_then_flat_json_fallback(self):
+        calls = []
+
+        class Response:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+                self.text = str(payload)
+
+            def json(self):
+                return self._payload
+
+        def fake_post(_url, headers=None, json=None, timeout=None):
+            calls.append({"headers": headers, "json": json, "timeout": timeout})
+            if len(calls) == 1:
+                return Response(400, {"error": "Missing required input fields: fb_post_text"})
+            return Response(200, {"ok": True})
+
+        original_post = self.main.requests.post
+        self.main.requests.post = fake_post
+        try:
+            response, encoding, request_body = self.main._post_enrichment_request(
+                "https://example.test/enrich",
+                {"Content-Type": "application/json", "x-api-key": "key"},
+                {"fb_post_text": "hello"},
+                15,
+            )
+        finally:
+            self.main.requests.post = original_post
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(encoding, "json_flat")
+        self.assertEqual(request_body, {"fb_post_text": "hello"})
+        self.assertEqual(calls[0]["json"], {"input": {"fb_post_text": "hello"}})
+        self.assertEqual(calls[1]["json"], {"fb_post_text": "hello"})
+        self.assertEqual(calls[1]["headers"]["Content-Type"], "application/json")
+
     def test_enrichment_payload_uses_city_fallback_from_request_map(self):
         contacts = [{"id": 1, "business_name": "Acme", "city": "", "state": "WI", "request_id": 1001, "address": ""}]
         self.main._apply_city_fallback_for_export(contacts, {1001: "Mondovi"})
