@@ -787,11 +787,14 @@ def _serialize_pipeline_status(campaign_id: int, run: Optional[dict], stages: Li
     stage_status_counts = {status: 0 for status in PIPELINE_STATUSES}
     for stage in stage_rows:
         stage_status_counts[stage["status"]] = stage_status_counts.get(stage["status"], 0) + 1
+    effective_status = run["status"]
+    if effective_status == "pending" and stage_status_counts.get("running", 0) > 0:
+        effective_status = "running"
 
     return {
         "campaign_id": campaign_id,
         "run_id": run["id"],
-        "status": run["status"],
+        "status": effective_status,
         "current_stage": run.get("current_stage"),
         "stages": stage_rows,
         "counts": {
@@ -2628,7 +2631,15 @@ async def get_dashboard_runtime_status(campaign_ids: str = ""):
                 *
             FROM pipeline_runs
             WHERE campaign_id IN ({placeholders})
-            ORDER BY campaign_id, created_at DESC, id DESC
+            ORDER BY
+                campaign_id,
+                CASE
+                    WHEN status = 'running' THEN 0
+                    WHEN status = 'pending' THEN 1
+                    ELSE 2
+                END,
+                created_at DESC,
+                id DESC
         """, tuple(campaign_id_list))
         latest_runs_raw = [dict(row) for row in cursor.fetchall()]
         latest_run_by_campaign = {row["campaign_id"]: row for row in latest_runs_raw}
@@ -3463,7 +3474,14 @@ def _load_latest_pipeline_run(cursor, campaign_id: int) -> Optional[dict]:
         SELECT *
         FROM pipeline_runs
         WHERE campaign_id = %s
-        ORDER BY created_at DESC, id DESC
+        ORDER BY
+            CASE
+                WHEN status = 'running' THEN 0
+                WHEN status = 'pending' THEN 1
+                ELSE 2
+            END,
+            created_at DESC,
+            id DESC
         LIMIT 1
     """, (campaign_id,))
     run = cursor.fetchone()
