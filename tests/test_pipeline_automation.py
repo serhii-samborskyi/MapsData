@@ -880,10 +880,24 @@ class PipelineUnitLogicTests(unittest.TestCase):
         self.assertEqual(contacts[1]["city"], "Elmwood")
 
     def test_resolve_enrichment_input_value_supports_literal_and_field(self):
-        contact = {"city": "Chicago", "state": "IL"}
+        contact = {"city": "Chicago", "state": "IL", "notes": "one two three four"}
         self.assertEqual(self.main._resolve_enrichment_input_value(contact, "city"), "Chicago")
         self.assertEqual(self.main._resolve_enrichment_input_value(contact, "literal:Wisconsin"), "Wisconsin")
         self.assertEqual(self.main._resolve_enrichment_input_value(contact, "TX"), "TX")
+        self.assertEqual(
+            self.main._resolve_enrichment_input_value(
+                contact,
+                {"source": "notes", "crop": {"enabled": True, "word_limit": 2}},
+            ),
+            "one two",
+        )
+        self.assertEqual(
+            self.main._resolve_enrichment_input_value(
+                contact,
+                {"source": "literal:alpha beta gamma", "crop": {"enabled": True, "word_limit": 2}},
+            ),
+            "alpha beta",
+        )
 
     def test_build_enrichment_payload_tracks_missing_required(self):
         contact = {"business_name": "Acme", "city": "", "state": "WI"}
@@ -895,6 +909,20 @@ class PipelineUnitLogicTests(unittest.TestCase):
         self.assertEqual(payload["company"], "Acme")
         self.assertEqual(payload["state"], "WI")
         self.assertIn("city", missing)
+
+    def test_build_enrichment_payload_crops_configured_input_words(self):
+        contact = {"notes": "first second third fourth", "state": "WI"}
+        payload, missing = self.main._build_enrichment_payload(
+            contact,
+            {
+                "post_text": {"source": "notes", "crop": {"enabled": True, "word_limit": 3}},
+                "state": "state",
+            },
+            ["post_text", "state"],
+        )
+        self.assertEqual(payload["post_text"], "first second third")
+        self.assertEqual(payload["state"], "WI")
+        self.assertEqual(missing, [])
 
     def test_enrichment_post_sends_wrapped_input_then_flat_json_fallback(self):
         calls = []

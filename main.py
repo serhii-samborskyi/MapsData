@@ -1323,21 +1323,65 @@ def _is_enrichment_field_missing(value: Any) -> bool:
     return normalized in ENRICHMENT_MISSING_VALUE_MARKERS
 
 
+def _enrichment_mapping_source(mapping_value: Any) -> str:
+    if isinstance(mapping_value, dict):
+        for key in ("source", "value", "mapping"):
+            source = _normalize_mapping_value(mapping_value.get(key))
+            if source:
+                return source
+        return ""
+    return _normalize_mapping_value(mapping_value)
+
+
+def _enrichment_mapping_crop_words(mapping_value: Any) -> Optional[int]:
+    if not isinstance(mapping_value, dict):
+        return None
+
+    crop_config = mapping_value.get("crop")
+    if isinstance(crop_config, dict):
+        enabled = _coerce_bool_flag(crop_config.get("enabled"), False)
+        raw_word_limit = crop_config.get("word_limit")
+    else:
+        enabled = _coerce_bool_flag(mapping_value.get("crop_enabled"), False)
+        raw_word_limit = mapping_value.get("crop_words")
+
+    if not enabled:
+        return None
+
+    try:
+        word_limit = int(raw_word_limit)
+    except (TypeError, ValueError):
+        return None
+
+    return word_limit if word_limit > 0 else None
+
+
+def _crop_enrichment_words(value: str, word_limit: Optional[int]) -> str:
+    if not word_limit:
+        return value
+    words = value.split()
+    if len(words) <= word_limit:
+        return value
+    return " ".join(words[:word_limit])
+
+
 def _resolve_enrichment_input_value(contact: dict, mapping_value: Any) -> str:
-    normalized = _normalize_mapping_value(mapping_value)
+    normalized = _enrichment_mapping_source(mapping_value)
+    crop_words = _enrichment_mapping_crop_words(mapping_value)
     if not normalized:
         return ""
     if normalized.startswith("literal:"):
-        return normalized[len("literal:"):].strip()
+        return _crop_enrichment_words(normalized[len("literal:"):].strip(), crop_words)
     if normalized in ENRICHMENT_LOCAL_FIELD_SET:
         raw = contact.get(normalized)
-        return str(raw).strip() if raw is not None else ""
+        resolved = str(raw).strip() if raw is not None else ""
+        return _crop_enrichment_words(resolved, crop_words)
     raw = contact.get(normalized)
     if raw is not None:
         raw_str = str(raw).strip()
         if raw_str:
-            return raw_str
-    return normalized
+            return _crop_enrichment_words(raw_str, crop_words)
+    return _crop_enrichment_words(normalized, crop_words)
 
 
 def _contact_has_existing_output(contact: dict, output_mapping: dict) -> bool:
