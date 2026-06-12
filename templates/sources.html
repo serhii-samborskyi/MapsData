@@ -199,6 +199,10 @@
                                     <span class="block text-sm font-semibold text-slate-700 mb-1">Timeout Seconds</span>
                                     <input id="httpTimeoutSeconds" type="number" min="1" max="600" value="150" class="w-full rounded-xl border border-slate-300 px-4 py-3">
                                 </label>
+                                <label class="block">
+                                    <span class="block text-sm font-semibold text-slate-700 mb-1">Requests at Same Time</span>
+                                    <input id="httpConcurrency" type="number" min="1" max="100" value="10" class="w-full rounded-xl border border-slate-300 px-4 py-3">
+                                </label>
                             </div>
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
                                 <label class="block">
@@ -545,6 +549,7 @@
                         response_path: document.getElementById('httpResponsePath').value.trim(),
                         json_extraction_mode: 'path_or_first_json_array',
                         timeout_seconds: Number(document.getElementById('httpTimeoutSeconds').value || 150),
+                        concurrency: Number(document.getElementById('httpConcurrency').value || 10),
                         query_params: parseJsonObjectTextarea('httpQueryParams', 'Extra Query Params JSON'),
                         field_mapping: collectHttpMappings(),
                     },
@@ -754,6 +759,7 @@
             document.getElementById('slowEnabled').checked = false;
             document.getElementById('detailUrlWithinBlock').checked = true;
             document.getElementById('httpTimeoutSeconds').value = 150;
+            document.getElementById('httpConcurrency').value = 10;
             addFieldRow('fast', {label: 'Business Name', target_type: 'core', target_field: 'business_name', xpath: './/text()', required: true});
             addHttpMappingRow({source_field: 'company', target_fields: ['business_name']});
             addHttpMappingRow({source_field: 'company', target_fields: ['company']});
@@ -787,6 +793,7 @@
                 document.getElementById('httpBaseUrl').value = config.base_url || '';
                 document.getElementById('httpMethod').value = config.method || 'GET';
                 document.getElementById('httpTimeoutSeconds').value = config.timeout_seconds || 150;
+                document.getElementById('httpConcurrency').value = config.concurrency || 10;
                 document.getElementById('httpResponsePath').value = config.response_path || '';
                 document.getElementById('httpQueryParams').value = config.query_params ? JSON.stringify(config.query_params, null, 2) : '';
                 document.getElementById('httpFieldMappings').innerHTML = '';

@@ -17,7 +17,7 @@ import re
 import time
 from datetime import datetime, timedelta
 import threading
-from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED, as_completed
 from uuid import uuid4
 from urllib.parse import quote
 
@@ -93,6 +93,8 @@ SOURCE_HTTP_METHODS = {"GET"}
 SOURCE_HTTP_JSON_EXTRACTION_MODES = {"first_json_array", "path_or_first_json_array"}
 SOURCE_HTTP_DEFAULT_TIMEOUT_SECONDS = 150
 SOURCE_HTTP_MAX_TIMEOUT_SECONDS = 600
+SOURCE_HTTP_DEFAULT_CONCURRENCY = 10
+SOURCE_HTTP_MAX_CONCURRENCY = 100
 SOURCE_CORE_FIELDS = [
     "business_name",
     "address",
@@ -750,6 +752,8 @@ def _normalize_http_source_template_config(raw_config: Any) -> dict:
 
     timeout_seconds = _safe_int(config.get("timeout_seconds"), SOURCE_HTTP_DEFAULT_TIMEOUT_SECONDS)
     timeout_seconds = max(1, min(timeout_seconds, SOURCE_HTTP_MAX_TIMEOUT_SECONDS))
+    concurrency = _safe_int(config.get("concurrency"), SOURCE_HTTP_DEFAULT_CONCURRENCY)
+    concurrency = max(1, min(concurrency, SOURCE_HTTP_MAX_CONCURRENCY))
 
     return {
         "version": SOURCE_TEMPLATE_CONFIG_VERSION,
@@ -760,6 +764,7 @@ def _normalize_http_source_template_config(raw_config: Any) -> dict:
         "response_path": response_path,
         "json_extraction_mode": json_extraction_mode,
         "timeout_seconds": timeout_seconds,
+        "concurrency": concurrency,
         "field_mapping": _normalize_http_field_mapping(config.get("field_mapping")),
     }
 
@@ -1151,6 +1156,38 @@ def _load_http_source_campaign(cursor, campaign_id: int) -> dict:
     return data
 
 
+def _process_http_source_campaign_request(campaign_id: int, source_campaign: dict, source: dict, request_row: dict) -> dict:
+    request_id = int(request_row["id"])
+    request_text = str(request_row.get("req_text") or "").strip()
+    try:
+        fetch_result = _fetch_http_source_rows(source_campaign["config"], {}, request_text)
+        with get_db() as conn:
+            cursor = conn.cursor()
+            saved_contacts = _insert_http_source_contacts(
+                cursor,
+                campaign_id,
+                request_id,
+                source,
+                fetch_result["rows"],
+            )
+            cursor.execute("UPDATE requests SET status = 'completed' WHERE id = %s AND campaign_id = %s", (request_id, campaign_id))
+            conn.commit()
+        return {
+            "request_id": request_id,
+            "request_text": request_text,
+            "saved_contacts": len(saved_contacts),
+        }
+    except Exception:
+        try:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE requests SET status = 'pending' WHERE id = %s AND campaign_id = %s", (request_id, campaign_id))
+                conn.commit()
+        except Exception:
+            pass
+        raise
+
+
 def _run_http_source_campaign_job(campaign_id: int):
     with http_source_campaign_jobs_lock:
         job = http_source_campaign_jobs.get(campaign_id)
@@ -1163,6 +1200,7 @@ def _run_http_source_campaign_job(campaign_id: int):
             with get_db() as conn:
                 cursor = conn.cursor()
                 source_campaign = _load_http_source_campaign(cursor, campaign_id)
+                concurrency = int(source_campaign["config"].get("concurrency") or SOURCE_HTTP_DEFAULT_CONCURRENCY)
                 cursor.execute("""
                     SELECT id, req_text, status
                     FROM requests
@@ -1171,11 +1209,11 @@ def _run_http_source_campaign_job(campaign_id: int):
                     ORDER BY
                         CASE status WHEN 'inuse' THEN 0 ELSE 1 END,
                         id ASC
-                    LIMIT 1
+                    LIMIT %s
                     FOR UPDATE SKIP LOCKED
-                """, (campaign_id,))
-                request_row = cursor.fetchone()
-                if not request_row:
+                """, (campaign_id, concurrency))
+                request_rows = [dict(row) for row in cursor.fetchall()]
+                if not request_rows:
                     cursor.execute("UPDATE search_campaigns SET status = 'completed' WHERE id = %s", (campaign_id,))
                     conn.commit()
                     job["status"] = "completed"
@@ -1183,9 +1221,12 @@ def _run_http_source_campaign_job(campaign_id: int):
                     _append_http_source_job_log(job, "No pending requests remain; campaign completed")
                     return
 
-                request_id = int(request_row["id"])
-                request_text = str(request_row.get("req_text") or "").strip()
-                cursor.execute("UPDATE requests SET status = 'inuse' WHERE id = %s", (request_id,))
+                request_ids = [int(row["id"]) for row in request_rows]
+                placeholders = ",".join(["%s"] * len(request_ids))
+                cursor.execute(
+                    f"UPDATE requests SET status = 'inuse' WHERE campaign_id = %s AND id IN ({placeholders})",
+                    tuple([campaign_id] + request_ids),
+                )
                 conn.commit()
 
             source = {
@@ -1194,24 +1235,26 @@ def _run_http_source_campaign_job(campaign_id: int):
                 "source_type": "http_api",
                 "config": source_campaign["config"],
             }
-            _append_http_source_job_log(job, f"Running request #{request_id}: {request_text}")
-            fetch_result = _fetch_http_source_rows(source_campaign["config"], {}, request_text)
-
-            with get_db() as conn:
-                cursor = conn.cursor()
-                saved_contacts = _insert_http_source_contacts(
-                    cursor,
-                    campaign_id,
-                    request_id,
-                    source,
-                    fetch_result["rows"],
-                )
-                cursor.execute("UPDATE requests SET status = 'completed' WHERE id = %s AND campaign_id = %s", (request_id, campaign_id))
-                conn.commit()
-
-            job["processed_requests"] = int(job.get("processed_requests") or 0) + 1
-            job["saved_contacts"] = int(job.get("saved_contacts") or 0) + len(saved_contacts)
-            _append_http_source_job_log(job, f"Completed request #{request_id}; saved {len(saved_contacts)} contacts")
+            _append_http_source_job_log(job, f"Running {len(request_rows)} request(s) with concurrency {concurrency}")
+            with ThreadPoolExecutor(max_workers=concurrency) as executor:
+                futures = [
+                    executor.submit(
+                        _process_http_source_campaign_request,
+                        campaign_id,
+                        source_campaign,
+                        source,
+                        request_row,
+                    )
+                    for request_row in request_rows
+                ]
+                for future in as_completed(futures):
+                    result = future.result()
+                    job["processed_requests"] = int(job.get("processed_requests") or 0) + 1
+                    job["saved_contacts"] = int(job.get("saved_contacts") or 0) + int(result.get("saved_contacts") or 0)
+                    _append_http_source_job_log(
+                        job,
+                        f"Completed request #{result['request_id']}; saved {result['saved_contacts']} contacts",
+                    )
     except Exception as exc:
         job["status"] = "failed"
         job["latest_error"] = str(getattr(exc, "detail", exc))

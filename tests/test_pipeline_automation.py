@@ -520,12 +520,13 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertTrue(payload["config"]["navigation"]["all_the_way_down_scrolls"])
         self.assertEqual(payload["test"]["query"], "plumber chicago")
 
-    def test_http_source_template_config_accepts_mapping_and_timeout(self):
+    def test_http_source_template_config_accepts_mapping_timeout_and_concurrency(self):
         config = self.main._normalize_source_template_config_for_type({
             "base_url": "http://example.com/api/run-sync?scriptName=ai_overview.js&request={query}",
             "method": "GET",
             "response_path": "result.ai_answer",
             "timeout_seconds": 275,
+            "concurrency": 25,
             "field_mapping": [
                 {"source_field": "company", "target_fields": ["business_name", "company"]},
                 {"source_field": "owner_fname", "target_field": "owner first name"},
@@ -535,6 +536,7 @@ class PipelineEndpointTests(unittest.TestCase):
 
         self.assertEqual(config["method"], "GET")
         self.assertEqual(config["timeout_seconds"], 275)
+        self.assertEqual(config["concurrency"], 25)
         self.assertEqual(config["request_template"], "{{query}}")
         self.assertEqual(config["field_mapping"][0]["target_fields"], ["business_name", "company"])
         self.assertEqual(config["field_mapping"][1]["target_fields"], ["firstname"])
