@@ -764,6 +764,12 @@
         function editSource(id) {
             const source = sources.find(item => Number(item.id) === Number(id));
             if (!source) return;
+            populateSourceForm(source, {clearStatus: true, scroll: true});
+        }
+
+        function populateSourceForm(source, options = {}) {
+            const clearStatus = options.clearStatus !== false;
+            const scroll = options.scroll !== false;
             const config = source.config || {};
             document.getElementById('sourceId').value = source.id;
             document.getElementById('formTitle').textContent = `Edit Source #${source.id}`;
@@ -781,8 +787,8 @@
                 (config.field_mapping || []).forEach(mapping => addHttpMappingRow(mapping));
                 if (!document.getElementById('httpFieldMappings').children.length) addHttpMappingRow({source_field: 'company', target_fields: ['business_name']});
                 syncSourceType();
-                setStatus('');
-                window.scrollTo({top: 0, behavior: 'smooth'});
+                if (clearStatus) setStatus('');
+                if (scroll) window.scrollTo({top: 0, behavior: 'smooth'});
                 return;
             }
             document.getElementById('startUrlTemplate').value = config.start_url_template || '';
@@ -810,8 +816,8 @@
             syncNavigationInputs();
             syncSlowSection();
             syncSourceType();
-            setStatus('');
-            window.scrollTo({top: 0, behavior: 'smooth'});
+            if (clearStatus) setStatus('');
+            if (scroll) window.scrollTo({top: 0, behavior: 'smooth'});
         }
 
         async function loadHttpRunCampaigns() {
@@ -1226,13 +1232,23 @@
                 });
                 const data = await response.json();
                 if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-                setStatus(sourceId ? 'Source updated.' : 'Source created.');
-                await loadSources();
                 if (data.source && data.source.id) {
-                    editSource(data.source.id);
+                    const savedId = Number(data.source.id);
+                    const existingIndex = sources.findIndex(item => Number(item.id) === savedId);
+                    if (existingIndex >= 0) {
+                        sources[existingIndex] = data.source;
+                    } else {
+                        sources.push(data.source);
+                    }
+                    populateSourceForm(data.source, {clearStatus: false, scroll: false});
+                    await loadSources();
                 } else if (!sourceId) {
                     resetForm();
+                    await loadSources();
+                } else {
+                    await loadSources();
                 }
+                setStatus(sourceId ? 'Source updated.' : 'Source created.');
             } catch (error) {
                 setStatus(error.message, true);
             }
