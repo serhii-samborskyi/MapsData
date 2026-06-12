@@ -187,7 +187,7 @@
                                 <label class="block md:col-span-2">
                                     <span class="block text-sm font-semibold text-slate-700 mb-1">Base URL</span>
                                     <input id="httpBaseUrl" class="w-full rounded-xl border border-slate-300 px-4 py-3" placeholder="http://73.72.215.253:4865/api/run-sync?scriptName=ai_overview.js&request={query}">
-                                    <span class="text-xs text-slate-500">Use only the endpoint plus Script Name below, or include <code>{query}</code> in the full URL.</span>
+                                    <span class="text-xs text-slate-500">Must include <code>{query}</code>. The run request text is injected there.</span>
                                 </label>
                                 <label class="block">
                                     <span class="block text-sm font-semibold text-slate-700 mb-1">Method</span>
@@ -202,20 +202,11 @@
                             </div>
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
                                 <label class="block">
-                                    <span class="block text-sm font-semibold text-slate-700 mb-1">Script Name</span>
-                                    <input id="httpScriptName" class="w-full rounded-xl border border-slate-300 px-4 py-3" placeholder="ai_overview.js">
-                                    <span class="text-xs text-slate-500">Optional when Base URL already includes <code>scriptName=...</code>.</span>
-                                </label>
-                                <label class="block">
                                     <span class="block text-sm font-semibold text-slate-700 mb-1">Response Path</span>
                                     <input id="httpResponsePath" class="w-full rounded-xl border border-slate-300 px-4 py-3" placeholder="result.ai_answer">
                                     <span class="text-xs text-slate-500">Leave blank to search the full response for the first JSON array.</span>
                                 </label>
                             </div>
-                            <label class="block mt-4">
-                                <span class="block text-sm font-semibold text-slate-700 mb-1">Request Template</span>
-                                <textarea id="httpRequestTemplate" rows="3" class="w-full rounded-xl border border-slate-300 px-4 py-3" placeholder="top {{limit}} {{niche}} in {{city}}, answer in json like: {company, domain, address, owner_fname, email}"></textarea>
-                            </label>
                             <label class="block mt-4">
                                 <span class="block text-sm font-semibold text-slate-700 mb-1">Extra Query Params JSON</span>
                                 <textarea id="httpQueryParams" rows="3" class="w-full rounded-xl border border-slate-300 px-4 py-3 font-mono text-sm" placeholder='{"foo":"bar"}'></textarea>
@@ -545,8 +536,6 @@
                     config: {
                         base_url: document.getElementById('httpBaseUrl').value.trim(),
                         method: document.getElementById('httpMethod').value,
-                        script_name: document.getElementById('httpScriptName').value.trim(),
-                        request_template: document.getElementById('httpRequestTemplate').value.trim(),
                         response_path: document.getElementById('httpResponsePath').value.trim(),
                         json_extraction_mode: 'path_or_first_json_array',
                         timeout_seconds: Number(document.getElementById('httpTimeoutSeconds').value || 150),
@@ -759,7 +748,6 @@
             document.getElementById('slowEnabled').checked = false;
             document.getElementById('detailUrlWithinBlock').checked = true;
             document.getElementById('httpTimeoutSeconds').value = 150;
-            document.getElementById('httpRequestTemplate').value = 'top {{limit}} {{niche}} in {{city}}, answer in json like: {company, domain, address, owner_fname, email}';
             addFieldRow('fast', {label: 'Business Name', target_type: 'core', target_field: 'business_name', xpath: './/text()', required: true});
             addHttpMappingRow({source_field: 'company', target_fields: ['business_name']});
             addHttpMappingRow({source_field: 'company', target_fields: ['company']});
@@ -787,9 +775,7 @@
                 document.getElementById('httpBaseUrl').value = config.base_url || '';
                 document.getElementById('httpMethod').value = config.method || 'GET';
                 document.getElementById('httpTimeoutSeconds').value = config.timeout_seconds || 150;
-                document.getElementById('httpScriptName').value = config.script_name || '';
                 document.getElementById('httpResponsePath').value = config.response_path || '';
-                document.getElementById('httpRequestTemplate').value = config.request_template || '';
                 document.getElementById('httpQueryParams').value = config.query_params ? JSON.stringify(config.query_params, null, 2) : '';
                 document.getElementById('httpFieldMappings').innerHTML = '';
                 (config.field_mapping || []).forEach(mapping => addHttpMappingRow(mapping));
@@ -1242,7 +1228,11 @@
                 if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
                 setStatus(sourceId ? 'Source updated.' : 'Source created.');
                 await loadSources();
-                if (!sourceId) resetForm();
+                if (data.source && data.source.id) {
+                    editSource(data.source.id);
+                } else if (!sourceId) {
+                    resetForm();
+                }
             } catch (error) {
                 setStatus(error.message, true);
             }

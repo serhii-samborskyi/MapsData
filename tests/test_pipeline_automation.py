@@ -522,10 +522,8 @@ class PipelineEndpointTests(unittest.TestCase):
 
     def test_http_source_template_config_accepts_mapping_and_timeout(self):
         config = self.main._normalize_source_template_config_for_type({
-            "base_url": "http://example.com/api/run-sync",
+            "base_url": "http://example.com/api/run-sync?scriptName=ai_overview.js&request={query}",
             "method": "GET",
-            "script_name": "ai_overview.js",
-            "request_template": "top {{limit}} {{niche}} in {{city}}",
             "response_path": "result.ai_answer",
             "timeout_seconds": 275,
             "field_mapping": [
@@ -537,11 +535,20 @@ class PipelineEndpointTests(unittest.TestCase):
 
         self.assertEqual(config["method"], "GET")
         self.assertEqual(config["timeout_seconds"], 275)
-        self.assertEqual(config["script_param_name"], "scriptName")
-        self.assertEqual(config["request_param_name"], "request")
+        self.assertEqual(config["request_template"], "{{query}}")
         self.assertEqual(config["field_mapping"][0]["target_fields"], ["business_name", "company"])
         self.assertEqual(config["field_mapping"][1]["target_fields"], ["firstname"])
         self.assertEqual(config["field_mapping"][2]["target_fields"], ["domain"])
+
+    def test_http_source_template_config_requires_query_placeholder(self):
+        with self.assertRaises(Exception) as ctx:
+            self.main._normalize_source_template_config_for_type({
+                "base_url": "http://example.com/api/run-sync",
+                "method": "GET",
+                "field_mapping": {"company": "business_name"},
+            }, "http_api")
+
+        self.assertIn("{query}", str(getattr(ctx.exception, "detail", ctx.exception)))
 
     def test_http_source_extracts_first_json_array_from_ai_answer_text(self):
         payload = {

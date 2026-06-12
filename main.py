@@ -737,12 +737,11 @@ def _normalize_http_source_template_config(raw_config: Any) -> dict:
         if clean_key:
             query_params[clean_key] = "" if value is None else str(value)
 
-    script_name = str(config.get("script_name") or "").strip()
-    script_param_name = str(config.get("script_param_name") or "scriptName").strip() or "scriptName"
     request_template = str(config.get("request_template") or "").strip()
-    request_param_name = str(config.get("request_param_name") or "request").strip() or "request"
+    if not _http_source_url_has_query_placeholder(base_url):
+        raise HTTPException(status_code=400, detail="base_url must include {query}")
     if not request_template:
-        raise HTTPException(status_code=400, detail="request_template is required")
+        request_template = "{{query}}"
 
     response_path = str(config.get("response_path") or "").strip()
     json_extraction_mode = str(config.get("json_extraction_mode") or "path_or_first_json_array").strip().lower()
@@ -757,10 +756,7 @@ def _normalize_http_source_template_config(raw_config: Any) -> dict:
         "base_url": base_url,
         "method": method,
         "query_params": query_params,
-        "script_name": script_name,
-        "script_param_name": script_param_name,
         "request_template": request_template,
-        "request_param_name": request_param_name,
         "response_path": response_path,
         "json_extraction_mode": json_extraction_mode,
         "timeout_seconds": timeout_seconds,
@@ -3792,13 +3788,7 @@ async def run_http_source_template(source_id: int, request: Request):
     params = {}
     for key, value in config.get("query_params", {}).items():
         params[key] = _render_http_source_value(value, variables, request_text)
-    request_url = config["base_url"]
-    if _http_source_url_has_query_placeholder(request_url):
-        request_url = _render_http_source_url_template(request_url, variables, request_text, rendered_request)
-    else:
-        if config.get("script_name"):
-            params[config["script_param_name"]] = config["script_name"]
-        params[config["request_param_name"]] = rendered_request
+    request_url = _render_http_source_url_template(config["base_url"], variables, request_text, rendered_request)
 
     try:
         response = requests.request(
