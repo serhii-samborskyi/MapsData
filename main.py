@@ -1095,6 +1095,192 @@ def _insert_http_source_contacts(cursor, campaign_id: int, request_id: int, sour
     return saved_contacts
 
 
+def _append_http_source_job_log(job: dict, message: str):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    job.setdefault("logs", []).append(f"{timestamp} - {message}")
+    if len(job["logs"]) > MAX_HTTP_SOURCE_JOB_LOGS:
+        job["logs"] = job["logs"][-MAX_HTTP_SOURCE_JOB_LOGS:]
+
+
+def _serialize_http_source_job(job: Optional[dict]) -> dict:
+    if not job:
+        return {
+            "status": "idle",
+            "campaign_id": None,
+            "processed_requests": 0,
+            "saved_contacts": 0,
+            "latest_error": "",
+            "logs": [],
+        }
+    return {
+        "status": job.get("status") or "idle",
+        "campaign_id": job.get("campaign_id"),
+        "processed_requests": int(job.get("processed_requests") or 0),
+        "saved_contacts": int(job.get("saved_contacts") or 0),
+        "latest_error": job.get("latest_error") or "",
+        "started_at": job.get("started_at"),
+        "completed_at": job.get("completed_at"),
+        "logs": list(job.get("logs") or []),
+    }
+
+
+def _load_http_source_campaign(cursor, campaign_id: int) -> dict:
+    cursor.execute("""
+        SELECT
+            sc.id AS campaign_id,
+            sc.name AS campaign_name,
+            sc.status AS campaign_status,
+            st.id AS source_id,
+            st.name AS source_name,
+            st.source_type,
+            st.enabled,
+            st.config
+        FROM search_campaigns sc
+        JOIN source_templates st ON st.id = sc.source_template_id
+        WHERE sc.id = %s
+    """, (campaign_id,))
+    row = cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Campaign or source template not found")
+    data = dict(row)
+    if _normalize_source_template_type(data.get("source_type")) != "http_api":
+        raise HTTPException(status_code=400, detail="Campaign source is not an HTTP API source")
+    if not bool(data.get("enabled")):
+        raise HTTPException(status_code=400, detail="Campaign source template is disabled")
+    data["config"] = _normalize_http_source_template_config(data.get("config") or {})
+    return data
+
+
+def _run_http_source_campaign_job(campaign_id: int):
+    with http_source_campaign_jobs_lock:
+        job = http_source_campaign_jobs.get(campaign_id)
+    if not job:
+        return
+
+    try:
+        _append_http_source_job_log(job, "HTTP source campaign runner started")
+        while True:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                source_campaign = _load_http_source_campaign(cursor, campaign_id)
+                cursor.execute("""
+                    SELECT id, req_text, status
+                    FROM requests
+                    WHERE campaign_id = %s
+                      AND status IN ('pending', 'inuse')
+                    ORDER BY
+                        CASE status WHEN 'inuse' THEN 0 ELSE 1 END,
+                        id ASC
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                """, (campaign_id,))
+                request_row = cursor.fetchone()
+                if not request_row:
+                    cursor.execute("UPDATE search_campaigns SET status = 'completed' WHERE id = %s", (campaign_id,))
+                    conn.commit()
+                    job["status"] = "completed"
+                    job["completed_at"] = _iso(_now_utc())
+                    _append_http_source_job_log(job, "No pending requests remain; campaign completed")
+                    return
+
+                request_id = int(request_row["id"])
+                request_text = str(request_row.get("req_text") or "").strip()
+                cursor.execute("UPDATE requests SET status = 'inuse' WHERE id = %s", (request_id,))
+                conn.commit()
+
+            source = {
+                "id": source_campaign["source_id"],
+                "name": source_campaign["source_name"],
+                "source_type": "http_api",
+                "config": source_campaign["config"],
+            }
+            _append_http_source_job_log(job, f"Running request #{request_id}: {request_text}")
+            fetch_result = _fetch_http_source_rows(source_campaign["config"], {}, request_text)
+
+            with get_db() as conn:
+                cursor = conn.cursor()
+                saved_contacts = _insert_http_source_contacts(
+                    cursor,
+                    campaign_id,
+                    request_id,
+                    source,
+                    fetch_result["rows"],
+                )
+                cursor.execute("UPDATE requests SET status = 'completed' WHERE id = %s AND campaign_id = %s", (request_id, campaign_id))
+                conn.commit()
+
+            job["processed_requests"] = int(job.get("processed_requests") or 0) + 1
+            job["saved_contacts"] = int(job.get("saved_contacts") or 0) + len(saved_contacts)
+            _append_http_source_job_log(job, f"Completed request #{request_id}; saved {len(saved_contacts)} contacts")
+    except Exception as exc:
+        job["status"] = "failed"
+        job["latest_error"] = str(getattr(exc, "detail", exc))
+        job["completed_at"] = _iso(_now_utc())
+        _append_http_source_job_log(job, f"Failed: {job['latest_error']}")
+        try:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE requests SET status = 'pending' WHERE campaign_id = %s AND status = 'inuse'", (campaign_id,))
+                conn.commit()
+        except Exception:
+            pass
+
+
+def _start_http_source_campaign_job(campaign_id: int) -> bool:
+    with http_source_campaign_jobs_lock:
+        existing = http_source_campaign_jobs.get(campaign_id)
+        if existing and existing.get("status") == "running":
+            return False
+        http_source_campaign_jobs[campaign_id] = {
+            "campaign_id": campaign_id,
+            "status": "running",
+            "processed_requests": 0,
+            "saved_contacts": 0,
+            "latest_error": "",
+            "started_at": _iso(_now_utc()),
+            "completed_at": None,
+            "logs": [],
+        }
+
+    thread = threading.Thread(target=_run_http_source_campaign_job, args=(campaign_id,), daemon=True)
+    thread.start()
+    return True
+
+
+def _fetch_http_source_rows(config: dict, variables: dict, request_text: str) -> dict:
+    rendered_request = _render_http_source_value(config["request_template"], variables, request_text)
+    params = {}
+    for key, value in config.get("query_params", {}).items():
+        params[key] = _render_http_source_value(value, variables, request_text)
+    request_url = _render_http_source_url_template(config["base_url"], variables, request_text, rendered_request)
+
+    try:
+        response = requests.request(
+            config["method"],
+            request_url,
+            params=params,
+            timeout=config["timeout_seconds"],
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"HTTP source request failed: {exc}")
+
+    response_text = response.text or ""
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"HTTP source returned {response.status_code}: {response_text[:500]}")
+    try:
+        response_payload = response.json()
+    except Exception:
+        response_payload = response_text
+
+    rows = _extract_http_source_rows(response_payload, response_text, config)
+    return {
+        "rendered_request": rendered_request,
+        "request_url": getattr(response, "url", request_url),
+        "rows": rows,
+        "duration_ms": int(getattr(response, "elapsed", None).total_seconds() * 1000) if getattr(response, "elapsed", None) else None,
+    }
+
+
 def _resolve_claim_machine_id(payload: dict) -> str:
     machine_id = str(payload.get("machine_id") or "").strip()
     if machine_id:
@@ -1847,6 +2033,9 @@ init_db()
 verification_jobs = {}
 verification_jobs_lock = threading.Lock()
 MAX_VERIFICATION_LOGS = 200
+http_source_campaign_jobs: Dict[int, dict] = {}
+http_source_campaign_jobs_lock = threading.Lock()
+MAX_HTTP_SOURCE_JOB_LOGS = 200
 
 
 def _append_verification_log(job: dict, message: str):
@@ -3474,9 +3663,10 @@ async def create_campaign(
     normalized_mode = _normalize_maps_scrape_mode(requested_mode or "slow")
     normalized_scrape_maps_only = _coerce_bool_flag(scrape_maps_only, False)
     normalized_source_template_id = _normalize_source_template_id(source_template_id)
+    source_template = None
     with get_db() as conn:
         cursor = conn.cursor()
-        _ensure_source_template(cursor, normalized_source_template_id)
+        source_template = _ensure_source_template(cursor, normalized_source_template_id)
         cursor.execute(
             "INSERT INTO search_campaigns (name, status, maps_scrape_mode, source_template_id, scrape_maps_only) VALUES (%s, %s, %s, %s, %s) RETURNING id",
             (name, "active", normalized_mode, normalized_source_template_id, normalized_scrape_maps_only)
@@ -3488,12 +3678,16 @@ async def create_campaign(
                 (campaign_id, phrase, "pending")
             )
         conn.commit()
+    http_source_runner_started = False
+    if source_template and _normalize_source_template_type(source_template.get("source_type")) == "http_api":
+        http_source_runner_started = _start_http_source_campaign_job(int(campaign_id))
     return {
         "status": "Campaign created",
         "campaign_id": campaign_id,
         "maps_scrape_mode": normalized_mode,
         "source_template_id": normalized_source_template_id,
         "scrape_maps_only": normalized_scrape_maps_only,
+        "http_source_runner_started": http_source_runner_started,
     }
 
 @app.get("/api/reserve_phrase/{campaign_id}")
@@ -3784,31 +3978,7 @@ async def run_http_source_template(source_id: int, request: Request):
     if not request_text:
         raise HTTPException(status_code=400, detail="request_text is required when the campaign has no pending requests")
 
-    rendered_request = _render_http_source_value(config["request_template"], variables, request_text)
-    params = {}
-    for key, value in config.get("query_params", {}).items():
-        params[key] = _render_http_source_value(value, variables, request_text)
-    request_url = _render_http_source_url_template(config["base_url"], variables, request_text, rendered_request)
-
-    try:
-        response = requests.request(
-            config["method"],
-            request_url,
-            params=params,
-            timeout=config["timeout_seconds"],
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"HTTP source request failed: {exc}")
-
-    response_text = response.text or ""
-    if response.status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"HTTP source returned {response.status_code}: {response_text[:500]}")
-    try:
-        response_payload = response.json()
-    except Exception:
-        response_payload = response_text
-
-    rows = _extract_http_source_rows(response_payload, response_text, config)
+    fetch_result = _fetch_http_source_rows(config, variables, request_text)
 
     with get_db() as conn:
         cursor = conn.cursor()
@@ -3820,7 +3990,7 @@ async def run_http_source_template(source_id: int, request: Request):
                 (campaign_id, request_text, "completed"),
             )
             final_request_id = int(cursor.fetchone()["id"])
-        saved_contacts = _insert_http_source_contacts(cursor, campaign_id, final_request_id, source, rows)
+        saved_contacts = _insert_http_source_contacts(cursor, campaign_id, final_request_id, source, fetch_result["rows"])
         cursor.execute("UPDATE requests SET status = 'completed' WHERE id = %s AND campaign_id = %s", (final_request_id, campaign_id))
         conn.commit()
 
@@ -3830,12 +4000,33 @@ async def run_http_source_template(source_id: int, request: Request):
         "campaign_id": campaign_id,
         "request_id": final_request_id,
         "request_text": request_text,
-        "rendered_request": rendered_request,
-        "request_url": getattr(response, "url", request_url),
-        "row_count": len(rows),
+        "rendered_request": fetch_result["rendered_request"],
+        "request_url": fetch_result["request_url"],
+        "row_count": len(fetch_result["rows"]),
         "saved_count": len(saved_contacts),
         "saved_contacts": saved_contacts[:25],
-        "duration_ms": int(getattr(response, "elapsed", None).total_seconds() * 1000) if getattr(response, "elapsed", None) else None,
+        "duration_ms": fetch_result["duration_ms"],
+    }
+
+
+@app.post("/api/campaign/{campaign_id}/http-source/start")
+async def start_http_source_campaign(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        _load_http_source_campaign(cursor, campaign_id)
+    started = _start_http_source_campaign_job(campaign_id)
+    return {
+        "status": "started" if started else "already_running",
+        "campaign_id": campaign_id,
+        "job": _serialize_http_source_job(http_source_campaign_jobs.get(campaign_id)),
+    }
+
+
+@app.get("/api/campaign/{campaign_id}/http-source/status")
+async def get_http_source_campaign_status(campaign_id: int):
+    return {
+        "campaign_id": campaign_id,
+        "job": _serialize_http_source_job(http_source_campaign_jobs.get(campaign_id)),
     }
 
 

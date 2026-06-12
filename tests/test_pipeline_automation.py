@@ -763,6 +763,40 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(response["maps_scrape_mode"], "fast")
         self.assertTrue(response["scrape_maps_only"])
 
+    def test_create_campaign_auto_starts_http_source_runner(self):
+        started = []
+        self.main._start_http_source_campaign_job = lambda campaign_id: started.append(campaign_id) or True
+        self._patch_db([
+            {
+                "match": "select * from source_templates",
+                "fetchone": {
+                    "id": 7,
+                    "name": "HTTP",
+                    "description": "",
+                    "source_type": "http_api",
+                    "enabled": True,
+                    "config": {
+                        "base_url": "http://example.com/api?request={query}",
+                        "field_mapping": {"company": "business_name"},
+                    },
+                },
+            },
+            {"match": "insert into search_campaigns", "fetchone": {"id": 125}},
+            {"match": "insert into requests", "rowcount": 1},
+        ])
+
+        response = asyncio.run(
+            self.main.create_campaign(
+                name="HTTP Campaign",
+                search_phrases="top locksmiths in chicago",
+                source_template_id="7",
+            )
+        )
+
+        self.assertEqual(response["campaign_id"], 125)
+        self.assertTrue(response["http_source_runner_started"])
+        self.assertEqual(started, [125])
+
     def test_create_campaign_rejects_invalid_maps_mode(self):
         with self.assertRaises(self.main.HTTPException) as ctx:
             asyncio.run(
