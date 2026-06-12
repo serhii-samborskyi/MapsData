@@ -85,9 +85,14 @@ MIN_ENRICHMENT_TIMEOUT_SECONDS = 15
 MAX_ENRICHMENT_TIMEOUT_SECONDS = 600
 SOURCE_NAVIGATION_TYPES = {"scroll", "pagination", "load_more"}
 SOURCE_TARGET_TYPES = {"core", "dynamic"}
+SOURCE_TEMPLATE_TYPES = {"generic", "http_api"}
 SOURCE_TEMPLATE_CONFIG_VERSION = 1
 SOURCE_TEMPLATE_EXPORT_SCHEMA = "scrapiq.source_template"
 SOURCE_TEMPLATE_EXPORT_VERSION = 1
+SOURCE_HTTP_METHODS = {"GET"}
+SOURCE_HTTP_JSON_EXTRACTION_MODES = {"first_json_array", "path_or_first_json_array"}
+SOURCE_HTTP_DEFAULT_TIMEOUT_SECONDS = 150
+SOURCE_HTTP_MAX_TIMEOUT_SECONDS = 600
 SOURCE_CORE_FIELDS = [
     "business_name",
     "address",
@@ -634,6 +639,142 @@ def _normalize_source_template_config(raw_config: Any) -> dict:
     }
 
 
+def _normalize_source_template_type(value: Any) -> str:
+    source_type = str(value or "generic").strip().lower()
+    if not source_type:
+        return "generic"
+    if source_type not in SOURCE_TEMPLATE_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported source_type '{source_type}'")
+    return source_type
+
+
+def _normalize_http_field_mapping(raw_mapping: Any) -> List[dict]:
+    if raw_mapping is None:
+        raw_mapping = {}
+    if isinstance(raw_mapping, str):
+        raw_mapping = _safe_json_parse(raw_mapping, {})
+
+    mapping_items = []
+    if isinstance(raw_mapping, dict):
+        for source_field, target_fields in raw_mapping.items():
+            if isinstance(target_fields, str):
+                target_fields = [target_fields]
+            mapping_items.append({
+                "source_field": source_field,
+                "target_fields": target_fields if isinstance(target_fields, list) else [],
+            })
+    elif isinstance(raw_mapping, list):
+        for item in raw_mapping:
+            if not isinstance(item, dict):
+                raise HTTPException(status_code=400, detail="field_mapping entries must be objects")
+            target_fields = item.get("target_fields")
+            if target_fields is None:
+                target_fields = item.get("target_field", item.get("target"))
+            if isinstance(target_fields, str):
+                target_fields = [target_fields]
+            mapping_items.append({
+                "source_field": item.get("source_field", item.get("json_field", item.get("source"))),
+                "target_fields": target_fields if isinstance(target_fields, list) else [],
+            })
+    else:
+        raise HTTPException(status_code=400, detail="field_mapping must be an object or array")
+
+    target_aliases = {
+        "website": "domain",
+        "website_domain": "domain",
+        "website/domain": "domain",
+        "owner_first_name": "firstname",
+        "owner_fname": "firstname",
+        "owner first name": "firstname",
+        "first_name": "firstname",
+        "last_name": "lastname",
+        "business": "business_name",
+        "name": "business_name",
+    }
+
+    normalized = []
+    for index, item in enumerate(mapping_items):
+        source_field = str(item.get("source_field") or "").strip()
+        if not source_field:
+            raise HTTPException(status_code=400, detail=f"field_mapping[{index}].source_field is required")
+        targets = []
+        for raw_target in item.get("target_fields") or []:
+            target = str(raw_target or "").strip().lower().replace("-", "_")
+            target = re.sub(r"\s+", "_", target)
+            target = target_aliases.get(target, target)
+            if target not in SOURCE_CORE_FIELD_SET:
+                raise HTTPException(status_code=400, detail=f"field_mapping[{index}]: invalid target field '{raw_target}'")
+            if target not in targets:
+                targets.append(target)
+        if not targets:
+            raise HTTPException(status_code=400, detail=f"field_mapping[{index}].target_fields is required")
+        normalized.append({"source_field": source_field, "target_fields": targets})
+
+    if not normalized:
+        raise HTTPException(status_code=400, detail="At least one field mapping is required")
+    return normalized
+
+
+def _normalize_http_source_template_config(raw_config: Any) -> dict:
+    config = _safe_json_parse(raw_config, {})
+    if not isinstance(config, dict):
+        raise HTTPException(status_code=400, detail="config must be a JSON object")
+
+    base_url = str(config.get("base_url") or config.get("url") or "").strip()
+    if not base_url:
+        raise HTTPException(status_code=400, detail="base_url is required")
+    if not re.match(r"^https?://", base_url, flags=re.IGNORECASE):
+        raise HTTPException(status_code=400, detail="base_url must start with http:// or https://")
+
+    method = str(config.get("method") or "GET").strip().upper()
+    if method not in SOURCE_HTTP_METHODS:
+        raise HTTPException(status_code=400, detail="Only GET HTTP sources are supported")
+
+    query_params_raw = config.get("query_params") if isinstance(config.get("query_params"), dict) else {}
+    query_params = {}
+    for key, value in query_params_raw.items():
+        clean_key = str(key or "").strip()
+        if clean_key:
+            query_params[clean_key] = "" if value is None else str(value)
+
+    script_name = str(config.get("script_name") or "").strip()
+    script_param_name = str(config.get("script_param_name") or "scriptName").strip() or "scriptName"
+    request_template = str(config.get("request_template") or "").strip()
+    request_param_name = str(config.get("request_param_name") or "request").strip() or "request"
+    if not request_template:
+        raise HTTPException(status_code=400, detail="request_template is required")
+
+    response_path = str(config.get("response_path") or "").strip()
+    json_extraction_mode = str(config.get("json_extraction_mode") or "path_or_first_json_array").strip().lower()
+    if json_extraction_mode not in SOURCE_HTTP_JSON_EXTRACTION_MODES:
+        raise HTTPException(status_code=400, detail="json_extraction_mode must be first_json_array or path_or_first_json_array")
+
+    timeout_seconds = _safe_int(config.get("timeout_seconds"), SOURCE_HTTP_DEFAULT_TIMEOUT_SECONDS)
+    timeout_seconds = max(1, min(timeout_seconds, SOURCE_HTTP_MAX_TIMEOUT_SECONDS))
+
+    return {
+        "version": SOURCE_TEMPLATE_CONFIG_VERSION,
+        "base_url": base_url,
+        "method": method,
+        "query_params": query_params,
+        "script_name": script_name,
+        "script_param_name": script_param_name,
+        "request_template": request_template,
+        "request_param_name": request_param_name,
+        "response_path": response_path,
+        "json_extraction_mode": json_extraction_mode,
+        "timeout_seconds": timeout_seconds,
+        "field_mapping": _normalize_http_field_mapping(config.get("field_mapping")),
+    }
+
+
+def _normalize_source_template_config_for_type(raw_config: Any, source_type: Any = "generic") -> dict:
+    normalized_type = _normalize_source_template_type(source_type)
+    if normalized_type == "http_api":
+        return _normalize_http_source_template_config(raw_config)
+    return _normalize_source_template_config(raw_config)
+
+
 def _serialize_source_template(row: dict) -> dict:
     item = dict(row)
     item["config"] = _safe_json_parse(item.get("config"), {})
@@ -647,14 +788,15 @@ def _serialize_source_template(row: dict) -> dict:
 
 def _source_template_export_payload(source: dict) -> dict:
     serialized = _serialize_source_template(source)
+    source_type = _normalize_source_template_type(serialized.get("source_type") or "generic")
     return {
         "schema": SOURCE_TEMPLATE_EXPORT_SCHEMA,
         "version": SOURCE_TEMPLATE_EXPORT_VERSION,
         "name": str(serialized.get("name") or "").strip(),
         "description": str(serialized.get("description") or "").strip(),
         "enabled": bool(serialized.get("enabled", True)),
-        "source_type": str(serialized.get("source_type") or "generic").strip() or "generic",
-        "config": _normalize_source_template_config(serialized.get("config") or {}),
+        "source_type": source_type,
+        "config": _normalize_source_template_config_for_type(serialized.get("config") or {}, source_type),
         "test": serialized.get("test") if isinstance(serialized.get("test"), dict) else {},
     }
 
@@ -680,9 +822,7 @@ def _normalize_source_template_import_payload(payload: dict) -> dict:
 
     name = str(payload.get("name") or "").strip()
     description = str(payload.get("description") or "").strip()
-    source_type = str(payload.get("source_type") or "generic").strip().lower()
-    if source_type not in {"generic", ""}:
-        raise HTTPException(status_code=400, detail="Only generic source templates can be imported")
+    source_type = _normalize_source_template_type(payload.get("source_type") or "generic")
     if not name:
         raise HTTPException(status_code=400, detail="Source name is required")
 
@@ -691,8 +831,8 @@ def _normalize_source_template_import_payload(payload: dict) -> dict:
         "name": name,
         "description": description,
         "enabled": _coerce_bool_flag(payload.get("enabled"), True),
-        "source_type": "generic",
-        "config": _normalize_source_template_config(config or {}),
+        "source_type": source_type,
+        "config": _normalize_source_template_config_for_type(config or {}, source_type),
         "test": payload.get("test") if isinstance(payload.get("test"), dict) else {},
     }
 
@@ -712,6 +852,218 @@ def _ensure_source_template(cursor, template_id: Optional[int]) -> Optional[dict
     if not bool(template.get("enabled")):
         raise HTTPException(status_code=400, detail="Source template is disabled")
     return template
+
+
+def _get_path_value(payload: Any, path: str) -> Any:
+    current = payload
+    for part in [item for item in str(path or "").strip().split(".") if item]:
+        if isinstance(current, dict):
+            current = current.get(part)
+            continue
+        if isinstance(current, list):
+            try:
+                current = current[int(part)]
+                continue
+            except (TypeError, ValueError, IndexError):
+                return None
+        return None
+    return current
+
+
+def _find_first_json_array_in_text(value: Any) -> Optional[list]:
+    text = str(value or "")
+    fence_matches = re.findall(r"```(?:json)?\s*([\s\S]*?)```", text, flags=re.IGNORECASE)
+    candidates = fence_matches + [text]
+
+    for candidate_text in candidates:
+        for start in [match.start() for match in re.finditer(r"\[", candidate_text)]:
+            depth = 0
+            in_string = False
+            escape = False
+            for index in range(start, len(candidate_text)):
+                char = candidate_text[index]
+                if in_string:
+                    if escape:
+                        escape = False
+                    elif char == "\\":
+                        escape = True
+                    elif char == '"':
+                        in_string = False
+                    continue
+                if char == '"':
+                    in_string = True
+                elif char == "[":
+                    depth += 1
+                elif char == "]":
+                    depth -= 1
+                    if depth == 0:
+                        snippet = candidate_text[start:index + 1]
+                        try:
+                            parsed = json.loads(snippet)
+                        except Exception:
+                            break
+                        if isinstance(parsed, list):
+                            return parsed
+                        break
+    return None
+
+
+def _iter_nested_text_values(value: Any):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for nested in value.values():
+            yield from _iter_nested_text_values(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _iter_nested_text_values(nested)
+
+
+def _extract_http_source_rows(response_payload: Any, response_text: str, config: dict) -> List[dict]:
+    candidates = []
+    response_path = str(config.get("response_path") or "").strip()
+    if response_path:
+        candidates.append(_get_path_value(response_payload, response_path))
+    candidates.extend(_iter_nested_text_values(response_payload))
+    candidates.extend([response_payload, response_text])
+
+    for candidate in candidates:
+        rows = None
+        if isinstance(candidate, list):
+            rows = candidate
+        elif isinstance(candidate, str):
+            rows = _find_first_json_array_in_text(candidate)
+        elif isinstance(candidate, dict):
+            rows = _find_first_json_array_in_text(json.dumps(candidate))
+
+        if rows is None:
+            continue
+        if not all(isinstance(item, dict) for item in rows):
+            raise HTTPException(status_code=400, detail="Extracted JSON array must contain objects")
+        return [dict(item) for item in rows]
+
+    raise HTTPException(status_code=400, detail="Could not extract a JSON array from the source response")
+
+
+def _infer_http_source_variables(request_text: str) -> dict:
+    text = str(request_text or "").strip()
+    inferred = {"query": text, "request": text}
+    limit_match = re.search(r"\btop\s+(\d+)\b", text, flags=re.IGNORECASE)
+    if limit_match:
+        inferred["limit"] = limit_match.group(1)
+
+    city_match = re.search(r"\bin\s+([^,]+?)(?:,|$)", text, flags=re.IGNORECASE)
+    if city_match:
+        inferred["city"] = city_match.group(1).strip()
+
+    niche = text
+    if limit_match:
+        niche = text[limit_match.end():].strip()
+    if city_match:
+        niche = niche[:max(0, city_match.start() - (limit_match.end() if limit_match else 0))].strip()
+    niche = re.sub(r"^\W+|\W+$", "", niche)
+    if niche:
+        inferred["niche"] = niche
+    return inferred
+
+
+def _render_http_source_value(template_value: Any, variables: dict, request_text: str) -> str:
+    template_text = str(template_value or "")
+    inferred = _infer_http_source_variables(request_text)
+    merged = {**inferred}
+    for key, value in (variables or {}).items():
+        if value is not None and str(value).strip() != "":
+            merged[str(key).strip()] = str(value).strip()
+
+    missing = []
+
+    def replace(match):
+        key = match.group(1).strip()
+        if key in merged and str(merged[key]).strip() != "":
+            return str(merged[key])
+        missing.append(key)
+        return ""
+
+    rendered = re.sub(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}", replace, template_text)
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing template variable(s): {', '.join(sorted(set(missing)))}")
+    return rendered
+
+
+def _normalize_http_contact_value(value: Any) -> Optional[Any]:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    text = str(value).strip()
+    return text if text else None
+
+
+def _http_source_contact_from_row(row: dict, mapping: List[dict], source: dict) -> dict:
+    contact = {}
+    for item in mapping:
+        value = _get_path_value(row, item["source_field"])
+        value = _normalize_http_contact_value(value)
+        if value is None:
+            continue
+        for target_field in item["target_fields"]:
+            contact[target_field] = value
+
+    business_name = _normalize_http_contact_value(
+        contact.get("business_name")
+        or contact.get("company")
+        or row.get("business_name")
+        or row.get("company")
+        or row.get("name")
+        or row.get("title")
+        or row.get("domain")
+        or row.get("email")
+    )
+    if not business_name:
+        raise HTTPException(status_code=400, detail="Mapped contact is missing business_name/company")
+    contact["business_name"] = business_name
+
+    contact["review_count"] = _safe_int(contact.get("review_count"), 0)
+    if contact.get("rating") not in {None, ""}:
+        try:
+            contact["rating"] = float(contact.get("rating"))
+        except (TypeError, ValueError):
+            contact["rating"] = None
+    if contact.get("time_zone_offset_min") not in {None, ""}:
+        contact["time_zone_offset_min"] = _safe_int(contact.get("time_zone_offset_min"), None)
+
+    source_data = {
+        "source_template_id": source.get("id"),
+        "source_name": source.get("name"),
+        "source_type": source.get("source_type"),
+        "raw": row,
+    }
+    contact["source_data"] = source_data
+    return contact
+
+
+def _insert_http_source_contacts(cursor, campaign_id: int, request_id: int, source: dict, rows: List[dict]) -> List[dict]:
+    config = _normalize_http_source_template_config(source.get("config") or {})
+    saved_contacts = []
+    insert_columns = list(SOURCE_CORE_FIELDS) + ["campaign_id", "request_id", "status", "source_data", "email_status"]
+    placeholders = ", ".join(["%s"] * len(insert_columns))
+    columns_sql = ", ".join(insert_columns)
+
+    for row in rows:
+        contact = _http_source_contact_from_row(row, config["field_mapping"], source)
+        values = [contact.get(field) for field in SOURCE_CORE_FIELDS]
+        values.extend([campaign_id, request_id, "pending", Json(contact["source_data"]), "unverified"])
+        cursor.execute(
+            f"INSERT INTO contacts ({columns_sql}) VALUES ({placeholders}) RETURNING id",
+            tuple(values),
+        )
+        saved_contacts.append({
+            "contact_id": cursor.fetchone()["id"],
+            "business_name": contact.get("business_name"),
+            "domain": contact.get("domain"),
+            "email": contact.get("email"),
+        })
+    return saved_contacts
 
 
 def _resolve_claim_machine_id(payload: dict) -> str:
@@ -3299,8 +3651,9 @@ async def list_source_templates(include_disabled: bool = False):
 @app.post("/api/source-template/validate")
 async def validate_source_template_config_alt(request: Request):
     data = await _read_json_body(request)
-    config = _normalize_source_template_config(data.get("config") or data)
-    return {"status": "ok", "config": config}
+    source_type = _normalize_source_template_type(data.get("source_type") or "generic")
+    config = _normalize_source_template_config_for_type(data.get("config") or data, source_type)
+    return {"status": "ok", "source_type": source_type, "config": config}
 
 
 @app.post("/api/sources/import")
@@ -3313,9 +3666,9 @@ async def import_source_template(request: Request):
         try:
             cursor.execute("""
                 INSERT INTO source_templates (name, description, source_type, enabled, config, updated_at)
-                VALUES (%s, %s, 'generic', %s, %s, CURRENT_TIMESTAMP)
+                VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                 RETURNING *
-            """, (source["name"], source["description"], source["enabled"], json.dumps(source["config"])))
+            """, (source["name"], source["description"], source["source_type"], source["enabled"], json.dumps(source["config"])))
         except IntegrityError:
             conn.rollback()
             raise HTTPException(status_code=400, detail="Source name already exists")
@@ -3351,24 +3704,132 @@ async def get_source_template(source_id: int):
     return template
 
 
+@app.post("/api/sources/{source_id}/run")
+async def run_http_source_template(source_id: int, request: Request):
+    payload = await _read_json_body(request)
+    campaign_id = _safe_int(payload.get("campaign_id"), 0)
+    request_id = _safe_int(payload.get("request_id"), 0)
+    provided_request_text = str(payload.get("request_text") or "").strip()
+    variables = payload.get("variables") if isinstance(payload.get("variables"), dict) else {}
+    if campaign_id <= 0:
+        raise HTTPException(status_code=400, detail="campaign_id is required")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        source = _get_source_template(cursor, source_id)
+        if not source:
+            raise HTTPException(status_code=404, detail="Source template not found")
+        if not bool(source.get("enabled")):
+            raise HTTPException(status_code=400, detail="Source template is disabled")
+        if _normalize_source_template_type(source.get("source_type")) != "http_api":
+            raise HTTPException(status_code=400, detail="Only HTTP API sources can be run directly")
+        config = _normalize_http_source_template_config(source.get("config") or {})
+
+        _ensure_campaign_exists(cursor, campaign_id)
+        request_text = provided_request_text
+        existing_request_id = request_id if request_id > 0 else None
+        if existing_request_id:
+            cursor.execute("SELECT id, req_text FROM requests WHERE id = %s AND campaign_id = %s", (existing_request_id, campaign_id))
+            request_row = cursor.fetchone()
+            if not request_row:
+                raise HTTPException(status_code=400, detail="request_id does not belong to this campaign")
+            if not request_text:
+                request_text = str(request_row.get("req_text") or "").strip()
+        elif not request_text:
+            cursor.execute("""
+                SELECT id, req_text
+                FROM requests
+                WHERE campaign_id = %s
+                  AND status IN ('pending', 'reserved', 'inuse')
+                ORDER BY
+                    CASE status WHEN 'pending' THEN 0 WHEN 'reserved' THEN 1 ELSE 2 END,
+                    id ASC
+                LIMIT 1
+            """, (campaign_id,))
+            request_row = cursor.fetchone()
+            if request_row:
+                existing_request_id = int(request_row["id"])
+                request_text = str(request_row.get("req_text") or "").strip()
+        conn.commit()
+
+    if not request_text:
+        raise HTTPException(status_code=400, detail="request_text is required when the campaign has no pending requests")
+
+    rendered_request = _render_http_source_value(config["request_template"], variables, request_text)
+    params = {}
+    for key, value in config.get("query_params", {}).items():
+        params[key] = _render_http_source_value(value, variables, request_text)
+    if config.get("script_name"):
+        params[config["script_param_name"]] = config["script_name"]
+    params[config["request_param_name"]] = rendered_request
+
+    try:
+        response = requests.request(
+            config["method"],
+            config["base_url"],
+            params=params,
+            timeout=config["timeout_seconds"],
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"HTTP source request failed: {exc}")
+
+    response_text = response.text or ""
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"HTTP source returned {response.status_code}: {response_text[:500]}")
+    try:
+        response_payload = response.json()
+    except Exception:
+        response_payload = response_text
+
+    rows = _extract_http_source_rows(response_payload, response_text, config)
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        _ensure_campaign_exists(cursor, campaign_id)
+        final_request_id = existing_request_id
+        if final_request_id is None:
+            cursor.execute(
+                "INSERT INTO requests (campaign_id, req_text, status) VALUES (%s, %s, %s) RETURNING id",
+                (campaign_id, request_text, "completed"),
+            )
+            final_request_id = int(cursor.fetchone()["id"])
+        saved_contacts = _insert_http_source_contacts(cursor, campaign_id, final_request_id, source, rows)
+        cursor.execute("UPDATE requests SET status = 'completed' WHERE id = %s AND campaign_id = %s", (final_request_id, campaign_id))
+        conn.commit()
+
+    return {
+        "status": "ok",
+        "source_id": source_id,
+        "campaign_id": campaign_id,
+        "request_id": final_request_id,
+        "request_text": request_text,
+        "rendered_request": rendered_request,
+        "row_count": len(rows),
+        "saved_count": len(saved_contacts),
+        "saved_contacts": saved_contacts[:25],
+        "duration_ms": int(getattr(response, "elapsed", None).total_seconds() * 1000) if getattr(response, "elapsed", None) else None,
+    }
+
+
 @app.post("/api/sources")
 async def create_source_template(request: Request):
     data = await _read_json_body(request)
     name = str(data.get("name") or "").strip()
     description = str(data.get("description") or "").strip()
     enabled = _coerce_bool_flag(data.get("enabled"), True)
+    source_type = _normalize_source_template_type(data.get("source_type") or "generic")
     if not name:
         raise HTTPException(status_code=400, detail="Source name is required")
-    config = _normalize_source_template_config(data.get("config") or {})
+    config = _normalize_source_template_config_for_type(data.get("config") or {}, source_type)
 
     with get_db() as conn:
         cursor = conn.cursor()
         try:
             cursor.execute("""
                 INSERT INTO source_templates (name, description, source_type, enabled, config, updated_at)
-                VALUES (%s, %s, 'generic', %s, %s, CURRENT_TIMESTAMP)
+                VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                 RETURNING *
-            """, (name, description, enabled, json.dumps(config)))
+            """, (name, description, source_type, enabled, json.dumps(config)))
         except IntegrityError:
             conn.rollback()
             raise HTTPException(status_code=400, detail="Source name already exists")
@@ -3383,9 +3844,10 @@ async def update_source_template(source_id: int, request: Request):
     name = str(data.get("name") or "").strip()
     description = str(data.get("description") or "").strip()
     enabled = _coerce_bool_flag(data.get("enabled"), True)
+    source_type = _normalize_source_template_type(data.get("source_type") or "generic")
     if not name:
         raise HTTPException(status_code=400, detail="Source name is required")
-    config = _normalize_source_template_config(data.get("config") or {})
+    config = _normalize_source_template_config_for_type(data.get("config") or {}, source_type)
 
     with get_db() as conn:
         cursor = conn.cursor()
@@ -3394,12 +3856,13 @@ async def update_source_template(source_id: int, request: Request):
                 UPDATE source_templates
                 SET name = %s,
                     description = %s,
+                    source_type = %s,
                     enabled = %s,
                     config = %s,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s
                 RETURNING *
-            """, (name, description, enabled, json.dumps(config), source_id))
+            """, (name, description, source_type, enabled, json.dumps(config), source_id))
         except IntegrityError:
             conn.rollback()
             raise HTTPException(status_code=400, detail="Source name already exists")

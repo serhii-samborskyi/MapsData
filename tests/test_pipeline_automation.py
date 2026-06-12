@@ -225,8 +225,12 @@ def _install_stub_modules():
     def _dummy_get(*_args, **_kwargs):
         return _DummyResponse(payload={"input_fields": [], "required_input_fields": [], "enrichment_fields": []})
 
+    def _dummy_request(*_args, **_kwargs):
+        return _DummyResponse(payload={})
+
     requests_module.post = _dummy_post
     requests_module.get = _dummy_get
+    requests_module.request = _dummy_request
     sys.modules["requests"] = requests_module
 
 
@@ -515,6 +519,51 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(payload["source_type"], "generic")
         self.assertTrue(payload["config"]["navigation"]["all_the_way_down_scrolls"])
         self.assertEqual(payload["test"]["query"], "plumber chicago")
+
+    def test_http_source_template_config_accepts_mapping_and_timeout(self):
+        config = self.main._normalize_source_template_config_for_type({
+            "base_url": "http://example.com/api/run-sync",
+            "method": "GET",
+            "script_name": "ai_overview.js",
+            "request_template": "top {{limit}} {{niche}} in {{city}}",
+            "response_path": "result.ai_answer",
+            "timeout_seconds": 275,
+            "field_mapping": [
+                {"source_field": "company", "target_fields": ["business_name", "company"]},
+                {"source_field": "owner_fname", "target_field": "owner first name"},
+                {"source_field": "domain", "target_field": "website/domain"},
+            ],
+        }, "http_api")
+
+        self.assertEqual(config["method"], "GET")
+        self.assertEqual(config["timeout_seconds"], 275)
+        self.assertEqual(config["script_param_name"], "scriptName")
+        self.assertEqual(config["request_param_name"], "request")
+        self.assertEqual(config["field_mapping"][0]["target_fields"], ["business_name", "company"])
+        self.assertEqual(config["field_mapping"][1]["target_fields"], ["firstname"])
+        self.assertEqual(config["field_mapping"][2]["target_fields"], ["domain"])
+
+    def test_http_source_extracts_first_json_array_from_ai_answer_text(self):
+        payload = {
+            "ok": True,
+            "result": {
+                "ai_answer": "json[ { \"company\": \"Chicago Locksmiths\", \"domain\": \"chicagolocksmiths.net\" } ]"
+            },
+        }
+        rows = self.main._extract_http_source_rows(payload, "", {"response_path": "result.ai_answer"})
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["company"], "Chicago Locksmiths")
+        self.assertEqual(rows[0]["domain"], "chicagolocksmiths.net")
+
+    def test_http_source_extracts_markdown_json_array_from_full_response(self):
+        rows = self.main._extract_http_source_rows(
+            {"message": "```json\n[{\"company\":\"A\"}]\n```"},
+            "",
+            {"response_path": ""},
+        )
+
+        self.assertEqual(rows, [{"company": "A"}])
 
     def test_stage_complete_advances_to_next_stage(self):
         self._patch_db([
