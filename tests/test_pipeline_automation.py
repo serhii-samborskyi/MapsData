@@ -565,6 +565,19 @@ class PipelineEndpointTests(unittest.TestCase):
 
         self.assertEqual(rows, [{"company": "A"}])
 
+    def test_http_source_url_template_injects_encoded_query(self):
+        rendered = self.main._render_http_source_url_template(
+            "http://73.72.215.253:4865/api/run-sync?scriptName=ai_overview.js&request={query}",
+            {},
+            "top 10 locksmiths in chicago",
+            "top 10 locksmiths in chicago, answer in json like: {company, domain}",
+        )
+
+        self.assertEqual(
+            rendered,
+            "http://73.72.215.253:4865/api/run-sync?scriptName=ai_overview.js&request=top%2010%20locksmiths%20in%20chicago%2C%20answer%20in%20json%20like%3A%20%7Bcompany%2C%20domain%7D",
+        )
+
     def test_stage_complete_advances_to_next_stage(self):
         self._patch_db([
             {

@@ -990,6 +990,39 @@ def _render_http_source_value(template_value: Any, variables: dict, request_text
     return rendered
 
 
+def _http_source_url_has_query_placeholder(url: str) -> bool:
+    return "{query}" in str(url or "") or "{{query}}" in str(url or "")
+
+
+def _render_http_source_url_template(base_url: str, variables: dict, request_text: str, rendered_request: str) -> str:
+    inferred = _infer_http_source_variables(request_text)
+    merged = {**inferred, "query": rendered_request, "request": rendered_request}
+    for key, value in (variables or {}).items():
+        if value is not None and str(value).strip() != "":
+            merged[str(key).strip()] = str(value).strip()
+
+    missing = []
+
+    def replace_mustache(match):
+        key = match.group(1).strip()
+        if key in merged and str(merged[key]).strip() != "":
+            return quote(str(merged[key]), safe="")
+        missing.append(key)
+        return ""
+
+    rendered = re.sub(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}", replace_mustache, str(base_url or ""))
+    for key in ("query", "request"):
+        token = f"{{{key}}}"
+        if token in rendered:
+            value = str(merged.get(key) or "").strip()
+            if not value:
+                missing.append(key)
+            rendered = rendered.replace(token, quote(value, safe=""))
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing URL template variable(s): {', '.join(sorted(set(missing)))}")
+    return rendered
+
+
 def _normalize_http_contact_value(value: Any) -> Optional[Any]:
     if value is None:
         return None
@@ -3759,14 +3792,18 @@ async def run_http_source_template(source_id: int, request: Request):
     params = {}
     for key, value in config.get("query_params", {}).items():
         params[key] = _render_http_source_value(value, variables, request_text)
-    if config.get("script_name"):
-        params[config["script_param_name"]] = config["script_name"]
-    params[config["request_param_name"]] = rendered_request
+    request_url = config["base_url"]
+    if _http_source_url_has_query_placeholder(request_url):
+        request_url = _render_http_source_url_template(request_url, variables, request_text, rendered_request)
+    else:
+        if config.get("script_name"):
+            params[config["script_param_name"]] = config["script_name"]
+        params[config["request_param_name"]] = rendered_request
 
     try:
         response = requests.request(
             config["method"],
-            config["base_url"],
+            request_url,
             params=params,
             timeout=config["timeout_seconds"],
         )
@@ -3804,6 +3841,7 @@ async def run_http_source_template(source_id: int, request: Request):
         "request_id": final_request_id,
         "request_text": request_text,
         "rendered_request": rendered_request,
+        "request_url": getattr(response, "url", request_url),
         "row_count": len(rows),
         "saved_count": len(saved_contacts),
         "saved_contacts": saved_contacts[:25],
