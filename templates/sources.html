@@ -407,6 +407,12 @@
             document.getElementById('sourceDebugPanel').classList.toggle('hidden', isHttp);
             document.getElementById('daemonTestButton').classList.toggle('hidden', isHttp);
             document.getElementById('httpRunPanel').classList.toggle('hidden', !isHttp);
+            document.querySelectorAll('#genericSourceConfig input, #genericSourceConfig select, #genericSourceConfig textarea').forEach(input => {
+                input.disabled = isHttp;
+            });
+            document.querySelectorAll('#httpSourceConfig input, #httpSourceConfig select, #httpSourceConfig textarea').forEach(input => {
+                input.disabled = !isHttp;
+            });
             if (isHttp) loadHttpRunCampaigns();
         }
 
