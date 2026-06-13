@@ -663,6 +663,22 @@
         </div>
     </div>
 
+    <!-- Modal for HTTP request failure details -->
+    <div id="requestFailureModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+        <div class="flex min-h-screen items-center justify-center p-4">
+            <div class="app-card flex max-h-[85vh] w-full max-w-4xl flex-col p-6">
+                <div class="flex items-start justify-between gap-4">
+                    <div>
+                        <h3 id="requestFailureTitle" class="text-lg font-semibold text-red-700">Request Failed</h3>
+                        <p id="requestFailureSummary" class="mt-1 text-sm text-slate-600"></p>
+                    </div>
+                    <button onclick="closeRequestFailureModal()" class="rounded-full border border-slate-200 px-3 py-1 text-sm font-semibold text-slate-600 hover:bg-slate-50">Close</button>
+                </div>
+                <div id="requestFailureDetails" class="mt-4 min-h-0 flex-1 overflow-y-auto space-y-3 text-sm"></div>
+            </div>
+        </div>
+    </div>
+
     <script>
         let pendingDuplicateCampaignId = null;
         let pendingRemoveDuplicatesCampaignId = null;
@@ -810,8 +826,94 @@
         function getRequestStatusBadgeClass(status) {
             const normalized = String(status || '').toLowerCase();
             if (normalized === 'completed') return 'bg-green-100 text-green-800';
+            if (normalized === 'failed') return 'bg-red-100 text-red-800';
             if (normalized === 'reserved') return 'bg-yellow-100 text-yellow-800';
+            if (normalized === 'inuse') return 'bg-blue-100 text-blue-800';
             return 'bg-gray-100 text-gray-800';
+        }
+
+        function getRequestErrorDetails(request) {
+            const raw = request?.error_details;
+            if (!raw) return {};
+            if (typeof raw === 'string') {
+                try {
+                    return JSON.parse(raw);
+                } catch (_error) {
+                    return {message: raw};
+                }
+            }
+            return typeof raw === 'object' ? raw : {};
+        }
+
+        function renderRequestStatusBadge(campaignId, request) {
+            const status = String(request.status || 'pending');
+            const classes = getRequestStatusBadgeClass(status);
+            if (status.toLowerCase() !== 'failed') {
+                return `<span class="px-2 py-1 text-xs font-medium rounded-full ${classes}">${escapeHtml(status)}</span>`;
+            }
+            return `
+                <button
+                    type="button"
+                    onclick="openRequestFailureModal(${Number(campaignId)}, ${Number(request.id)})"
+                    class="px-2 py-1 text-xs font-medium rounded-full ${classes} hover:ring-2 hover:ring-red-200"
+                    title="Open API failure details"
+                >${escapeHtml(status)}</button>
+            `;
+        }
+
+        function formatFailureValue(value) {
+            if (value === null || value === undefined || value === '') return '-';
+            if (typeof value === 'string') return value;
+            return JSON.stringify(value, null, 2);
+        }
+
+        function failureDetailBlock(label, value, options = {}) {
+            const content = formatFailureValue(value);
+            if (content === '-') return '';
+            const bodyClass = options.mono === false ? 'text-slate-700' : 'font-mono text-xs text-slate-800 whitespace-pre-wrap break-words [overflow-wrap:anywhere]';
+            return `
+                <section class="rounded-lg border border-slate-200 bg-white p-3">
+                    <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">${escapeHtml(label)}</div>
+                    <pre class="${bodyClass}">${escapeHtml(content)}</pre>
+                </section>
+            `;
+        }
+
+        function openRequestFailureModal(campaignId, requestId) {
+            const payload = campaignDetailsCache.get(Number(campaignId)) || campaignDetailsCache.get(String(campaignId)) || {};
+            const request = (payload.requests || []).find(item => Number(item.id) === Number(requestId));
+            const details = getRequestErrorDetails(request);
+            const modal = document.getElementById('requestFailureModal');
+            const title = document.getElementById('requestFailureTitle');
+            const summary = document.getElementById('requestFailureSummary');
+            const body = document.getElementById('requestFailureDetails');
+            if (!modal || !title || !summary || !body) return;
+
+            title.textContent = `Request #${requestId} failed`;
+            summary.textContent = details.message || 'No failure message was stored.';
+            const jobLogs = Array.isArray(details.job_logs) ? details.job_logs.join('\n') : details.job_logs;
+            const requestUrl = details.request_url || '';
+            body.innerHTML = `
+                ${failureDetailBlock('Message', details.message, {mono: false})}
+                ${failureDetailBlock('Request Text', details.request_text || request?.req_text || '', {mono: false})}
+                ${requestUrl ? `
+                    <section class="rounded-lg border border-slate-200 bg-white p-3">
+                        <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Request URL</div>
+                        <a href="${escapeHtml(requestUrl)}" target="_blank" class="break-words text-sky-700 hover:underline">${escapeHtml(requestUrl)}</a>
+                    </section>
+                ` : ''}
+                ${failureDetailBlock('Rendered Request', details.rendered_request)}
+                ${failureDetailBlock('HTTP Status', details.response_status, {mono: false})}
+                ${failureDetailBlock('Response Headers', details.response_headers)}
+                ${failureDetailBlock('Server Response Text', details.response_text)}
+                ${failureDetailBlock('Server Response JSON', details.response_json)}
+                ${failureDetailBlock('Job Logs', jobLogs)}
+            ` || '<div class="rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-600">No failure details were stored for this request.</div>';
+            modal.classList.remove('hidden');
+        }
+
+        function closeRequestFailureModal() {
+            document.getElementById('requestFailureModal')?.classList.add('hidden');
         }
 
         function getEmailStatusIndicator(status) {
@@ -834,7 +936,7 @@
                 <div class="flex flex-wrap items-center gap-3">
                     <span class="font-medium text-slate-700">${escapeHtml(request.req_text || '')}</span>
                     <span class="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs font-medium">Contacts: ${Number(request.contact_count || 0)}</span>
-                    <span class="px-2 py-1 text-xs font-medium rounded-full ${getRequestStatusBadgeClass(request.status)}">${escapeHtml(request.status || 'pending')}</span>
+                    ${renderRequestStatusBadge(campaignId, request)}
                 </div>
             `).join('');
         }
@@ -1182,6 +1284,8 @@
             if (!progress) return;
             const total = Number(progress.total_requests || 0);
             const completed = Number(progress.completed_requests || 0);
+            const failed = Number(progress.failed_requests || 0);
+            const terminal = Number(progress.terminal_requests || completed + failed);
             const pending = Number(progress.pending_requests || 0);
             const inuse = Number(progress.inuse_requests || 0);
             const percent = Math.max(0, Math.min(100, Number(progress.progress_percent || 0)));
@@ -1193,19 +1297,19 @@
             const mobileLabel = document.getElementById(`request-progress-mobile-label-${campaignId}`);
 
             if (requestCount) {
-                requestCount.textContent = `${completed}/${total}`;
-                requestCount.title = `Pending: ${pending}, in use: ${inuse}`;
+                requestCount.textContent = failed > 0 ? `${completed}/${total} (${failed} failed)` : `${completed}/${total}`;
+                requestCount.title = `Done: ${terminal}, completed: ${completed}, failed: ${failed}, pending: ${pending}, in use: ${inuse}`;
             }
             [desktopBar, mobileBar].filter(Boolean).forEach((bar) => {
                 bar.style.width = `${percent}%`;
             });
             if (desktopLabel) {
-                desktopLabel.textContent = `${percent}% complete (${completed}/${total})`;
-                desktopLabel.title = `Pending: ${pending}, in use: ${inuse}`;
+                desktopLabel.textContent = failed > 0 ? `${percent}% done (${completed} ok, ${failed} failed / ${total})` : `${percent}% complete (${completed}/${total})`;
+                desktopLabel.title = `Done: ${terminal}, completed: ${completed}, failed: ${failed}, pending: ${pending}, in use: ${inuse}`;
             }
             if (mobileLabel) {
-                mobileLabel.textContent = `${percent}% (${completed}/${total})`;
-                mobileLabel.title = `Pending: ${pending}, in use: ${inuse}`;
+                mobileLabel.textContent = failed > 0 ? `${percent}% (${failed} failed)` : `${percent}% (${completed}/${total})`;
+                mobileLabel.title = `Done: ${terminal}, completed: ${completed}, failed: ${failed}, pending: ${pending}, in use: ${inuse}`;
             }
         }
 
@@ -1803,6 +1907,9 @@
                 confirmDeleteAllCampaigns();
             } else if (event.key === 'Escape' && !document.getElementById('deleteAllCampaignsModal').classList.contains('hidden')) {
                 closeDeleteAllCampaignsModal();
+            }
+            if (event.key === 'Escape' && !document.getElementById('requestFailureModal').classList.contains('hidden')) {
+                closeRequestFailureModal();
             }
         });
 

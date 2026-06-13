@@ -95,6 +95,7 @@ SOURCE_HTTP_DEFAULT_TIMEOUT_SECONDS = 150
 SOURCE_HTTP_MAX_TIMEOUT_SECONDS = 600
 SOURCE_HTTP_DEFAULT_CONCURRENCY = 10
 SOURCE_HTTP_MAX_CONCURRENCY = 100
+SOURCE_HTTP_MAX_STORED_RESPONSE_CHARS = 50000
 SOURCE_CORE_FIELDS = [
     "business_name",
     "address",
@@ -1107,6 +1108,38 @@ def _append_http_source_job_log(job: dict, message: str):
         job["logs"] = job["logs"][-MAX_HTTP_SOURCE_JOB_LOGS:]
 
 
+def _truncate_http_source_value(value: Any, limit: int = SOURCE_HTTP_MAX_STORED_RESPONSE_CHARS) -> str:
+    text = "" if value is None else str(value)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}\n... truncated {len(text) - limit} character(s)"
+
+
+def _http_source_error_message(exc: Exception) -> str:
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, dict):
+        return str(detail.get("message") or detail.get("error") or exc)
+    if detail:
+        return str(detail)
+    return str(exc)
+
+
+def _http_source_error_details(exc: Exception, request_id: int, request_text: str, job: Optional[dict] = None) -> dict:
+    detail = getattr(exc, "detail", None)
+    if isinstance(detail, dict):
+        payload = dict(detail)
+    else:
+        payload = {"message": _http_source_error_message(exc)}
+
+    payload.setdefault("message", _http_source_error_message(exc))
+    payload.setdefault("request_id", request_id)
+    payload.setdefault("request_text", request_text)
+    payload.setdefault("failed_at", _iso(_now_utc()))
+    if job is not None:
+        payload["job_logs"] = list(job.get("logs") or [])[-MAX_HTTP_SOURCE_JOB_LOGS:]
+    return payload
+
+
 def _serialize_http_source_job(job: Optional[dict]) -> dict:
     if not job:
         return {
@@ -1172,18 +1205,25 @@ def _process_http_source_campaign_request(campaign_id: int, source_campaign: dic
                 source,
                 fetch_result["rows"],
             )
-            cursor.execute("UPDATE requests SET status = 'completed' WHERE id = %s AND campaign_id = %s", (request_id, campaign_id))
+            cursor.execute(
+                "UPDATE requests SET status = 'completed', error_details = '{}'::jsonb WHERE id = %s AND campaign_id = %s",
+                (request_id, campaign_id),
+            )
             conn.commit()
         return {
             "request_id": request_id,
             "request_text": request_text,
             "saved_contacts": len(saved_contacts),
         }
-    except Exception:
+    except Exception as exc:
         try:
+            details = _http_source_error_details(exc, request_id, request_text)
             with get_db() as conn:
                 cursor = conn.cursor()
-                cursor.execute("UPDATE requests SET status = 'failed' WHERE id = %s AND campaign_id = %s", (request_id, campaign_id))
+                cursor.execute(
+                    "UPDATE requests SET status = 'failed', error_details = %s WHERE id = %s AND campaign_id = %s",
+                    (Json(details), request_id, campaign_id),
+                )
                 conn.commit()
         except Exception:
             pass
@@ -1232,7 +1272,7 @@ def _run_http_source_campaign_job(campaign_id: int):
                 request_ids = [int(row["id"]) for row in request_rows]
                 placeholders = ",".join(["%s"] * len(request_ids))
                 cursor.execute(
-                    f"UPDATE requests SET status = 'inuse' WHERE campaign_id = %s AND id IN ({placeholders})",
+                    f"UPDATE requests SET status = 'inuse', error_details = '{{}}'::jsonb WHERE campaign_id = %s AND id IN ({placeholders})",
                     tuple([campaign_id] + request_ids),
                 )
                 conn.commit()
@@ -1272,6 +1312,22 @@ def _run_http_source_campaign_job(campaign_id: int):
                             job,
                             f"Failed request #{request_id}: {str(getattr(exc, 'detail', exc))}",
                         )
+                        try:
+                            details = _http_source_error_details(
+                                exc,
+                                request_id,
+                                str(request_row.get("req_text") or "").strip(),
+                                job,
+                            )
+                            with get_db() as conn:
+                                cursor = conn.cursor()
+                                cursor.execute(
+                                    "UPDATE requests SET status = 'failed', error_details = %s WHERE id = %s AND campaign_id = %s",
+                                    (Json(details), request_id, campaign_id),
+                                )
+                                conn.commit()
+                        except Exception:
+                            pass
     except Exception as exc:
         job["status"] = "failed"
         job["latest_error"] = str(getattr(exc, "detail", exc))
@@ -1323,22 +1379,63 @@ def _fetch_http_source_rows(config: dict, variables: dict, request_text: str) ->
             timeout=config["timeout_seconds"],
         )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"HTTP source request failed: {exc}")
+        raise HTTPException(status_code=502, detail={
+            "message": f"HTTP source request failed: {exc}",
+            "request_text": request_text,
+            "rendered_request": rendered_request,
+            "request_url": request_url,
+            "method": config["method"],
+            "query_params": params,
+            "response_status": None,
+            "response_text": "",
+        })
 
     response_text = response.text or ""
+    response_url = getattr(response, "url", request_url)
+    response_elapsed = getattr(response, "elapsed", None)
+    duration_ms = int(response_elapsed.total_seconds() * 1000) if response_elapsed else None
+    response_headers = dict(getattr(response, "headers", {}) or {})
     if response.status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"HTTP source returned {response.status_code}: {response_text[:500]}")
+        raise HTTPException(status_code=502, detail={
+            "message": f"HTTP source returned {response.status_code}",
+            "request_text": request_text,
+            "rendered_request": rendered_request,
+            "request_url": response_url,
+            "method": config["method"],
+            "query_params": params,
+            "response_status": response.status_code,
+            "response_headers": response_headers,
+            "response_text": _truncate_http_source_value(response_text),
+            "duration_ms": duration_ms,
+        })
     try:
         response_payload = response.json()
+        response_json = response_payload
     except Exception:
         response_payload = response_text
+        response_json = None
 
-    rows = _extract_http_source_rows(response_payload, response_text, config)
+    try:
+        rows = _extract_http_source_rows(response_payload, response_text, config)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail={
+            "message": f"HTTP source response parse failed: {_http_source_error_message(exc)}",
+            "request_text": request_text,
+            "rendered_request": rendered_request,
+            "request_url": response_url,
+            "method": config["method"],
+            "query_params": params,
+            "response_status": response.status_code,
+            "response_headers": response_headers,
+            "response_text": _truncate_http_source_value(response_text),
+            "response_json": response_json,
+            "duration_ms": duration_ms,
+        })
     return {
         "rendered_request": rendered_request,
-        "request_url": getattr(response, "url", request_url),
+        "request_url": response_url,
         "rows": rows,
-        "duration_ms": int(getattr(response, "elapsed", None).total_seconds() * 1000) if getattr(response, "elapsed", None) else None,
+        "duration_ms": duration_ms,
     }
 
 
@@ -3261,11 +3358,12 @@ async def get_campaign_details(campaign_id: int, limit: int = 100):
                 r.id,
                 r.req_text,
                 r.status,
+                r.error_details,
                 COUNT(c.id) AS contact_count
             FROM requests r
             LEFT JOIN contacts c ON c.request_id = r.id
             WHERE r.campaign_id = %s
-            GROUP BY r.id, r.req_text, r.status
+            GROUP BY r.id, r.req_text, r.status, r.error_details
             ORDER BY r.id DESC
         """, (campaign_id,))
         requests = [dict(row) for row in cursor.fetchall()]
@@ -3389,6 +3487,7 @@ async def get_dashboard_runtime_status(campaign_ids: str = ""):
                 campaign_id,
                 COUNT(*) AS total_requests,
                 COUNT(*) FILTER (WHERE status = 'completed') AS completed_requests,
+                COUNT(*) FILTER (WHERE status = 'failed') AS failed_requests,
                 COUNT(*) FILTER (WHERE status = 'pending') AS pending_requests,
                 COUNT(*) FILTER (WHERE status = 'inuse') AS inuse_requests,
                 COUNT(*) FILTER (WHERE status = 'reserved') AS reserved_requests
@@ -3400,6 +3499,7 @@ async def get_dashboard_runtime_status(campaign_ids: str = ""):
             int(row["campaign_id"]): {
                 "total_requests": int(row.get("total_requests") or 0),
                 "completed_requests": int(row.get("completed_requests") or 0),
+                "failed_requests": int(row.get("failed_requests") or 0),
                 "pending_requests": int(row.get("pending_requests") or 0),
                 "inuse_requests": int(row.get("inuse_requests") or 0),
                 "reserved_requests": int(row.get("reserved_requests") or 0),
@@ -3505,14 +3605,18 @@ async def get_dashboard_runtime_status(campaign_ids: str = ""):
         request_progress = request_progress_by_campaign.get(campaign_id, {
             "total_requests": 0,
             "completed_requests": 0,
+            "failed_requests": 0,
             "pending_requests": 0,
             "inuse_requests": 0,
             "reserved_requests": 0,
         })
         total_requests = int(request_progress.get("total_requests") or 0)
         completed_requests = int(request_progress.get("completed_requests") or 0)
-        request_progress["unfinished_requests"] = max(0, total_requests - completed_requests)
-        request_progress["progress_percent"] = round(min(100, (completed_requests / total_requests) * 100), 2) if total_requests > 0 else 0
+        failed_requests = int(request_progress.get("failed_requests") or 0)
+        terminal_requests = completed_requests + failed_requests
+        request_progress["terminal_requests"] = terminal_requests
+        request_progress["unfinished_requests"] = max(0, total_requests - terminal_requests)
+        request_progress["progress_percent"] = round(min(100, (terminal_requests / total_requests) * 100), 2) if total_requests > 0 else 0
 
         result[str(campaign_id)] = {
             "pipeline": pipeline,
@@ -4266,6 +4370,7 @@ def _get_campaign_request_progress(cursor, campaign_id: int) -> dict:
         SELECT
             COUNT(*) AS total_requests,
             COUNT(*) FILTER (WHERE status = 'completed') AS completed_requests,
+            COUNT(*) FILTER (WHERE status = 'failed') AS failed_requests,
             COUNT(*) FILTER (WHERE status = 'pending') AS pending_requests,
             COUNT(*) FILTER (WHERE status = 'inuse') AS inuse_requests,
             COUNT(*) FILTER (WHERE status = 'reserved') AS reserved_requests
@@ -4276,14 +4381,17 @@ def _get_campaign_request_progress(cursor, campaign_id: int) -> dict:
     progress = {
         "total_requests": int(row.get("total_requests") or 0),
         "completed_requests": int(row.get("completed_requests") or 0),
+        "failed_requests": int(row.get("failed_requests") or 0),
         "pending_requests": int(row.get("pending_requests") or 0),
         "inuse_requests": int(row.get("inuse_requests") or 0),
         "reserved_requests": int(row.get("reserved_requests") or 0),
     }
     total_requests = progress["total_requests"]
     completed_requests = progress["completed_requests"]
-    progress["unfinished_requests"] = max(0, total_requests - completed_requests)
-    progress["progress_percent"] = round(min(100, (completed_requests / total_requests) * 100), 2) if total_requests > 0 else 0
+    terminal_requests = completed_requests + progress["failed_requests"]
+    progress["terminal_requests"] = terminal_requests
+    progress["unfinished_requests"] = max(0, total_requests - terminal_requests)
+    progress["progress_percent"] = round(min(100, (terminal_requests / total_requests) * 100), 2) if total_requests > 0 else 0
     return progress
 
 

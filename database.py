@@ -46,6 +46,7 @@ def init_db():
                 campaign_id INTEGER,
                 req_text TEXT NOT NULL,
                 status TEXT NOT NULL,
+                error_details JSONB NOT NULL DEFAULT '{}'::jsonb,
                 FOREIGN KEY (campaign_id) REFERENCES search_campaigns(id)
             )
         ''')
@@ -311,6 +312,7 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_run_contacts_campaign_status ON enrichment_run_contacts(campaign_id, status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_run_logs_run_created ON enrichment_run_logs(run_id, created_at DESC)")
         cursor.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS source_data JSONB NOT NULL DEFAULT '{}'::jsonb")
+        cursor.execute("ALTER TABLE requests ADD COLUMN IF NOT EXISTS error_details JSONB NOT NULL DEFAULT '{}'::jsonb")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_requests_campaign_id ON requests(campaign_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_requests_campaign_status ON requests(campaign_id, status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_contacts_campaign_id ON contacts(campaign_id)")

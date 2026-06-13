@@ -603,6 +603,26 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(payload["status"], "completed_with_errors")
         self.assertEqual(payload["failed_requests"], 2)
 
+    def test_http_source_error_details_preserve_server_answer_and_logs(self):
+        exc = self.main.HTTPException(status_code=502, detail={
+            "message": "HTTP source returned 400",
+            "request_url": "http://example.com/api?request=locksmiths",
+            "response_status": 400,
+            "response_text": "{\"ok\":false,\"error\":\"bad query\"}",
+        })
+        details = self.main._http_source_error_details(
+            exc,
+            12,
+            "top locksmiths",
+            {"logs": ["started", "failed"]},
+        )
+
+        self.assertEqual(details["message"], "HTTP source returned 400")
+        self.assertEqual(details["request_id"], 12)
+        self.assertEqual(details["response_status"], 400)
+        self.assertIn("bad query", details["response_text"])
+        self.assertEqual(details["job_logs"], ["started", "failed"])
+
     def test_http_source_request_failure_marks_request_failed(self):
         self.main._fetch_http_source_rows = lambda *_args, **_kwargs: (_ for _ in ()).throw(Exception("bad response"))
         self._patch_db([
