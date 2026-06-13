@@ -1113,6 +1113,7 @@ def _serialize_http_source_job(job: Optional[dict]) -> dict:
             "status": "idle",
             "campaign_id": None,
             "processed_requests": 0,
+            "failed_requests": 0,
             "saved_contacts": 0,
             "latest_error": "",
             "logs": [],
@@ -1121,6 +1122,7 @@ def _serialize_http_source_job(job: Optional[dict]) -> dict:
         "status": job.get("status") or "idle",
         "campaign_id": job.get("campaign_id"),
         "processed_requests": int(job.get("processed_requests") or 0),
+        "failed_requests": int(job.get("failed_requests") or 0),
         "saved_contacts": int(job.get("saved_contacts") or 0),
         "latest_error": job.get("latest_error") or "",
         "started_at": job.get("started_at"),
@@ -1181,7 +1183,7 @@ def _process_http_source_campaign_request(campaign_id: int, source_campaign: dic
         try:
             with get_db() as conn:
                 cursor = conn.cursor()
-                cursor.execute("UPDATE requests SET status = 'pending' WHERE id = %s AND campaign_id = %s", (request_id, campaign_id))
+                cursor.execute("UPDATE requests SET status = 'failed' WHERE id = %s AND campaign_id = %s", (request_id, campaign_id))
                 conn.commit()
         except Exception:
             pass
@@ -1216,9 +1218,15 @@ def _run_http_source_campaign_job(campaign_id: int):
                 if not request_rows:
                     cursor.execute("UPDATE search_campaigns SET status = 'completed' WHERE id = %s", (campaign_id,))
                     conn.commit()
-                    job["status"] = "completed"
+                    job["status"] = "completed_with_errors" if int(job.get("failed_requests") or 0) else "completed"
                     job["completed_at"] = _iso(_now_utc())
-                    _append_http_source_job_log(job, "No pending requests remain; campaign completed")
+                    if int(job.get("failed_requests") or 0):
+                        _append_http_source_job_log(
+                            job,
+                            f"No pending requests remain; campaign completed with {job['failed_requests']} failed request(s)",
+                        )
+                    else:
+                        _append_http_source_job_log(job, "No pending requests remain; campaign completed")
                     return
 
                 request_ids = [int(row["id"]) for row in request_rows]
@@ -1237,24 +1245,33 @@ def _run_http_source_campaign_job(campaign_id: int):
             }
             _append_http_source_job_log(job, f"Running {len(request_rows)} request(s) with concurrency {concurrency}")
             with ThreadPoolExecutor(max_workers=concurrency) as executor:
-                futures = [
-                    executor.submit(
+                future_to_request = {}
+                for request_row in request_rows:
+                    future = executor.submit(
                         _process_http_source_campaign_request,
                         campaign_id,
                         source_campaign,
                         source,
                         request_row,
                     )
-                    for request_row in request_rows
-                ]
-                for future in as_completed(futures):
-                    result = future.result()
-                    job["processed_requests"] = int(job.get("processed_requests") or 0) + 1
-                    job["saved_contacts"] = int(job.get("saved_contacts") or 0) + int(result.get("saved_contacts") or 0)
-                    _append_http_source_job_log(
-                        job,
-                        f"Completed request #{result['request_id']}; saved {result['saved_contacts']} contacts",
-                    )
+                    future_to_request[future] = request_row
+                for future in as_completed(future_to_request):
+                    request_row = future_to_request[future]
+                    request_id = int(request_row["id"])
+                    try:
+                        result = future.result()
+                        job["processed_requests"] = int(job.get("processed_requests") or 0) + 1
+                        job["saved_contacts"] = int(job.get("saved_contacts") or 0) + int(result.get("saved_contacts") or 0)
+                        _append_http_source_job_log(
+                            job,
+                            f"Completed request #{result['request_id']}; saved {result['saved_contacts']} contacts",
+                        )
+                    except Exception as exc:
+                        job["failed_requests"] = int(job.get("failed_requests") or 0) + 1
+                        _append_http_source_job_log(
+                            job,
+                            f"Failed request #{request_id}: {str(getattr(exc, 'detail', exc))}",
+                        )
     except Exception as exc:
         job["status"] = "failed"
         job["latest_error"] = str(getattr(exc, "detail", exc))
@@ -1278,6 +1295,7 @@ def _start_http_source_campaign_job(campaign_id: int) -> bool:
             "campaign_id": campaign_id,
             "status": "running",
             "processed_requests": 0,
+            "failed_requests": 0,
             "saved_contacts": 0,
             "latest_error": "",
             "started_at": _iso(_now_utc()),

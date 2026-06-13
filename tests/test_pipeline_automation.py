@@ -587,6 +587,36 @@ class PipelineEndpointTests(unittest.TestCase):
             "http://73.72.215.253:4865/api/run-sync?scriptName=ai_overview.js&request=top%2010%20locksmiths%20in%20chicago%2C%20answer%20in%20json%20like%3A%20%7Bcompany%2C%20domain%7D",
         )
 
+    def test_http_source_job_serializer_includes_failed_requests(self):
+        idle = self.main._serialize_http_source_job(None)
+        self.assertEqual(idle["failed_requests"], 0)
+
+        payload = self.main._serialize_http_source_job({
+            "status": "completed_with_errors",
+            "campaign_id": 10,
+            "processed_requests": 6,
+            "failed_requests": 2,
+            "saved_contacts": 30,
+            "logs": [],
+        })
+
+        self.assertEqual(payload["status"], "completed_with_errors")
+        self.assertEqual(payload["failed_requests"], 2)
+
+    def test_http_source_request_failure_marks_request_failed(self):
+        self.main._fetch_http_source_rows = lambda *_args, **_kwargs: (_ for _ in ()).throw(Exception("bad response"))
+        self._patch_db([
+            {"match": "update requests set status = 'failed'"},
+        ])
+
+        with self.assertRaises(Exception):
+            self.main._process_http_source_campaign_request(
+                7,
+                {"config": {"request_template": "{{query}}"}},
+                {"id": 3, "name": "HTTP", "source_type": "http_api", "config": {}},
+                {"id": 12, "req_text": "bad query"},
+            )
+
     def test_stage_complete_advances_to_next_stage(self):
         self._patch_db([
             {
