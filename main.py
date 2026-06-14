@@ -2205,6 +2205,8 @@ init_db()
 verification_jobs = {}
 verification_jobs_lock = threading.Lock()
 MAX_VERIFICATION_LOGS = 200
+DOMAIN_CHECKER_DEFAULT_CONCURRENCY = 10
+DOMAIN_CHECKER_MAX_CONCURRENCY = 100
 http_source_campaign_jobs: Dict[int, dict] = {}
 http_source_campaign_jobs_lock = threading.Lock()
 MAX_HTTP_SOURCE_JOB_LOGS = 200
@@ -2231,6 +2233,7 @@ def _serialize_verification_job(job: dict):
         "failed_emails": job["failed_emails"],
         "current_email": job["current_email"],
         "message": job["message"],
+        "concurrency": job.get("concurrency"),
         "cancel_requested": job.get("cancel_requested", False),
         "skip_public_providers": job.get("skip_public_providers", False),
         "started_at": job["started_at"],
@@ -2241,6 +2244,15 @@ def _serialize_verification_job(job: dict):
 
 def _is_domain_checker_template(template: dict) -> bool:
     return str((template or {}).get("service") or "").strip().lower() == "dns_ssl_checker"
+
+
+def _normalize_domain_checker_api_config(api_config: Optional[dict]) -> dict:
+    api_config = dict(api_config or {})
+    timeout_seconds = max(1, min(_safe_int(api_config.get("timeout_seconds"), 8), 60))
+    concurrency = max(1, min(_safe_int(api_config.get("concurrency"), DOMAIN_CHECKER_DEFAULT_CONCURRENCY), DOMAIN_CHECKER_MAX_CONCURRENCY))
+    api_config["timeout_seconds"] = timeout_seconds
+    api_config["concurrency"] = concurrency
+    return api_config
 
 
 def _mark_job_cancelled(job: dict):
@@ -2255,6 +2267,11 @@ def _mark_job_cancelled(job: dict):
 
 def _run_domain_checker_job(job_id: str, template: dict):
     verification_service = EmailVerificationService()
+    api_config = _normalize_domain_checker_api_config(template.get("api_config"))
+    concurrency = api_config["concurrency"]
+    template = dict(template)
+    template["api_config"] = api_config
+
     with verification_jobs_lock:
         initial_job = verification_jobs.get(job_id)
         if not initial_job:
@@ -2283,37 +2300,46 @@ def _run_domain_checker_job(job_id: str, template: dict):
         if not job:
             return
         job["total_emails"] = len(contacts)
+        job["concurrency"] = concurrency
         if not contacts:
             job["status"] = "completed"
             job["message"] = "No unchecked domains found"
             job["completed_at"] = datetime.now().isoformat()
             _append_verification_log(job, "No unchecked domains found")
             return
+        _append_verification_log(job, f"Checking domains with concurrency {concurrency}")
 
-    cancelled = False
-    for index, contact in enumerate(contacts):
+    def process_contact(contact: dict) -> dict:
         contact_id = contact["id"]
         domain = str(contact.get("domain") or "").strip()
 
         with verification_jobs_lock:
             job = verification_jobs.get(job_id)
-            if not job:
-                return
-            if job.get("cancel_requested"):
-                _mark_job_cancelled(job)
-                cancelled = True
-                break
+            if not job or job.get("cancel_requested"):
+                return {"cancelled": True, "contact_id": contact_id, "domain": domain}
             job["current_email"] = domain
             _append_verification_log(job, f"Checking domain: {domain}")
 
-        result = verification_service.verify_domain(domain, template)
-        mapped_status = str(result.get("mapped_status") or "Unknown")
+        try:
+            result = verification_service.verify_domain(domain, template)
+        except Exception as exc:
+            result = {
+                "mapped_status": "Check Failed",
+                "dns_ok": False,
+                "http": {},
+                "https": {},
+                "ssl": {"valid": False, "status": "unknown", "error": str(exc)},
+                "error": str(exc),
+            }
+
+        mapped_status = str(result.get("mapped_status") or "Check Failed")
         http = result.get("http") if isinstance(result.get("http"), dict) else {}
         https = result.get("https") if isinstance(result.get("https"), dict) else {}
         ssl_result = result.get("ssl") if isinstance(result.get("ssl"), dict) else {}
+        dns_status = "resolved" if result.get("dns_ok") else "not_resolved"
         http_status = str(http.get("status_code") or ("reachable" if http.get("reachable") else "unreachable"))
         https_status = str(https.get("status_code") or ("reachable" if https.get("reachable") else "unreachable"))
-        ssl_status = "valid" if ssl_result.get("valid") else "problem"
+        ssl_status = "valid" if ssl_result.get("valid") else str(ssl_result.get("status") or "issue")
         error_text = str(result.get("error") or http.get("error") or https.get("error") or ssl_result.get("error") or "")
 
         with get_db() as conn:
@@ -2321,6 +2347,7 @@ def _run_domain_checker_job(job_id: str, template: dict):
             cursor.execute("""
                 UPDATE contacts
                 SET domain_status = %s,
+                    domain_dns_status = %s,
                     domain_http_status = %s,
                     domain_https_status = %s,
                     domain_ssl_status = %s,
@@ -2329,6 +2356,7 @@ def _run_domain_checker_job(job_id: str, template: dict):
                 WHERE id = %s AND campaign_id = %s
             """, (
                 mapped_status,
+                dns_status,
                 http_status,
                 https_status,
                 ssl_status,
@@ -2338,29 +2366,26 @@ def _run_domain_checker_job(job_id: str, template: dict):
             ))
             conn.commit()
 
-        with verification_jobs_lock:
-            job = verification_jobs.get(job_id)
-            if not job:
-                return
-            job["processed_emails"] += 1
-            job["message"] = f"Checked {job['processed_emails']} of {job['total_emails']} domains"
-            status_lower = mapped_status.lower()
-            if status_lower == "domain ok":
-                job["verified_emails"] += 1
-                _append_verification_log(job, f"✓ {domain} - {mapped_status}")
-            elif status_lower in {"ssl problem", "http only", "dns failed", "domain down"}:
-                job["invalid_emails"] += 1
-                _append_verification_log(job, f"✗ {domain} - {mapped_status}{f': {error_text}' if error_text else ''}")
-            else:
-                job["failed_emails"] += 1
-                _append_verification_log(job, f"! {domain} - {mapped_status}{f': {error_text}' if error_text else ''}")
+        return {
+            "cancelled": False,
+            "domain": domain,
+            "mapped_status": mapped_status,
+            "error_text": error_text,
+        }
 
-        if index < len(contacts) - 1:
-            remaining_delay = max(0.0, float(job["delay"]))
-            while remaining_delay > 0:
-                sleep_step = min(0.2, remaining_delay)
-                time.sleep(sleep_step)
-                remaining_delay -= sleep_step
+    cancelled = False
+    next_index = 0
+    pending = {}
+    executor = ThreadPoolExecutor(max_workers=concurrency)
+    try:
+        while next_index < len(contacts) and len(pending) < concurrency:
+            future = executor.submit(process_contact, contacts[next_index])
+            pending[future] = contacts[next_index]
+            next_index += 1
+
+        while pending:
+            done, _ = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
+            if not done:
                 with verification_jobs_lock:
                     job = verification_jobs.get(job_id)
                     if not job:
@@ -2368,9 +2393,72 @@ def _run_domain_checker_job(job_id: str, template: dict):
                     if job.get("cancel_requested"):
                         _mark_job_cancelled(job)
                         cancelled = True
-                        break
+                if cancelled:
+                    for future in pending:
+                        future.cancel()
+                    break
+                continue
+
+            for future in done:
+                pending.pop(future, None)
+                try:
+                    outcome = future.result()
+                except Exception as exc:
+                    outcome = {
+                        "cancelled": False,
+                        "domain": "unknown",
+                        "mapped_status": "Check Failed",
+                        "error_text": str(exc),
+                    }
+
+                if outcome.get("cancelled"):
+                    cancelled = True
+                    continue
+
+                domain = outcome.get("domain") or "-"
+                mapped_status = str(outcome.get("mapped_status") or "Check Failed")
+                error_text = str(outcome.get("error_text") or "")
+
+                with verification_jobs_lock:
+                    job = verification_jobs.get(job_id)
+                    if not job:
+                        return
+                    job["processed_emails"] += 1
+                    job["message"] = f"Checked {job['processed_emails']} of {job['total_emails']} domains"
+                    status_lower = mapped_status.lower()
+                    if status_lower == "domain ok":
+                        job["verified_emails"] += 1
+                        _append_verification_log(job, f"✓ {domain} - {mapped_status}")
+                    elif status_lower in {"ssl issue", "ssl expired", "http only", "dns failed", "domain down", "expired domain"}:
+                        job["invalid_emails"] += 1
+                        _append_verification_log(job, f"✗ {domain} - {mapped_status}{f': {error_text}' if error_text else ''}")
+                    else:
+                        job["failed_emails"] += 1
+                        _append_verification_log(job, f"! {domain} - {mapped_status}{f': {error_text}' if error_text else ''}")
+
+                    if job.get("cancel_requested"):
+                        _mark_job_cancelled(job)
+                        cancelled = True
+
+                while not cancelled and next_index < len(contacts) and len(pending) < concurrency:
+                    future = executor.submit(process_contact, contacts[next_index])
+                    pending[future] = contacts[next_index]
+                    next_index += 1
+
             if cancelled:
+                for future in pending:
+                    future.cancel()
                 break
+    finally:
+        executor.shutdown(wait=True, cancel_futures=cancelled)
+
+    if cancelled:
+        with verification_jobs_lock:
+            job = verification_jobs.get(job_id)
+            if not job:
+                return
+            if job.get("status") != "cancelled":
+                _mark_job_cancelled(job)
 
     with verification_jobs_lock:
         job = verification_jobs.get(job_id)
@@ -3559,6 +3647,7 @@ async def get_campaign_details(campaign_id: int, limit: int = 100):
                 status,
                 email_status,
                 domain_status,
+                domain_dns_status,
                 domain_http_status,
                 domain_https_status,
                 domain_ssl_status,
@@ -7427,14 +7516,64 @@ async def create_verification_template(request: Request):
         if field not in data:
             raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
 
+    service = str(data["service"] or "").strip()
+    api_config = data["api_config"] if isinstance(data.get("api_config"), dict) else {}
+    status_mapping = data["status_mapping"] if isinstance(data.get("status_mapping"), dict) else {}
+    if service == "dns_ssl_checker":
+        api_config = _normalize_domain_checker_api_config(api_config)
+        status_mapping = {
+            "domain_ok": "Domain OK",
+            "expired_domain": "Expired Domain",
+            "ssl_expired": "SSL Expired",
+            "ssl_issue": "SSL Issue",
+            "http_only": "HTTP Only",
+            "domain_down": "Domain Down",
+            "dns_failed": "Expired Domain",
+        }
+
     template_id = EmailVerificationManager.create_template(
         data['name'],
-        data['service'],
-        data['api_config'],
-        data['status_mapping']
+        service,
+        api_config,
+        status_mapping
     )
 
     return {"status": "Template created", "template_id": template_id}
+
+@app.put("/api/email-verification/templates/{template_id}")
+async def update_verification_template(template_id: int, request: Request):
+    existing = EmailVerificationManager.get_template(template_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    data = await request.json()
+    name = str(data.get("name") or existing.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Template name is required")
+
+    service = str(data.get("service") or existing.get("service") or "myemailverifier").strip() or "myemailverifier"
+    api_config = data.get("api_config") if isinstance(data.get("api_config"), dict) else existing.get("api_config", {})
+    status_mapping = data.get("status_mapping") if isinstance(data.get("status_mapping"), dict) else existing.get("status_mapping", {})
+
+    if service == "dns_ssl_checker":
+        api_config = _normalize_domain_checker_api_config(api_config)
+        status_mapping = {
+            "domain_ok": "Domain OK",
+            "expired_domain": "Expired Domain",
+            "ssl_expired": "SSL Expired",
+            "ssl_issue": "SSL Issue",
+            "http_only": "HTTP Only",
+            "domain_down": "Domain Down",
+            "dns_failed": "Expired Domain",
+        }
+
+    EmailVerificationManager.update_template(
+        template_id,
+        name,
+        api_config,
+        status_mapping,
+    )
+    return {"status": "Template updated", "template_id": template_id}
 
 @app.delete("/api/email-verification/templates/{template_id}")
 async def delete_verification_template(template_id: int):
@@ -8510,6 +8649,7 @@ async def export_campaign_csv(campaign_id: int, fields: str = None):
             'yelp': 'yelp',
             'email_status': 'email_status',
             'domain_status': 'domain_status',
+            'domain_dns_status': 'domain_dns_status',
             'domain_http_status': 'domain_http_status',
             'domain_https_status': 'domain_https_status',
             'domain_ssl_status': 'domain_ssl_status',
@@ -8695,14 +8835,17 @@ async def create_default_templates():
                 "DNS / SSL Domain Checker",
                 "dns_ssl_checker",
                 {
-                    "timeout_seconds": 8
+                    "timeout_seconds": 8,
+                    "concurrency": DOMAIN_CHECKER_DEFAULT_CONCURRENCY
                 },
                 {
                     "domain_ok": "Domain OK",
-                    "ssl_problem": "SSL Problem",
+                    "expired_domain": "Expired Domain",
+                    "ssl_expired": "SSL Expired",
+                    "ssl_issue": "SSL Issue",
                     "http_only": "HTTP Only",
                     "domain_down": "Domain Down",
-                    "dns_failed": "DNS Failed"
+                    "dns_failed": "Expired Domain"
                 }
             )
 

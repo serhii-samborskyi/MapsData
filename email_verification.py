@@ -181,10 +181,20 @@ class DomainDnsSslIntegration:
                         "issuer": cert.get("issuer"),
                         "not_after": cert.get("notAfter"),
                     }
+        except ssl.SSLCertVerificationError as exc:
+            message = str(exc)
+            status = "expired" if "expired" in message.lower() else "issue"
+            return {
+                "valid": False,
+                "status": status,
+                "error": message,
+                "verify_code": getattr(exc, "verify_code", None),
+                "verify_message": getattr(exc, "verify_message", ""),
+            }
         except ssl.SSLError as exc:
-            return {"valid": False, "error": str(exc)}
+            return {"valid": False, "status": "issue", "error": str(exc)}
         except Exception as exc:
-            return {"valid": False, "error": str(exc)}
+            return {"valid": False, "status": "unreachable", "error": str(exc)}
 
     def check_domain(self, domain: str) -> Dict:
         clean_domain = self._clean_domain(domain)
@@ -208,15 +218,17 @@ class DomainDnsSslIntegration:
 
         http = self._request_url("http", clean_domain) if dns_ok else {"reachable": False, "error": dns_error}
         https = self._request_url("https", clean_domain) if dns_ok else {"reachable": False, "error": dns_error}
-        cert = self._check_certificate(clean_domain) if dns_ok else {"valid": False, "error": dns_error}
+        cert = self._check_certificate(clean_domain) if dns_ok else {"valid": False, "status": "not_checked", "error": dns_error}
 
         ssl_problem = bool(dns_ok and not cert.get("valid") and (http.get("reachable") or "ssl" in str(https.get("error", "")).lower()))
         if not dns_ok:
-            mapped_status = "DNS Failed"
+            mapped_status = "Expired Domain"
         elif https.get("reachable") and cert.get("valid"):
             mapped_status = "Domain OK"
+        elif cert.get("status") == "expired":
+            mapped_status = "SSL Expired"
         elif ssl_problem:
-            mapped_status = "SSL Problem"
+            mapped_status = "SSL Issue"
         elif http.get("reachable"):
             mapped_status = "HTTP Only"
         else:

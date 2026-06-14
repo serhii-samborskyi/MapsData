@@ -1203,6 +1203,20 @@ class PipelineUnitLogicTests(unittest.TestCase):
         self.assertFalse(self.main._is_domain_checker_template({"service": "myemailverifier"}))
         self.assertFalse(self.main._is_domain_checker_template(None))
 
+    def test_domain_checker_api_config_normalizes_concurrency(self):
+        self.assertEqual(
+            self.main._normalize_domain_checker_api_config({})["concurrency"],
+            self.main.DOMAIN_CHECKER_DEFAULT_CONCURRENCY,
+        )
+        self.assertEqual(
+            self.main._normalize_domain_checker_api_config({"concurrency": 0})["concurrency"],
+            1,
+        )
+        self.assertEqual(
+            self.main._normalize_domain_checker_api_config({"concurrency": 999})["concurrency"],
+            self.main.DOMAIN_CHECKER_MAX_CONCURRENCY,
+        )
+
     def test_verification_job_serialization_includes_template_service(self):
         payload = self.main._serialize_verification_job({
             "job_id": "job-1",

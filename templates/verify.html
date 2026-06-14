@@ -175,7 +175,7 @@
     <div id="createTemplateModal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
         <div class="flex items-center justify-center min-h-screen">
             <div class="app-card p-6 w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
-                <h3 class="text-lg font-semibold mb-4">Create Verification Template</h3>
+                <h3 id="templateModalTitle" class="text-lg font-semibold mb-4">Create Verification Template</h3>
                 <form id="createTemplateForm">
                     <div class="mb-4">
                         <label class="block text-sm font-medium mb-2">Template Name</label>
@@ -196,6 +196,8 @@
                     <div id="domainCheckerConfig" class="mb-4 hidden">
                         <label class="block text-sm font-medium mb-2">Timeout Seconds</label>
                         <input type="number" id="domainTimeoutSeconds" min="1" max="60" value="8" class="w-full p-2 border border-gray-300 rounded-lg">
+                        <label class="block text-sm font-medium mb-2 mt-3">Requests at the Same Time</label>
+                        <input type="number" id="domainConcurrency" min="1" max="100" value="10" class="w-full p-2 border border-gray-300 rounded-lg">
                         <div class="text-xs text-gray-500 mt-1">Checks DNS, HTTP reachability, HTTPS reachability, and TLS certificate validity.</div>
                     </div>
                     <div id="statusMappingWrap" class="mb-4">
@@ -252,7 +254,7 @@
                         <button type="button" onclick="closeCreateTemplateModal()" class="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
                             Cancel
                         </button>
-                        <button type="submit" class="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">
+                        <button id="templateSubmitBtn" type="submit" class="flex-1 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">
                             Create
                         </button>
                     </div>
@@ -266,6 +268,7 @@
         let selectedTemplate = null;
         let currentVerificationJobId = null;
         let verificationPollingTimer = null;
+        let editingTemplateId = null;
 
         function normalizeEmailStatus(status) {
             return String(status || '')
@@ -407,7 +410,10 @@
                                 <p class="text-sm text-gray-600">${template.service.toUpperCase()}</p>
                             </div>
                             <div class="flex items-center gap-2">
-                                <button onclick="deleteTemplate(${template.id})" class="text-red-600 hover:text-red-800 text-sm px-2 py-1 border border-red-300 rounded">
+                                <button type="button" class="edit-template-btn text-blue-600 hover:text-blue-800 text-sm px-2 py-1 border border-blue-300 rounded">
+                                    Edit
+                                </button>
+                                <button type="button" class="delete-template-btn text-red-600 hover:text-red-800 text-sm px-2 py-1 border border-red-300 rounded">
                                     Delete
                                 </button>
                                 <div class="text-sm text-gray-500">
@@ -416,6 +422,15 @@
                             </div>
                         </div>
                     `;
+
+                    templateDiv.querySelector('.edit-template-btn').addEventListener('click', (event) => {
+                        event.stopPropagation();
+                        openEditTemplateModal(template.id);
+                    });
+                    templateDiv.querySelector('.delete-template-btn').addEventListener('click', (event) => {
+                        event.stopPropagation();
+                        deleteTemplate(template.id);
+                    });
 
                     container.appendChild(templateDiv);
                 });
@@ -492,13 +507,49 @@
         }
 
         function openCreateTemplateModal() {
+            editingTemplateId = null;
+            document.getElementById('templateModalTitle').textContent = 'Create Verification Template';
+            document.getElementById('templateSubmitBtn').textContent = 'Create';
+            document.getElementById('createTemplateForm').reset();
             document.getElementById('createTemplateModal').classList.remove('hidden');
             syncTemplateServiceFields();
+        }
+
+        async function openEditTemplateModal(templateId) {
+            try {
+                const response = await fetch(`/api/email-verification/templates/${templateId}`);
+                const template = await response.json();
+                if (!response.ok) {
+                    throw new Error(template.detail || 'Unable to load template');
+                }
+
+                editingTemplateId = templateId;
+                document.getElementById('templateModalTitle').textContent = 'Edit Verification Template';
+                document.getElementById('templateSubmitBtn').textContent = 'Save';
+                document.getElementById('templateName').value = template.name || '';
+                document.getElementById('templateService').value = template.service || 'myemailverifier';
+                document.getElementById('templateApiKey').value = template.api_config?.api_key || '';
+                document.getElementById('domainTimeoutSeconds').value = template.api_config?.timeout_seconds || 8;
+                document.getElementById('domainConcurrency').value = template.api_config?.concurrency || 10;
+                document.querySelectorAll('[data-api-status]').forEach(select => {
+                    const apiStatus = select.getAttribute('data-api-status');
+                    if (template.status_mapping && template.status_mapping[apiStatus]) {
+                        select.value = template.status_mapping[apiStatus];
+                    }
+                });
+                document.getElementById('createTemplateModal').classList.remove('hidden');
+                syncTemplateServiceFields();
+            } catch (error) {
+                alert('Error loading template: ' + error.message);
+            }
         }
 
         function closeCreateTemplateModal() {
             document.getElementById('createTemplateModal').classList.add('hidden');
             document.getElementById('createTemplateForm').reset();
+            editingTemplateId = null;
+            document.getElementById('templateModalTitle').textContent = 'Create Verification Template';
+            document.getElementById('templateSubmitBtn').textContent = 'Create';
             syncTemplateServiceFields();
         }
 
@@ -755,8 +806,9 @@
             });
 
             try {
-                const response = await fetch('/api/email-verification/templates', {
-                    method: 'POST',
+                const wasEditing = Boolean(editingTemplateId);
+                const response = await fetch(wasEditing ? `/api/email-verification/templates/${editingTemplateId}` : '/api/email-verification/templates', {
+                    method: wasEditing ? 'PUT' : 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
@@ -764,16 +816,19 @@
                         name: name,
                         service: service,
                         api_config: isDomainChecker ? {
-                            timeout_seconds: Number(document.getElementById('domainTimeoutSeconds').value || 8)
+                            timeout_seconds: Number(document.getElementById('domainTimeoutSeconds').value || 8),
+                            concurrency: Number(document.getElementById('domainConcurrency').value || 10)
                         } : {
                             api_key: apiKey
                         },
                         status_mapping: isDomainChecker ? {
                             domain_ok: 'Domain OK',
-                            ssl_problem: 'SSL Problem',
+                            expired_domain: 'Expired Domain',
+                            ssl_expired: 'SSL Expired',
+                            ssl_issue: 'SSL Issue',
                             http_only: 'HTTP Only',
                             domain_down: 'Domain Down',
-                            dns_failed: 'DNS Failed'
+                            dns_failed: 'Expired Domain'
                         } : statusMapping
                     })
                 });
@@ -781,7 +836,7 @@
                 if (response.ok) {
                     closeCreateTemplateModal();
                     await loadVerificationTemplates();
-                    alert('Template created successfully!');
+                    alert(wasEditing ? 'Template updated successfully!' : 'Template created successfully!');
                 } else {
                     const error = await response.json();
                     alert('Error creating template: ' + error.detail);
