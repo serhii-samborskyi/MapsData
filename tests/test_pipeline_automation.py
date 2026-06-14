@@ -1136,6 +1136,50 @@ class PipelineUnitLogicTests(unittest.TestCase):
         self.assertEqual(calls[1]["json"], {"fb_post_text": "hello"})
         self.assertEqual(calls[1]["headers"]["Content-Type"], "application/json")
 
+    def test_enrichment_post_sends_selected_output_fields(self):
+        calls = []
+
+        class Response:
+            status_code = 200
+            text = "{}"
+
+            def json(self):
+                return {"ok": True}
+
+        def fake_post(_url, headers=None, json=None, timeout=None):
+            calls.append({"headers": headers, "json": json, "timeout": timeout})
+            return Response()
+
+        original_post = self.main.requests.post
+        self.main.requests.post = fake_post
+        try:
+            response, encoding, request_body = self.main._post_enrichment_request(
+                "https://example.test/enrich",
+                {"Content-Type": "application/json", "x-api-key": "key"},
+                {"company": "Acme"},
+                15,
+                ["owner_name", "top_service"],
+            )
+        finally:
+            self.main.requests.post = original_post
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(encoding, "json_input")
+        self.assertEqual(request_body, {
+            "input": {"company": "Acme"},
+            "enrichment_fields": ["owner_name", "top_service"],
+        })
+        self.assertEqual(calls[0]["json"], request_body)
+
+    def test_selected_enrichment_fields_use_output_mapping_keys(self):
+        selected = self.main._selected_enrichment_fields({
+            "owner_name": "firstname",
+            "top_service": "custom_2",
+            "": "custom_3",
+            "owner_name ": "custom_4",
+        })
+        self.assertEqual(selected, ["owner_name", "top_service"])
+
     def test_enrichment_payload_uses_city_fallback_from_request_map(self):
         contacts = [{"id": 1, "business_name": "Acme", "city": "", "state": "WI", "request_id": 1001, "address": ""}]
         self.main._apply_city_fallback_for_export(contacts, {1001: "Mondovi"})
