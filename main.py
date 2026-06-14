@@ -903,11 +903,25 @@ def _find_first_json_array_in_text(value: Any) -> Optional[list]:
                         try:
                             parsed = json.loads(snippet)
                         except Exception:
-                            break
+                            parsed = _parse_google_ai_json_array_with_cleanup(snippet)
+                            if parsed is None:
+                                break
                         if isinstance(parsed, list):
                             return parsed
                         break
     return None
+
+
+def _parse_google_ai_json_array_with_cleanup(snippet: str) -> Optional[list]:
+    # Google AI answers sometimes inject this UI warning into copied JSON arrays.
+    cleaned = re.sub(r"\s*Use code with caution(?:\.json|\.|json)?\s*", "", str(snippet or ""), flags=re.IGNORECASE)
+    if cleaned == snippet:
+        return None
+    try:
+        parsed = json.loads(cleaned)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, list) else None
 
 
 def _iter_nested_text_values(value: Any):

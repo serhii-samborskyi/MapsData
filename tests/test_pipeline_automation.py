@@ -574,6 +574,26 @@ class PipelineEndpointTests(unittest.TestCase):
 
         self.assertEqual(rows, [{"company": "A"}])
 
+    def test_http_source_extracts_google_ai_array_with_code_warning_artifacts(self):
+        payload = {
+            "ok": True,
+            "result": {
+                "ai_answer": (
+                    "json["
+                    "{\"company\":\"MaxComfort HVAC\",\"domain\":\"Use code with caution.jsonmaxcomforthvac.comUse code with caution.json\"},"
+                    "{\"company\":\"Precision Air Tech\",\"domain\":\"precisionairil.com\", Use code with caution. "
+                    "\"address\":\"315 S Bothwell St\",\"email\":\"ryan@precisionairil.com\"}"
+                    "] trailing Google UI text"
+                )
+            },
+        }
+
+        rows = self.main._extract_http_source_rows(payload, "", {"response_path": "result.ai_answer"})
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["domain"], "maxcomforthvac.com")
+        self.assertEqual(rows[1]["address"], "315 S Bothwell St")
+
     def test_http_source_url_template_injects_encoded_query(self):
         rendered = self.main._render_http_source_url_template(
             "http://73.72.215.253:4865/api/run-sync?scriptName=ai_overview.js&request={query}",
