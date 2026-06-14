@@ -2222,6 +2222,7 @@ def _serialize_verification_job(job: dict):
         "job_id": job["job_id"],
         "campaign_id": job["campaign_id"],
         "template_id": job["template_id"],
+        "template_service": job.get("template_service", "myemailverifier"),
         "status": job["status"],
         "total_emails": job["total_emails"],
         "processed_emails": job["processed_emails"],
@@ -2238,6 +2239,10 @@ def _serialize_verification_job(job: dict):
     }
 
 
+def _is_domain_checker_template(template: dict) -> bool:
+    return str((template or {}).get("service") or "").strip().lower() == "dns_ssl_checker"
+
+
 def _mark_job_cancelled(job: dict):
     if job.get("status") == "cancelled":
         return
@@ -2246,6 +2251,159 @@ def _mark_job_cancelled(job: dict):
     job["current_email"] = "-"
     job["completed_at"] = datetime.now().isoformat()
     _append_verification_log(job, "Verification stopped by user")
+
+
+def _run_domain_checker_job(job_id: str, template: dict):
+    verification_service = EmailVerificationService()
+    with verification_jobs_lock:
+        initial_job = verification_jobs.get(job_id)
+        if not initial_job:
+            return
+        campaign_id = initial_job["campaign_id"]
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, domain
+            FROM contacts
+            WHERE campaign_id = %s
+              AND domain IS NOT NULL
+              AND btrim(domain) != ''
+              AND (
+                    domain_status IS NULL
+                 OR btrim(domain_status) = ''
+                 OR domain_status = 'unchecked'
+              )
+            ORDER BY id
+        """, (campaign_id,))
+        contacts = cursor.fetchall()
+
+    with verification_jobs_lock:
+        job = verification_jobs.get(job_id)
+        if not job:
+            return
+        job["total_emails"] = len(contacts)
+        if not contacts:
+            job["status"] = "completed"
+            job["message"] = "No unchecked domains found"
+            job["completed_at"] = datetime.now().isoformat()
+            _append_verification_log(job, "No unchecked domains found")
+            return
+
+    cancelled = False
+    for index, contact in enumerate(contacts):
+        contact_id = contact["id"]
+        domain = str(contact.get("domain") or "").strip()
+
+        with verification_jobs_lock:
+            job = verification_jobs.get(job_id)
+            if not job:
+                return
+            if job.get("cancel_requested"):
+                _mark_job_cancelled(job)
+                cancelled = True
+                break
+            job["current_email"] = domain
+            _append_verification_log(job, f"Checking domain: {domain}")
+
+        result = verification_service.verify_domain(domain, template)
+        mapped_status = str(result.get("mapped_status") or "Unknown")
+        http = result.get("http") if isinstance(result.get("http"), dict) else {}
+        https = result.get("https") if isinstance(result.get("https"), dict) else {}
+        ssl_result = result.get("ssl") if isinstance(result.get("ssl"), dict) else {}
+        http_status = str(http.get("status_code") or ("reachable" if http.get("reachable") else "unreachable"))
+        https_status = str(https.get("status_code") or ("reachable" if https.get("reachable") else "unreachable"))
+        ssl_status = "valid" if ssl_result.get("valid") else "problem"
+        error_text = str(result.get("error") or http.get("error") or https.get("error") or ssl_result.get("error") or "")
+
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE contacts
+                SET domain_status = %s,
+                    domain_http_status = %s,
+                    domain_https_status = %s,
+                    domain_ssl_status = %s,
+                    domain_error = %s,
+                    domain_last_checked_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND campaign_id = %s
+            """, (
+                mapped_status,
+                http_status,
+                https_status,
+                ssl_status,
+                error_text[:1000],
+                contact_id,
+                campaign_id,
+            ))
+            conn.commit()
+
+        with verification_jobs_lock:
+            job = verification_jobs.get(job_id)
+            if not job:
+                return
+            job["processed_emails"] += 1
+            job["message"] = f"Checked {job['processed_emails']} of {job['total_emails']} domains"
+            status_lower = mapped_status.lower()
+            if status_lower == "domain ok":
+                job["verified_emails"] += 1
+                _append_verification_log(job, f"✓ {domain} - {mapped_status}")
+            elif status_lower in {"ssl problem", "http only", "dns failed", "domain down"}:
+                job["invalid_emails"] += 1
+                _append_verification_log(job, f"✗ {domain} - {mapped_status}{f': {error_text}' if error_text else ''}")
+            else:
+                job["failed_emails"] += 1
+                _append_verification_log(job, f"! {domain} - {mapped_status}{f': {error_text}' if error_text else ''}")
+
+        if index < len(contacts) - 1:
+            remaining_delay = max(0.0, float(job["delay"]))
+            while remaining_delay > 0:
+                sleep_step = min(0.2, remaining_delay)
+                time.sleep(sleep_step)
+                remaining_delay -= sleep_step
+                with verification_jobs_lock:
+                    job = verification_jobs.get(job_id)
+                    if not job:
+                        return
+                    if job.get("cancel_requested"):
+                        _mark_job_cancelled(job)
+                        cancelled = True
+                        break
+            if cancelled:
+                break
+
+    with verification_jobs_lock:
+        job = verification_jobs.get(job_id)
+        if not job:
+            return
+        status = "cancelled" if cancelled else "completed"
+        job["status"] = status
+        job["message"] = "Domain check stopped by user" if cancelled else "Domain check completed successfully"
+        job["current_email"] = "-"
+        job["completed_at"] = datetime.now().isoformat()
+        processed = job["processed_emails"]
+        verified = job["verified_emails"]
+        invalid = job["invalid_emails"]
+        campaign_id = job["campaign_id"]
+        template_id = job["template_id"]
+        _append_verification_log(job, f"{'Stopped' if cancelled else 'Completed'}: {processed} domains checked")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO email_verification_logs
+            (campaign_id, template_id, emails_processed, emails_verified, emails_invalid, status, error_message)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (
+            campaign_id,
+            template_id,
+            processed,
+            verified,
+            invalid,
+            status,
+            "Stopped by user" if cancelled else None,
+        ))
+        conn.commit()
 
 
 def _run_verification_job(job_id: str):
@@ -2267,6 +2425,9 @@ def _run_verification_job(job_id: str):
         template = EmailVerificationManager.get_template(job["template_id"])
         if not template:
             raise RuntimeError("Template not found")
+        if _is_domain_checker_template(template):
+            _run_domain_checker_job(job_id, template)
+            return
 
         verification_service = EmailVerificationService()
 
@@ -3397,6 +3558,12 @@ async def get_campaign_details(campaign_id: int, limit: int = 100):
                 yelp,
                 status,
                 email_status,
+                domain_status,
+                domain_http_status,
+                domain_https_status,
+                domain_ssl_status,
+                domain_error,
+                domain_last_checked_at,
                 firstname,
                 custom_1,
                 custom_2,
@@ -4008,13 +4175,17 @@ async def get_all_campaigns():
             cursor.execute(f"""
                 SELECT
                     campaign_id,
-                    COUNT(*) AS total_contacts
+                    COUNT(*) AS total_contacts,
+                    COUNT(*) FILTER (WHERE domain IS NOT NULL AND btrim(domain) != '') AS domain_count
                 FROM contacts
                 WHERE campaign_id IN ({placeholders})
                 GROUP BY campaign_id
             """, tuple(campaign_ids))
             contact_summary = {
-                int(row["campaign_id"]): int(row.get("total_contacts") or 0)
+                int(row["campaign_id"]): {
+                    "total_contacts": int(row.get("total_contacts") or 0),
+                    "domain_count": int(row.get("domain_count") or 0),
+                }
                 for row in cursor.fetchall()
             }
 
@@ -4022,7 +4193,9 @@ async def get_all_campaigns():
         for campaign in campaigns:
             campaign_id = int(campaign["id"])
             campaign["total_requests"] = request_summary.get(campaign_id, 0)
-            campaign["total_contacts"] = contact_summary.get(campaign_id, 0)
+            contact_counts = contact_summary.get(campaign_id, {"total_contacts": 0, "domain_count": 0})
+            campaign["total_contacts"] = contact_counts["total_contacts"]
+            campaign["domain_count"] = contact_counts["domain_count"]
             metrics = email_metrics.get(campaign["id"], {"email_count": 0, "valid_email_count": 0})
             campaign["email_count"] = metrics["email_count"]
             campaign["valid_email_count"] = metrics["valid_email_count"]
@@ -7300,6 +7473,7 @@ async def start_verification_job(campaign_id: int, request: Request):
             "job_id": job_id,
             "campaign_id": campaign_id,
             "template_id": template_id,
+            "template_service": str(template.get("service") or "myemailverifier"),
             "delay": delay,
             "skip_public_providers": skip_public_providers,
             "cancel_requested": False,
@@ -8335,6 +8509,12 @@ async def export_campaign_csv(campaign_id: int, fields: str = None):
             'twitter': 'twitter',
             'yelp': 'yelp',
             'email_status': 'email_status',
+            'domain_status': 'domain_status',
+            'domain_http_status': 'domain_http_status',
+            'domain_https_status': 'domain_https_status',
+            'domain_ssl_status': 'domain_ssl_status',
+            'domain_error': 'domain_error',
+            'domain_last_checked_at': 'domain_last_checked_at',
             'status': 'status',
             'place_id': 'place_id',
             'full_name': 'full_name',
@@ -8507,6 +8687,23 @@ async def create_default_templates():
                     "api_key": "XbK0x309Xoe06IU1"
                 },
                 default_status_mapping
+            )
+
+        cursor.execute("SELECT id FROM email_verification_templates WHERE service = 'dns_ssl_checker'")
+        if not cursor.fetchone():
+            EmailVerificationManager.create_template(
+                "DNS / SSL Domain Checker",
+                "dns_ssl_checker",
+                {
+                    "timeout_seconds": 8
+                },
+                {
+                    "domain_ok": "Domain OK",
+                    "ssl_problem": "SSL Problem",
+                    "http_only": "HTTP Only",
+                    "domain_down": "Domain Down",
+                    "dns_failed": "DNS Failed"
+                }
             )
 
         cursor.execute("SELECT id FROM enrichment_templates WHERE service = 'http_enrichment'")

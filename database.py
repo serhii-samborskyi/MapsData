@@ -111,6 +111,12 @@ def init_db():
                 custom_20 TEXT,
                 source_data JSONB NOT NULL DEFAULT '{}'::jsonb,
                 email_status TEXT DEFAULT 'unverified',
+                domain_status TEXT DEFAULT 'unchecked',
+                domain_http_status TEXT,
+                domain_https_status TEXT,
+                domain_ssl_status TEXT,
+                domain_error TEXT,
+                domain_last_checked_at TIMESTAMP,
                 nomail_pulled_at TIMESTAMP,
                 FOREIGN KEY (campaign_id) REFERENCES search_campaigns(id),
                 FOREIGN KEY (request_id) REFERENCES requests(id)
@@ -443,6 +449,12 @@ def init_db():
                 ('custom_20', 'TEXT'),
                 ('source_data', "JSONB NOT NULL DEFAULT '{}'::jsonb"),
                 ('email_status', "TEXT DEFAULT 'unverified'"),
+                ('domain_status', "TEXT DEFAULT 'unchecked'"),
+                ('domain_http_status', 'TEXT'),
+                ('domain_https_status', 'TEXT'),
+                ('domain_ssl_status', 'TEXT'),
+                ('domain_error', 'TEXT'),
+                ('domain_last_checked_at', 'TIMESTAMP'),
                 ('nomail_pulled_at', 'TIMESTAMP')
             ]
             

@@ -1197,6 +1197,36 @@ class PipelineUnitLogicTests(unittest.TestCase):
         self.assertEqual(payload["status"], "running")
         self.assertEqual(payload["processed_contacts"], 40)
 
+    def test_domain_checker_template_detection(self):
+        self.assertTrue(self.main._is_domain_checker_template({"service": "dns_ssl_checker"}))
+        self.assertTrue(self.main._is_domain_checker_template({"service": " DNS_SSL_CHECKER "}))
+        self.assertFalse(self.main._is_domain_checker_template({"service": "myemailverifier"}))
+        self.assertFalse(self.main._is_domain_checker_template(None))
+
+    def test_verification_job_serialization_includes_template_service(self):
+        payload = self.main._serialize_verification_job({
+            "job_id": "job-1",
+            "campaign_id": 10,
+            "template_id": 20,
+            "template_service": "dns_ssl_checker",
+            "status": "running",
+            "total_emails": 4,
+            "processed_emails": 2,
+            "verified_emails": 1,
+            "invalid_emails": 1,
+            "failed_emails": 0,
+            "current_email": "example.com",
+            "message": "Checking domains",
+            "cancel_requested": False,
+            "skip_public_providers": False,
+            "started_at": "2026-06-14T12:00:00",
+            "completed_at": None,
+            "logs": ["Checking example.com"],
+        })
+
+        self.assertEqual(payload["template_service"], "dns_ssl_checker")
+        self.assertEqual(payload["current_email"], "example.com")
+
 
 if __name__ == "__main__":
     unittest.main()

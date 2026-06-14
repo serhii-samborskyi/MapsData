@@ -130,7 +130,7 @@
                     <h3 class="text-lg font-semibold mb-4">Email Verification Progress</h3>
                     <div class="mb-4">
                         <div class="text-sm text-gray-600 mb-2">
-                            Progress: <span id="processedEmails">0</span> of <span id="totalEmails">0</span> emails
+                            Progress: <span id="processedEmails">0</span> of <span id="totalEmails">0</span> <span id="progressItemName">emails</span>
                         </div>
                         <div class="w-full bg-gray-200 rounded-full h-2.5">
                             <div id="progressBar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
@@ -138,9 +138,9 @@
                     </div>
                     <div class="mb-4">
                         <div class="text-sm">
-                            <div>Current Email: <span id="currentEmail">-</span></div>
-                            <div>Verified: <span id="verifiedEmails">0</span></div>
-                            <div>Invalid: <span id="invalidEmails">0</span></div>
+                            <div><span id="currentItemLabel">Current Email</span>: <span id="currentEmail">-</span></div>
+                            <div><span id="verifiedItemLabel">Verified</span>: <span id="verifiedEmails">0</span></div>
+                            <div><span id="invalidItemLabel">Invalid</span>: <span id="invalidEmails">0</span></div>
                             <div>Failed: <span id="failedEmails">0</span></div>
                         </div>
                     </div>
@@ -185,14 +185,20 @@
                         <label class="block text-sm font-medium mb-2">Service</label>
                         <select id="templateService" class="w-full p-2 border border-gray-300 rounded-lg" required>
                             <option value="myemailverifier">MyEmailVerifier.com</option>
+                            <option value="dns_ssl_checker">DNS / SSL Domain Checker</option>
                         </select>
                     </div>
-                    <div class="mb-4">
+                    <div id="apiKeyWrap" class="mb-4">
                         <label class="block text-sm font-medium mb-2">API Key</label>
                         <input type="password" id="templateApiKey" class="w-full p-2 border border-gray-300 rounded-lg" required>
                         <div class="text-xs text-gray-500 mt-1">Your MyEmailVerifier.com API key</div>
                     </div>
-                    <div class="mb-4">
+                    <div id="domainCheckerConfig" class="mb-4 hidden">
+                        <label class="block text-sm font-medium mb-2">Timeout Seconds</label>
+                        <input type="number" id="domainTimeoutSeconds" min="1" max="60" value="8" class="w-full p-2 border border-gray-300 rounded-lg">
+                        <div class="text-xs text-gray-500 mt-1">Checks DNS, HTTP reachability, HTTPS reachability, and TLS certificate validity.</div>
+                    </div>
+                    <div id="statusMappingWrap" class="mb-4">
                         <label class="block text-sm font-medium mb-3">Status Mapping</label>
                         <div class="text-xs text-gray-600 mb-3">Map API responses to your internal email statuses:</div>
                         <div class="space-y-2">
@@ -267,6 +273,33 @@
                 .replace(/[^a-z]/g, '');
         }
 
+        function isDomainCheckerTemplate(template = selectedTemplate) {
+            return String(template?.service || '') === 'dns_ssl_checker';
+        }
+
+        function syncTemplateServiceFields() {
+            const service = document.getElementById('templateService').value;
+            const isDomainChecker = service === 'dns_ssl_checker';
+            document.getElementById('apiKeyWrap').classList.toggle('hidden', isDomainChecker);
+            document.getElementById('statusMappingWrap').classList.toggle('hidden', isDomainChecker);
+            document.getElementById('domainCheckerConfig').classList.toggle('hidden', !isDomainChecker);
+            document.getElementById('templateApiKey').required = !isDomainChecker;
+        }
+
+        function updateVerificationCopy() {
+            const isDomainChecker = isDomainCheckerTemplate();
+            document.getElementById('verifyAllBtn').textContent = isDomainChecker ? 'Check Unchecked Domains' : 'Verify Unverified Emails';
+            document.getElementById('skipPublicProviders').closest('label').classList.toggle('hidden', isDomainChecker);
+            updateProgressLabels(isDomainChecker);
+        }
+
+        function updateProgressLabels(isDomainChecker) {
+            document.getElementById('currentItemLabel').textContent = isDomainChecker ? 'Current Domain' : 'Current Email';
+            document.getElementById('progressItemName').textContent = isDomainChecker ? 'domains' : 'emails';
+            document.getElementById('verifiedItemLabel').textContent = isDomainChecker ? 'OK' : 'Verified';
+            document.getElementById('invalidItemLabel').textContent = isDomainChecker ? 'Problems' : 'Invalid';
+        }
+
         // Load campaigns and templates on page load
         document.addEventListener('DOMContentLoaded', async () => {
             await loadCampaigns();
@@ -282,13 +315,13 @@
                 select.innerHTML = '<option value="">Select a campaign...</option>';
                 
                 // Use precomputed API metric to avoid N+1 requests on page load.
-                const campaignsWithEmails = (data.campaigns || []).filter(campaign => Number(campaign.email_count || 0) > 0);
+                const campaignsWithEmails = (data.campaigns || []).filter(campaign => Number(campaign.email_count || 0) > 0 || Number(campaign.domain_count || 0) > 0);
                 
                 campaignsWithEmails.forEach(campaign => {
                     const option = document.createElement('option');
                     option.value = campaign.id;
                     const statusLabel = campaign.status === 'completed' ? ' [COMPLETED]' : '';
-                    option.textContent = `${campaign.name} (${Number(campaign.email_count || 0)} emails)${statusLabel}`;
+                    option.textContent = `${campaign.name} (${Number(campaign.email_count || 0)} emails, ${Number(campaign.domain_count || 0)} domains)${statusLabel}`;
                     select.appendChild(option);
                 });
 
@@ -298,6 +331,7 @@
                         await loadCampaignStats();
                         await loadActiveVerificationJobForCampaign();
                         if (selectedTemplate) {
+                            updateVerificationCopy();
                             showVerificationSection();
                         }
                     } else {
@@ -403,6 +437,7 @@
             event.currentTarget.classList.add('bg-blue-100', 'border-blue-500');
 
             if (selectedCampaign && selectedTemplate) {
+                updateVerificationCopy();
                 showVerificationSection();
             }
         }
@@ -458,11 +493,13 @@
 
         function openCreateTemplateModal() {
             document.getElementById('createTemplateModal').classList.remove('hidden');
+            syncTemplateServiceFields();
         }
 
         function closeCreateTemplateModal() {
             document.getElementById('createTemplateModal').classList.add('hidden');
             document.getElementById('createTemplateForm').reset();
+            syncTemplateServiceFields();
         }
 
         async function deleteTemplate(templateId) {
@@ -496,8 +533,9 @@
             }
 
             const delay = parseFloat(document.getElementById('requestDelay').value);
+            const isDomainChecker = isDomainCheckerTemplate();
 
-            if (!confirm('Are you sure you want to verify all unverified emails in this campaign? This may consume many API credits.')) {
+            if (!confirm(isDomainChecker ? 'Check all unchecked domains in this campaign?' : 'Are you sure you want to verify all unverified emails in this campaign? This may consume many API credits.')) {
                 return;
             }
 
@@ -509,6 +547,7 @@
 
             try {
                 const skipPublicProviders = document.getElementById('skipPublicProviders').checked;
+                const isDomainChecker = isDomainCheckerTemplate();
                 const response = await fetch(`/api/campaign/${selectedCampaign}/verify-emails/start`, {
                     method: 'POST',
                     headers: {
@@ -517,7 +556,7 @@
                     body: JSON.stringify({
                         template_id: selectedTemplate.id,
                         delay: delay,
-                        skip_public_providers: skipPublicProviders
+                        skip_public_providers: isDomainChecker ? false : skipPublicProviders
                     })
                 });
 
@@ -530,7 +569,7 @@
                 if (data.already_running) {
                     document.getElementById('verificationStatus').textContent = 'A verification is already running. Showing live progress.';
                 } else {
-                    document.getElementById('verificationStatus').textContent = 'Verification started on server.';
+                    document.getElementById('verificationStatus').textContent = isDomainChecker ? 'Domain check started on server.' : 'Verification started on server.';
                 }
 
                 await pollVerificationJobStatus(true);
@@ -543,6 +582,7 @@
         }
 
         function showVerificationModal() {
+            updateProgressLabels(isDomainCheckerTemplate());
             document.getElementById('verificationModal').classList.remove('hidden');
             document.getElementById('verificationStatus').textContent = 'Starting verification...';
             document.getElementById('verificationLogs').innerHTML = '';
@@ -578,6 +618,7 @@
             document.getElementById('invalidEmails').textContent = invalid;
             document.getElementById('failedEmails').textContent = failed;
             document.getElementById('currentEmail').textContent = data.current_email || '-';
+            updateProgressLabels(data.template_service === 'dns_ssl_checker');
             document.getElementById('verificationStatus').textContent = data.message || data.status;
 
             const progress = total > 0 ? (processed / total) * 100 : 0;
@@ -686,6 +727,7 @@
 
         // Event listeners
         document.getElementById('createTemplateBtn').addEventListener('click', openCreateTemplateModal);
+        document.getElementById('templateService').addEventListener('change', syncTemplateServiceFields);
         document.getElementById('verifyAllBtn').addEventListener('click', verifyAll);
         document.getElementById('stopVerification').addEventListener('click', stopCurrentVerificationJob);
         document.getElementById('stopVerificationInline').addEventListener('click', stopCurrentVerificationJob);
@@ -703,6 +745,7 @@
             const name = document.getElementById('templateName').value;
             const service = document.getElementById('templateService').value;
             const apiKey = document.getElementById('templateApiKey').value;
+            const isDomainChecker = service === 'dns_ssl_checker';
 
             // Get status mapping
             const statusMapping = {};
@@ -720,10 +763,18 @@
                     body: JSON.stringify({
                         name: name,
                         service: service,
-                        api_config: {
+                        api_config: isDomainChecker ? {
+                            timeout_seconds: Number(document.getElementById('domainTimeoutSeconds').value || 8)
+                        } : {
                             api_key: apiKey
                         },
-                        status_mapping: statusMapping
+                        status_mapping: isDomainChecker ? {
+                            domain_ok: 'Domain OK',
+                            ssl_problem: 'SSL Problem',
+                            http_only: 'HTTP Only',
+                            domain_down: 'Domain Down',
+                            dns_failed: 'DNS Failed'
+                        } : statusMapping
                     })
                 });
 
