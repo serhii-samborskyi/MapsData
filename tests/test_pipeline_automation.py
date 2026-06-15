@@ -43,12 +43,20 @@ def _install_stub_modules():
     def Form(default=None, **kwargs):
         return default
 
+    def File(default=None, **kwargs):
+        return default
+
     class Request:
         pass
 
+    class UploadFile:
+        pass
+
     fastapi.FastAPI = FastAPI
+    fastapi.File = File
     fastapi.Form = Form
     fastapi.Request = Request
+    fastapi.UploadFile = UploadFile
     fastapi.HTTPException = HTTPException
     sys.modules["fastapi"] = fastapi
 
@@ -879,6 +887,29 @@ class PipelineEndpointTests(unittest.TestCase):
                 )
             )
         self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_csv_import_parses_semicolon_csv_and_suggests_fields(self):
+        headers, rows = self.main._parse_csv_text("Company;Website;Owner Name;Email\nAcme;acme.com;Ann Lee;ann@acme.com\n")
+        self.assertEqual(headers, ["Company", "Website", "Owner Name", "Email"])
+        self.assertEqual(rows[0]["Company"], "Acme")
+        self.assertEqual(self.main._suggest_csv_import_field("Company"), "business_name")
+        self.assertEqual(self.main._suggest_csv_import_field("Website"), "domain")
+        self.assertEqual(self.main._suggest_csv_import_field("Owner Name"), "full_name")
+        self.assertEqual(self.main._suggest_csv_import_field("Email"), "email")
+
+    def test_csv_import_contact_supports_mapping_static_and_business_fallback(self):
+        contact = self.main._csv_import_contact_from_row(
+            {"Website": "example.com", "Email": "info@example.com", "Unknown": "x"},
+            {"Website": "domain", "Email": "email"},
+            {"category": "Locksmith", "custom_1": "Imported"},
+        )
+        self.assertEqual(contact["business_name"], "example.com")
+        self.assertEqual(contact["domain"], "example.com")
+        self.assertEqual(contact["email"], "info@example.com")
+        self.assertEqual(contact["category"], "Locksmith")
+        self.assertEqual(contact["custom_1"], "Imported")
+        self.assertEqual(contact["review_count"], 0)
+        self.assertEqual(contact["source_data"]["source_type"], "csv_upload")
 
     def test_duplicate_campaign_from_finalized_pipeline_becomes_inactive(self):
         self._patch_db([

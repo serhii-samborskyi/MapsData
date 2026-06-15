@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Form, Request, HTTPException
+from fastapi import FastAPI, File, Form, Request, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -11,6 +11,8 @@ from psycopg2.extras import Json
 import requests
 import hmac
 import hashlib
+import csv
+import io
 import json
 import os
 import re
@@ -1689,6 +1691,206 @@ ENRICHMENT_LOCAL_FIELDS = [
 for _idx in range(1, 21):
     ENRICHMENT_LOCAL_FIELDS.append(f"custom_{_idx}")
 ENRICHMENT_LOCAL_FIELD_SET = set(ENRICHMENT_LOCAL_FIELDS)
+
+CSV_IMPORT_CONTACT_FIELDS = [
+    field for field in ENRICHMENT_LOCAL_FIELDS
+    if field not in {"campaign_id", "request_id"}
+]
+CSV_IMPORT_CONTACT_FIELD_SET = set(CSV_IMPORT_CONTACT_FIELDS)
+CSV_IMPORT_FIELD_LABELS = {
+    "business_name": "Business Name",
+    "email": "Email",
+    "phone": "Phone",
+    "domain": "Domain / Website",
+    "address": "Address",
+    "category": "Category",
+    "rating": "Rating",
+    "review_count": "Review Count",
+    "facebook": "Facebook",
+    "instagram": "Instagram",
+    "twitter": "Twitter",
+    "yelp": "Yelp",
+    "full_name": "Full Name",
+    "firstname": "Owner First Name",
+    "lastname": "Owner Last Name",
+    "industry": "Industry",
+    "city": "City",
+    "state": "State",
+    "country": "Country",
+    "personal_job_position": "Job Position",
+    "personal_prospect_location": "Prospect Location",
+    "personal_user_social": "Personal Social",
+    "company": "Company",
+    "company_social": "Company Social",
+    "company_size": "Company Size",
+    "www": "WWW",
+    "icebreaker": "Icebreaker",
+    "time_zone_offset_min": "Time Zone Offset",
+    "notes": "Notes",
+    "tags_import": "Tags",
+    "screenshot": "Screenshot",
+    "logo": "Logo",
+    "place_id": "Place ID",
+}
+for _idx in range(1, 21):
+    CSV_IMPORT_FIELD_LABELS[f"custom_{_idx}"] = f"Custom {_idx}"
+
+
+def _decode_csv_upload(content: bytes) -> str:
+    for encoding in ("utf-8-sig", "utf-8", "latin-1"):
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return content.decode("utf-8", errors="replace")
+
+
+def _parse_csv_text(text: str) -> tuple[List[str], List[dict]]:
+    sample = text[:8192]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+    except csv.Error:
+        dialect = csv.excel
+    reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+    raw_headers = reader.fieldnames or []
+    headers = []
+    seen = {}
+    for index, header in enumerate(raw_headers):
+        clean_header = str(header or f"column_{index + 1}").strip() or f"column_{index + 1}"
+        count = seen.get(clean_header, 0)
+        seen[clean_header] = count + 1
+        headers.append(clean_header if count == 0 else f"{clean_header}_{count + 1}")
+
+    rows = []
+    for raw_row in reader:
+        row = {}
+        for raw_header, clean_header in zip(raw_headers, headers):
+            value = raw_row.get(raw_header)
+            row[clean_header] = str(value).strip() if value is not None else ""
+        if any(value for value in row.values()):
+            rows.append(row)
+    return headers, rows
+
+
+def _csv_header_to_key(header: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(header or "").strip().lower()).strip("_")
+
+
+def _suggest_csv_import_field(header: str) -> str:
+    key = _csv_header_to_key(header)
+    if not key:
+        return ""
+    aliases = {
+        "business": "business_name",
+        "business_name": "business_name",
+        "company": "business_name",
+        "company_name": "business_name",
+        "name": "business_name",
+        "domain": "domain",
+        "website": "domain",
+        "web_site": "domain",
+        "url": "domain",
+        "site": "domain",
+        "email": "email",
+        "email_address": "email",
+        "phone": "phone",
+        "phone_number": "phone",
+        "address": "address",
+        "street_address": "address",
+        "city": "city",
+        "state": "state",
+        "province": "state",
+        "owner": "full_name",
+        "owner_name": "full_name",
+        "contact_name": "full_name",
+        "full_name": "full_name",
+        "first_name": "firstname",
+        "firstname": "firstname",
+        "owner_first_name": "firstname",
+        "owner_fname": "firstname",
+        "last_name": "lastname",
+        "lastname": "lastname",
+        "category": "category",
+        "industry": "industry",
+        "rating": "rating",
+        "review_count": "review_count",
+        "reviews": "review_count",
+        "facebook": "facebook",
+        "instagram": "instagram",
+        "twitter": "twitter",
+        "x": "twitter",
+        "yelp": "yelp",
+        "notes": "notes",
+        "tags": "tags_import",
+    }
+    if key in aliases:
+        return aliases[key]
+    if key in CSV_IMPORT_CONTACT_FIELD_SET:
+        return key
+    return ""
+
+
+def _normalize_csv_static_fields(raw_static_fields: Any) -> dict:
+    static_values = {}
+    if not isinstance(raw_static_fields, list):
+        return static_values
+    for item in raw_static_fields:
+        if not isinstance(item, dict):
+            continue
+        field = _normalize_mapping_value(item.get("field"))
+        value = str(item.get("value") or "").strip()
+        if field in CSV_IMPORT_CONTACT_FIELD_SET and value:
+            static_values[field] = value
+    return static_values
+
+
+def _coerce_csv_contact_value(field: str, value: Any) -> Optional[Any]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if field in {"review_count", "time_zone_offset_min"}:
+        return _safe_int(text, None)
+    if field == "rating":
+        try:
+            return float(text)
+        except (TypeError, ValueError):
+            return None
+    return text
+
+
+def _csv_import_contact_from_row(row: dict, field_mapping: dict, static_values: dict) -> dict:
+    contact = {}
+    for header, target_field in (field_mapping or {}).items():
+        normalized_target = _normalize_mapping_value(target_field)
+        if normalized_target not in CSV_IMPORT_CONTACT_FIELD_SET:
+            continue
+        value = _coerce_csv_contact_value(normalized_target, row.get(header))
+        if value is not None:
+            contact[normalized_target] = value
+
+    for field, value in (static_values or {}).items():
+        normalized_field = _normalize_mapping_value(field)
+        if normalized_field not in CSV_IMPORT_CONTACT_FIELD_SET:
+            continue
+        coerced = _coerce_csv_contact_value(normalized_field, value)
+        if coerced is not None:
+            contact[normalized_field] = coerced
+
+    business_name = _coerce_csv_contact_value(
+        "business_name",
+        contact.get("business_name")
+        or contact.get("company")
+        or contact.get("full_name")
+        or contact.get("domain")
+        or contact.get("email")
+        or "Imported Lead",
+    )
+    contact["business_name"] = business_name or "Imported Lead"
+    contact["review_count"] = contact.get("review_count") if contact.get("review_count") is not None else 0
+    contact["source_data"] = {"source_type": "csv_upload", "raw": row}
+    return contact
 
 
 class EnrichmentTemplateManager:
@@ -4164,6 +4366,130 @@ async def create_campaign(
         "scrape_maps_only": normalized_scrape_maps_only,
         "http_source_runner_started": http_source_runner_started,
     }
+
+
+@app.post("/api/campaigns/csv/preview")
+async def preview_csv_campaign_upload(file: UploadFile = File(...)):
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="CSV file is empty")
+    text = _decode_csv_upload(content)
+    headers, rows = _parse_csv_text(text)
+    if not headers:
+        raise HTTPException(status_code=400, detail="CSV file has no headers")
+    if not rows:
+        raise HTTPException(status_code=400, detail="CSV file has no data rows")
+    suggestions = {header: _suggest_csv_import_field(header) for header in headers}
+    return {
+        "filename": file.filename,
+        "headers": headers,
+        "sample_rows": rows[:5],
+        "row_count": len(rows),
+        "suggestions": suggestions,
+        "contact_fields": [
+            {"key": field, "label": CSV_IMPORT_FIELD_LABELS.get(field, field)}
+            for field in CSV_IMPORT_CONTACT_FIELDS
+        ],
+    }
+
+
+@app.post("/api/campaigns/import-csv")
+async def import_csv_campaign(
+    name: str = Form(...),
+    request_text: str = Form(...),
+    field_mapping: str = Form("{}"),
+    static_fields: str = Form("[]"),
+    file: UploadFile = File(...),
+):
+    campaign_name = str(name or "").strip()
+    request_lines = [line.strip() for line in str(request_text or "").splitlines() if line.strip()]
+    if not campaign_name:
+        raise HTTPException(status_code=400, detail="Campaign name is required")
+    if not request_lines:
+        raise HTTPException(status_code=400, detail="At least one request is required for CSV campaigns")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="CSV file is empty")
+    headers, rows = _parse_csv_text(_decode_csv_upload(content))
+    if not headers or not rows:
+        raise HTTPException(status_code=400, detail="CSV file must include headers and at least one data row")
+
+    try:
+        parsed_mapping = json.loads(field_mapping or "{}")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="field_mapping must be valid JSON")
+    if not isinstance(parsed_mapping, dict):
+        raise HTTPException(status_code=400, detail="field_mapping must be an object")
+    normalized_mapping = {
+        str(header): _normalize_mapping_value(target)
+        for header, target in parsed_mapping.items()
+        if str(header) in headers and _normalize_mapping_value(target) in CSV_IMPORT_CONTACT_FIELD_SET
+    }
+
+    try:
+        parsed_static_fields = json.loads(static_fields or "[]")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="static_fields must be valid JSON")
+    static_values = _normalize_csv_static_fields(parsed_static_fields)
+
+    if not normalized_mapping and not static_values:
+        raise HTTPException(status_code=400, detail="Map at least one CSV or static field before import")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO search_campaigns
+                (name, status, maps_scrape_mode, source_template_id, scrape_maps_only, daemon_ignore)
+            VALUES (%s, 'completed', 'slow', NULL, TRUE, TRUE)
+            RETURNING id
+            """,
+            (campaign_name,),
+        )
+        campaign_id = int(cursor.fetchone()["id"])
+
+        request_ids = []
+        for request_line in request_lines:
+            cursor.execute(
+                "INSERT INTO requests (campaign_id, req_text, status) VALUES (%s, %s, 'completed') RETURNING id",
+                (campaign_id, request_line),
+            )
+            request_ids.append(int(cursor.fetchone()["id"]))
+        primary_request_id = request_ids[0]
+
+        imported_count = 0
+        insertable_fields = [field for field in CSV_IMPORT_CONTACT_FIELDS if field not in {"request_id", "campaign_id"}]
+        for row in rows:
+            contact = _csv_import_contact_from_row(row, normalized_mapping, static_values)
+            columns = []
+            values = []
+            for field in insertable_fields:
+                if field not in contact:
+                    continue
+                value = contact.get(field)
+                if value is None:
+                    continue
+                columns.append(field)
+                values.append(value)
+            columns.extend(["campaign_id", "request_id", "status", "source_data", "email_status"])
+            values.extend([campaign_id, primary_request_id, "pending", Json(contact["source_data"]), "unverified"])
+            placeholders = ", ".join(["%s"] * len(columns))
+            cursor.execute(
+                f"INSERT INTO contacts ({', '.join(columns)}) VALUES ({placeholders})",
+                tuple(values),
+            )
+            imported_count += 1
+
+        conn.commit()
+
+    return {
+        "status": "CSV campaign imported",
+        "campaign_id": campaign_id,
+        "requests_created": len(request_ids),
+        "contacts_imported": imported_count,
+    }
+
 
 @app.get("/api/reserve_phrase/{campaign_id}")
 async def reserve_phrase(campaign_id: int):
