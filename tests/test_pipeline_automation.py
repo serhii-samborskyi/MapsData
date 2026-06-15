@@ -897,6 +897,22 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(self.main._suggest_csv_import_field("Owner Name"), "full_name")
         self.assertEqual(self.main._suggest_csv_import_field("Email"), "email")
 
+    def test_xlsx_import_parses_first_worksheet(self):
+        import io
+        from openpyxl import Workbook
+
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.append(["Company", "Website", "Email"])
+        worksheet.append(["Acme", "acme.com", "ann@acme.com"])
+        output = io.BytesIO()
+        workbook.save(output)
+
+        headers, rows, file_type = self.main._parse_uploaded_leads_file("leads.xlsx", output.getvalue())
+        self.assertEqual(file_type, "xlsx")
+        self.assertEqual(headers, ["Company", "Website", "Email"])
+        self.assertEqual(rows[0]["Website"], "acme.com")
+
     def test_csv_import_contact_supports_mapping_static_and_business_fallback(self):
         contact = self.main._csv_import_contact_from_row(
             {"Website": "example.com", "Email": "info@example.com", "Unknown": "x"},

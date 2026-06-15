@@ -1772,6 +1772,70 @@ def _parse_csv_text(text: str) -> tuple[List[str], List[dict]]:
     return headers, rows
 
 
+def _normalize_tabular_headers(raw_headers: List[Any]) -> List[str]:
+    headers = []
+    seen = {}
+    for index, header in enumerate(raw_headers):
+        clean_header = str(header or f"column_{index + 1}").strip() or f"column_{index + 1}"
+        count = seen.get(clean_header, 0)
+        seen[clean_header] = count + 1
+        headers.append(clean_header if count == 0 else f"{clean_header}_{count + 1}")
+    return headers
+
+
+def _parse_xlsx_content(content: bytes) -> tuple[List[str], List[dict]]:
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        raise HTTPException(status_code=500, detail="XLSX import requires openpyxl to be installed")
+
+    try:
+        workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not read XLSX file: {str(exc)}")
+
+    try:
+        worksheet = workbook.worksheets[0] if workbook.worksheets else None
+        if worksheet is None:
+            return [], []
+
+        rows_iter = worksheet.iter_rows(values_only=True)
+        try:
+            raw_headers = list(next(rows_iter))
+        except StopIteration:
+            return [], []
+
+        headers = _normalize_tabular_headers(raw_headers)
+        rows = []
+        for raw_row in rows_iter:
+            row = {}
+            for header, value in zip(headers, raw_row):
+                if value is None:
+                    row[header] = ""
+                elif isinstance(value, float) and value.is_integer():
+                    row[header] = str(int(value))
+                else:
+                    row[header] = str(value).strip()
+            for header in headers[len(raw_row or []):]:
+                row[header] = ""
+            if any(value for value in row.values()):
+                rows.append(row)
+        return headers, rows
+    finally:
+        workbook.close()
+
+
+def _parse_uploaded_leads_file(filename: str, content: bytes) -> tuple[List[str], List[dict], str]:
+    extension = os.path.splitext(str(filename or "").lower())[1]
+    if extension == ".xlsx":
+        headers, rows = _parse_xlsx_content(content)
+        return headers, rows, "xlsx"
+    if extension in {"", ".csv", ".txt"}:
+        headers, rows = _parse_csv_text(_decode_csv_upload(content))
+        return headers, rows, "csv"
+    raise HTTPException(status_code=400, detail="Upload a .csv or .xlsx file")
+
+
 def _csv_header_to_key(header: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(header or "").strip().lower()).strip("_")
 
@@ -4372,16 +4436,16 @@ async def create_campaign(
 async def preview_csv_campaign_upload(file: UploadFile = File(...)):
     content = await file.read()
     if not content:
-        raise HTTPException(status_code=400, detail="CSV file is empty")
-    text = _decode_csv_upload(content)
-    headers, rows = _parse_csv_text(text)
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows, file_type = _parse_uploaded_leads_file(file.filename or "", content)
     if not headers:
-        raise HTTPException(status_code=400, detail="CSV file has no headers")
+        raise HTTPException(status_code=400, detail="Uploaded file has no headers")
     if not rows:
-        raise HTTPException(status_code=400, detail="CSV file has no data rows")
+        raise HTTPException(status_code=400, detail="Uploaded file has no data rows")
     suggestions = {header: _suggest_csv_import_field(header) for header in headers}
     return {
         "filename": file.filename,
+        "file_type": file_type,
         "headers": headers,
         "sample_rows": rows[:5],
         "row_count": len(rows),
@@ -4410,10 +4474,10 @@ async def import_csv_campaign(
 
     content = await file.read()
     if not content:
-        raise HTTPException(status_code=400, detail="CSV file is empty")
-    headers, rows = _parse_csv_text(_decode_csv_upload(content))
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows, file_type = _parse_uploaded_leads_file(file.filename or "", content)
     if not headers or not rows:
-        raise HTTPException(status_code=400, detail="CSV file must include headers and at least one data row")
+        raise HTTPException(status_code=400, detail="Uploaded file must include headers and at least one data row")
 
     try:
         parsed_mapping = json.loads(field_mapping or "{}")
@@ -4484,7 +4548,7 @@ async def import_csv_campaign(
         conn.commit()
 
     return {
-        "status": "CSV campaign imported",
+        "status": f"{file_type.upper()} campaign imported",
         "campaign_id": campaign_id,
         "requests_created": len(request_ids),
         "contacts_imported": imported_count,
