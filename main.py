@@ -9,6 +9,7 @@ from typing import List, Union, Any, Optional, Dict
 from psycopg2 import DataError, IntegrityError
 from psycopg2.extras import Json
 import requests
+import asyncio
 import hmac
 import hashlib
 import csv
@@ -2507,6 +2508,26 @@ DOMAIN_CHECKER_MAX_CONCURRENCY = 100
 http_source_campaign_jobs: Dict[int, dict] = {}
 http_source_campaign_jobs_lock = threading.Lock()
 MAX_HTTP_SOURCE_JOB_LOGS = 200
+automation_scheduler_started = False
+automation_scheduler_lock = threading.Lock()
+automation_active_runs: set[int] = set()
+AUTOMATION_POLL_SECONDS = 3
+AUTOMATION_LOG_LIMIT = 300
+AUTOMATION_STEP_TYPES = {
+    "pipeline",
+    "enrichment",
+    "dns_check",
+    "email_verification",
+    "export",
+}
+
+
+class JsonRequest:
+    def __init__(self, payload: dict):
+        self.payload = payload
+
+    async def json(self):
+        return self.payload
 
 
 def _append_verification_log(job: dict, message: str):
@@ -3499,6 +3520,562 @@ def _ensure_enrichment_worker(run_id: int):
         worker_thread.start()
 
 
+def _normalize_funnel_steps(raw_steps: Any) -> List[dict]:
+    normalized = []
+    if not isinstance(raw_steps, list):
+        return normalized
+    for item in raw_steps:
+        if not isinstance(item, dict):
+            continue
+        step_type = str(item.get("type") or item.get("step_type") or "").strip()
+        if step_type not in AUTOMATION_STEP_TYPES:
+            continue
+        config = item.get("config") if isinstance(item.get("config"), dict) else {}
+        label = str(item.get("label") or "").strip()
+        enabled = _coerce_bool_flag(item.get("enabled"), True)
+        normalized.append({
+            "type": step_type,
+            "label": label or step_type.replace("_", " ").title(),
+            "enabled": enabled,
+            "config": config,
+        })
+    return normalized
+
+
+def _append_automation_log(cursor, run_id: int, campaign_id: int, message: str, level: str = "info", step_id: Optional[int] = None):
+    cursor.execute(
+        """
+        INSERT INTO automation_run_logs (run_id, campaign_id, step_id, level, message)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        (run_id, campaign_id, step_id, level, message),
+    )
+
+
+def _load_automation_run(cursor, run_id: int) -> Optional[dict]:
+    cursor.execute("SELECT * FROM automation_runs WHERE id = %s", (run_id,))
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def _load_automation_steps(cursor, run_id: int) -> List[dict]:
+    cursor.execute(
+        """
+        SELECT *
+        FROM automation_run_steps
+        WHERE run_id = %s
+        ORDER BY step_order
+        """,
+        (run_id,),
+    )
+    steps = []
+    for row in cursor.fetchall():
+        item = dict(row)
+        item["config"] = _safe_json_loads(item.get("config"), {})
+        steps.append(item)
+    return steps
+
+
+def _load_automation_logs(cursor, run_id: int, limit: int = AUTOMATION_LOG_LIMIT) -> List[dict]:
+    cursor.execute(
+        """
+        SELECT *
+        FROM automation_run_logs
+        WHERE run_id = %s
+        ORDER BY created_at DESC
+        LIMIT %s
+        """,
+        (run_id, limit),
+    )
+    return [dict(row) for row in reversed(cursor.fetchall())]
+
+
+def _serialize_automation_run(run: Optional[dict], steps: Optional[List[dict]] = None, logs: Optional[List[dict]] = None) -> Optional[dict]:
+    if not run:
+        return None
+    payload = dict(run)
+    if steps is not None:
+        payload["steps"] = steps
+    if logs is not None:
+        payload["logs"] = logs
+    return payload
+
+
+def _create_automation_run(cursor, campaign_id: int, template_id: int, created_by: str = "dashboard") -> int:
+    cursor.execute("SELECT * FROM automation_funnel_templates WHERE id = %s AND enabled = TRUE", (template_id,))
+    template = cursor.fetchone()
+    if not template:
+        raise HTTPException(status_code=404, detail="Funnel template not found")
+
+    steps = _normalize_funnel_steps(_safe_json_loads(template.get("steps"), []))
+    if not any(step.get("enabled", True) for step in steps):
+        raise HTTPException(status_code=400, detail="Funnel has no enabled steps")
+
+    retry_count = max(0, min(_safe_int(template.get("default_retry_count"), 2), 10))
+    cursor.execute(
+        """
+        INSERT INTO automation_runs (campaign_id, template_id, status, max_retries, created_by)
+        VALUES (%s, %s, 'queued', %s, %s)
+        RETURNING id
+        """,
+        (campaign_id, template_id, retry_count, created_by),
+    )
+    run_id = int(cursor.fetchone()["id"])
+
+    step_order = 1
+    for step in steps:
+        if not step.get("enabled", True):
+            continue
+        cursor.execute(
+            """
+            INSERT INTO automation_run_steps
+                (run_id, campaign_id, step_order, step_type, status, config, max_retries)
+            VALUES (%s, %s, %s, %s, 'pending', %s, %s)
+            """,
+            (run_id, campaign_id, step_order, step["type"], Json(step.get("config") or {}), retry_count),
+        )
+        step_order += 1
+
+    _append_automation_log(cursor, run_id, campaign_id, f"Funnel run created from template: {template.get('name')}")
+    return run_id
+
+
+def _get_latest_pipeline_run(cursor, campaign_id: int) -> Optional[dict]:
+    cursor.execute(
+        """
+        SELECT *
+        FROM pipeline_runs
+        WHERE campaign_id = %s
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (campaign_id,),
+    )
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def _wait_for_pipeline_completion(run_id: int, campaign_id: int, step_id: int) -> tuple[bool, str]:
+    while True:
+        time.sleep(AUTOMATION_POLL_SECONDS)
+        with get_db() as conn:
+            cursor = conn.cursor()
+            run = _load_automation_run(cursor, run_id)
+            if not run or str(run.get("status")) == "cancelled":
+                return False, "Funnel cancelled"
+            latest = _get_latest_pipeline_run(cursor, campaign_id)
+            if not latest:
+                continue
+            status = str(latest.get("status") or "")
+            if status == "completed":
+                return True, "Pipeline completed"
+            if status in {"failed", "canceled"}:
+                return False, str(latest.get("latest_error") or f"Pipeline {status}")
+
+
+def _get_campaign_source_type(cursor, campaign_id: int) -> str:
+    cursor.execute(
+        """
+        SELECT st.source_type
+        FROM search_campaigns sc
+        LEFT JOIN source_templates st ON st.id = sc.source_template_id
+        WHERE sc.id = %s
+        """,
+        (campaign_id,),
+    )
+    row = cursor.fetchone()
+    return _normalize_source_template_type(row.get("source_type")) if row and row.get("source_type") else "builtin_google_maps"
+
+
+def _wait_for_http_source_completion(run_id: int, campaign_id: int) -> tuple[bool, str]:
+    while True:
+        time.sleep(AUTOMATION_POLL_SECONDS)
+        with get_db() as conn:
+            cursor = conn.cursor()
+            run = _load_automation_run(cursor, run_id)
+            if not run or str(run.get("status")) == "cancelled":
+                return False, "Funnel cancelled"
+            cursor.execute("SELECT status FROM search_campaigns WHERE id = %s", (campaign_id,))
+            campaign = cursor.fetchone() or {}
+
+        with http_source_campaign_jobs_lock:
+            job = dict(http_source_campaign_jobs.get(campaign_id) or {})
+        status = str(job.get("status") or "")
+        if status == "completed":
+            return True, "HTTP source campaign completed"
+        if status == "completed_with_errors":
+            failed = int(job.get("failed_requests") or 0)
+            return False, f"HTTP source completed with {failed} failed request(s)"
+        if status == "failed":
+            return False, str(job.get("latest_error") or "HTTP source campaign failed")
+        if not status and str(campaign.get("status")) == "completed":
+            return True, "Campaign already completed; HTTP source skipped"
+
+
+def _wait_for_enrichment_completion(run_id: int, enrichment_run_id: int) -> tuple[bool, str]:
+    while True:
+        time.sleep(AUTOMATION_POLL_SECONDS)
+        with get_db() as conn:
+            cursor = conn.cursor()
+            run = _load_automation_run(cursor, run_id)
+            if not run or str(run.get("status")) == "cancelled":
+                return False, "Funnel cancelled"
+            enrichment_run = _load_enrichment_run(cursor, enrichment_run_id)
+            if not enrichment_run:
+                return False, "Enrichment run disappeared"
+            status = str(enrichment_run.get("status") or "")
+            if status == "completed":
+                return True, "Enrichment completed"
+            if status in {"failed", "cancelled"}:
+                return False, str(enrichment_run.get("latest_error") or f"Enrichment {status}")
+
+
+def _wait_for_verification_completion(run_id: int, job_id: str) -> tuple[bool, str]:
+    while True:
+        time.sleep(AUTOMATION_POLL_SECONDS)
+        with verification_jobs_lock:
+            job = verification_jobs.get(job_id)
+            if not job:
+                return False, "Verification job disappeared"
+            status = str(job.get("status") or "")
+            if status == "completed":
+                return True, job.get("message") or "Verification completed"
+            if status in {"failed", "cancelled"}:
+                return False, job.get("message") or f"Verification {status}"
+        with get_db() as conn:
+            cursor = conn.cursor()
+            run = _load_automation_run(cursor, run_id)
+            if not run or str(run.get("status")) == "cancelled":
+                return False, "Funnel cancelled"
+
+
+def _automation_step_pipeline(run_id: int, campaign_id: int, step_id: int, config: dict) -> tuple[bool, str, Optional[str]]:
+    with get_db() as conn:
+        cursor = conn.cursor()
+        source_type = _get_campaign_source_type(cursor, campaign_id)
+        cursor.execute("SELECT status FROM search_campaigns WHERE id = %s", (campaign_id,))
+        campaign = cursor.fetchone()
+        if campaign and str(campaign.get("status")) == "completed":
+            return True, "Campaign already completed; pipeline skipped", None
+
+    if source_type == "http_api":
+        _start_http_source_campaign_job(campaign_id)
+        ok, message = _wait_for_http_source_completion(run_id, campaign_id)
+        return ok, message, "http_source"
+
+    response = asyncio.run(start_campaign_pipeline(campaign_id, JsonRequest({
+        "actor": "funnel",
+        "retry": bool(config.get("retry_existing", False)),
+    })))
+    external_id = str(response.get("run_id") or "")
+    ok, message = _wait_for_pipeline_completion(run_id, campaign_id, step_id)
+    return ok, message, external_id
+
+
+def _automation_step_enrichment(run_id: int, campaign_id: int, config: dict) -> tuple[bool, str, Optional[str]]:
+    template_id = config.get("template_id")
+    if not template_id:
+        return False, "Enrichment template is required", None
+    response = asyncio.run(start_enrichment_run(campaign_id, JsonRequest(config)))
+    enrichment_run = response.get("run") or {}
+    enrichment_run_id = int(enrichment_run.get("id") or 0)
+    if not enrichment_run_id:
+        return False, "Could not start enrichment run", None
+    ok, message = _wait_for_enrichment_completion(run_id, enrichment_run_id)
+    return ok, message, str(enrichment_run_id)
+
+
+def _automation_step_verification(run_id: int, campaign_id: int, config: dict) -> tuple[bool, str, Optional[str]]:
+    template_id = config.get("template_id")
+    if not template_id:
+        return False, "Verification template is required", None
+    response = asyncio.run(start_verification_job(campaign_id, JsonRequest({
+        "template_id": template_id,
+        "delay": config.get("delay", 0),
+        "skip_public_providers": config.get("skip_public_providers", False),
+    })))
+    job_id = str(response.get("job_id") or "")
+    if not job_id:
+        return False, "Could not start verification job", None
+    ok, message = _wait_for_verification_completion(run_id, job_id)
+    return ok, message, job_id
+
+
+def _automation_step_export(campaign_id: int, config: dict) -> tuple[bool, str, Optional[str]]:
+    template_id = config.get("template_id")
+    if not template_id:
+        return False, "Export template is required", None
+    payload = {
+        "template_id": template_id,
+        "batch_size": _safe_int(config.get("batch_size"), 1000000),
+        "field_mappings": config.get("field_mappings"),
+        "newListName": config.get("newListName", ""),
+        "export_valid_only": bool(config.get("export_valid_only", False)),
+        "export_catch_all": bool(config.get("export_catch_all", False)),
+        "export_catch_all_only": bool(config.get("export_catch_all_only", False)),
+        "exclude_public_emails": bool(config.get("exclude_public_emails", False)),
+        "export_domain_ok": bool(config.get("export_domain_ok", False)),
+    }
+    if payload["field_mappings"] is None:
+        payload.pop("field_mappings")
+    response = asyncio.run(export_campaign(campaign_id, JsonRequest(payload)))
+    exported = response.get("contacts_exported", 0) if isinstance(response, dict) else 0
+    return True, f"Export completed: {exported} contacts", None
+
+
+def _execute_automation_step_once(run_id: int, step: dict) -> tuple[bool, str, Optional[str]]:
+    campaign_id = int(step["campaign_id"])
+    config = step.get("config") or {}
+    step_type = str(step.get("step_type") or "")
+    step_id = int(step["id"])
+    if step_type == "pipeline":
+        return _automation_step_pipeline(run_id, campaign_id, step_id, config)
+    if step_type == "enrichment":
+        return _automation_step_enrichment(run_id, campaign_id, config)
+    if step_type == "dns_check" or step_type == "email_verification":
+        return _automation_step_verification(run_id, campaign_id, config)
+    if step_type == "export":
+        return _automation_step_export(campaign_id, config)
+    return False, f"Unsupported step type: {step_type}", None
+
+
+def _run_automation_run(run_id: int):
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            run = _load_automation_run(cursor, run_id)
+            if not run:
+                return
+            campaign_id = int(run["campaign_id"])
+            cursor.execute(
+                """
+                UPDATE automation_runs
+                SET status = 'running',
+                    started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND status IN ('queued', 'running')
+                """,
+                (run_id,),
+            )
+            if cursor.rowcount:
+                _append_automation_log(cursor, run_id, campaign_id, "Funnel run started")
+            conn.commit()
+
+        while True:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                run = _load_automation_run(cursor, run_id)
+                if not run:
+                    return
+                if str(run.get("status")) in {"completed", "failed", "cancelled", "waiting_confirmation"}:
+                    return
+                campaign_id = int(run["campaign_id"])
+                steps = _load_automation_steps(cursor, run_id)
+                next_step = next((step for step in steps if step["status"] in {"pending", "running", "waiting_confirmation"}), None)
+                if not next_step:
+                    cursor.execute(
+                        """
+                        UPDATE automation_runs
+                        SET status = 'completed',
+                            completed_at = CURRENT_TIMESTAMP,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = %s
+                        """,
+                        (run_id,),
+                    )
+                    _append_automation_log(cursor, run_id, campaign_id, "Funnel run completed")
+                    conn.commit()
+                    return
+
+                if next_step["status"] == "waiting_confirmation":
+                    cursor.execute(
+                        """
+                        UPDATE automation_runs
+                        SET status = 'waiting_confirmation',
+                            current_step_order = %s,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = %s
+                        """,
+                        (next_step["step_order"], run_id),
+                    )
+                    conn.commit()
+                    return
+
+                config = next_step.get("config") or {}
+                if next_step["step_type"] == "export" and _coerce_bool_flag(config.get("require_confirmation"), False) and not _coerce_bool_flag(config.get("confirmed"), False):
+                    cursor.execute(
+                        """
+                        UPDATE automation_run_steps
+                        SET status = 'waiting_confirmation',
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = %s
+                        """,
+                        (next_step["id"],),
+                    )
+                    cursor.execute(
+                        """
+                        UPDATE automation_runs
+                        SET status = 'waiting_confirmation',
+                            current_step_order = %s,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = %s
+                        """,
+                        (next_step["step_order"], run_id),
+                    )
+                    _append_automation_log(cursor, run_id, campaign_id, "Waiting for export confirmation", "warning", next_step["id"])
+                    conn.commit()
+                    return
+
+                cursor.execute(
+                    """
+                    UPDATE automation_run_steps
+                    SET status = 'running',
+                        attempts = attempts + 1,
+                        started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    RETURNING attempts
+                    """,
+                    (next_step["id"],),
+                )
+                attempts = int(cursor.fetchone()["attempts"])
+                cursor.execute(
+                    """
+                    UPDATE automation_runs
+                    SET status = 'running',
+                        current_step_order = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    """,
+                    (next_step["step_order"], run_id),
+                )
+                _append_automation_log(cursor, run_id, campaign_id, f"Starting step {next_step['step_order']}: {next_step['step_type']} (attempt {attempts})", "info", next_step["id"])
+                conn.commit()
+
+            ok = False
+            message = ""
+            external_id = None
+            try:
+                ok, message, external_id = _execute_automation_step_once(run_id, next_step)
+            except Exception as exc:
+                ok = False
+                message = str(exc)
+
+            with get_db() as conn:
+                cursor = conn.cursor()
+                run = _load_automation_run(cursor, run_id)
+                if not run:
+                    return
+                if str(run.get("status")) == "cancelled":
+                    return
+                step = _load_automation_steps(cursor, run_id)
+                current = next((item for item in step if int(item["id"]) == int(next_step["id"])), None) or next_step
+                if ok:
+                    cursor.execute(
+                        """
+                        UPDATE automation_run_steps
+                        SET status = 'completed',
+                            external_run_id = COALESCE(%s, external_run_id),
+                            error_message = NULL,
+                            completed_at = CURRENT_TIMESTAMP,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = %s
+                        """,
+                        (external_id, next_step["id"]),
+                    )
+                    _append_automation_log(cursor, run_id, campaign_id, message or f"Step {next_step['step_type']} completed", "info", next_step["id"])
+                    conn.commit()
+                    continue
+
+                max_attempts = 1 + max(0, int(current.get("max_retries") or 0))
+                if int(current.get("attempts") or attempts) < max_attempts:
+                    cursor.execute(
+                        """
+                        UPDATE automation_run_steps
+                        SET status = 'pending',
+                            external_run_id = COALESCE(%s, external_run_id),
+                            error_message = %s,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = %s
+                        """,
+                        (external_id, message, next_step["id"]),
+                    )
+                    _append_automation_log(cursor, run_id, campaign_id, f"Step failed and will retry: {message}", "warning", next_step["id"])
+                    conn.commit()
+                    continue
+
+                cursor.execute(
+                    """
+                    UPDATE automation_run_steps
+                    SET status = 'failed',
+                        external_run_id = COALESCE(%s, external_run_id),
+                        error_message = %s,
+                        completed_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    """,
+                    (external_id, message, next_step["id"]),
+                )
+                cursor.execute(
+                    """
+                    UPDATE automation_runs
+                    SET status = 'failed',
+                        latest_error = %s,
+                        completed_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    """,
+                    (message, run_id),
+                )
+                _append_automation_log(cursor, run_id, campaign_id, f"Funnel failed: {message}", "error", next_step["id"])
+                conn.commit()
+                return
+    finally:
+        with automation_scheduler_lock:
+            automation_active_runs.discard(int(run_id))
+
+
+def _ensure_automation_run_worker(run_id: int):
+    with automation_scheduler_lock:
+        if int(run_id) in automation_active_runs:
+            return
+        automation_active_runs.add(int(run_id))
+    thread = threading.Thread(target=_run_automation_run, args=(int(run_id),), daemon=True)
+    thread.start()
+
+
+def _automation_scheduler_loop():
+    while True:
+        try:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT id
+                    FROM automation_runs
+                    WHERE status IN ('queued', 'running')
+                    ORDER BY created_at ASC
+                    LIMIT 10
+                    """
+                )
+                run_ids = [int(row["id"]) for row in cursor.fetchall()]
+            for run_id in run_ids:
+                _ensure_automation_run_worker(run_id)
+        except Exception:
+            pass
+        time.sleep(AUTOMATION_POLL_SECONDS)
+
+
+def _ensure_automation_scheduler():
+    global automation_scheduler_started
+    with automation_scheduler_lock:
+        if automation_scheduler_started:
+            return
+        automation_scheduler_started = True
+    thread = threading.Thread(target=_automation_scheduler_loop, daemon=True)
+    thread.start()
+
+
 @app.get("/docs/api", response_class=HTMLResponse)
 async def get_api_docs(request: Request):
     auth_redirect = _require_ui_auth(request)
@@ -3527,6 +4104,14 @@ async def get_enrichment_page(request: Request):
     if auth_redirect:
         return auth_redirect
     return templates.TemplateResponse("enrichment.html", {"request": request})
+
+
+@app.get("/funnels", response_class=HTMLResponse)
+async def get_funnels_page(request: Request):
+    auth_redirect = _require_ui_auth(request)
+    if auth_redirect:
+        return auth_redirect
+    return templates.TemplateResponse("funnels.html", {"request": request})
 
 
 @app.get("/sources", response_class=HTMLResponse)
@@ -4396,6 +4981,7 @@ async def create_campaign(
     maps_scrape_mode: str = Form("slow"),
     source_template_id: Optional[str] = Form(None),
     scrape_maps_only: Optional[str] = Form(None),
+    funnel_template_id: Optional[str] = Form(None),
 ):
     phrases = [p.strip() for p in search_phrases.split("\n") if p.strip()]
     requested_mode = str(maps_scrape_mode or "").strip().lower()
@@ -4404,7 +4990,9 @@ async def create_campaign(
     normalized_mode = _normalize_maps_scrape_mode(requested_mode or "slow")
     normalized_scrape_maps_only = _coerce_bool_flag(scrape_maps_only, False)
     normalized_source_template_id = _normalize_source_template_id(source_template_id)
+    normalized_funnel_template_id = _safe_int(funnel_template_id, None) if str(funnel_template_id or "").strip() else None
     source_template = None
+    funnel_run_id = None
     with get_db() as conn:
         cursor = conn.cursor()
         source_template = _ensure_source_template(cursor, normalized_source_template_id)
@@ -4418,10 +5006,14 @@ async def create_campaign(
                 "INSERT INTO requests (campaign_id, req_text, status) VALUES (%s, %s, %s)",
                 (campaign_id, phrase, "pending")
             )
+        if normalized_funnel_template_id:
+            funnel_run_id = _create_automation_run(cursor, int(campaign_id), int(normalized_funnel_template_id), "campaign_create")
         conn.commit()
     http_source_runner_started = False
     if source_template and _normalize_source_template_type(source_template.get("source_type")) == "http_api":
         http_source_runner_started = _start_http_source_campaign_job(int(campaign_id))
+    if funnel_run_id:
+        _ensure_automation_run_worker(int(funnel_run_id))
     return {
         "status": "Campaign created",
         "campaign_id": campaign_id,
@@ -4429,6 +5021,7 @@ async def create_campaign(
         "source_template_id": normalized_source_template_id,
         "scrape_maps_only": normalized_scrape_maps_only,
         "http_source_runner_started": http_source_runner_started,
+        "funnel_run_id": funnel_run_id,
     }
 
 
@@ -4463,6 +5056,7 @@ async def import_csv_campaign(
     request_text: str = Form(...),
     field_mapping: str = Form("{}"),
     static_fields: str = Form("[]"),
+    funnel_template_id: Optional[str] = Form(None),
     file: UploadFile = File(...),
 ):
     campaign_name = str(name or "").strip()
@@ -4496,10 +5090,12 @@ async def import_csv_campaign(
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="static_fields must be valid JSON")
     static_values = _normalize_csv_static_fields(parsed_static_fields)
+    normalized_funnel_template_id = _safe_int(funnel_template_id, None) if str(funnel_template_id or "").strip() else None
 
     if not normalized_mapping and not static_values:
         raise HTTPException(status_code=400, detail="Map at least one CSV or static field before import")
 
+    funnel_run_id = None
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -4545,13 +5141,19 @@ async def import_csv_campaign(
             )
             imported_count += 1
 
+        if normalized_funnel_template_id:
+            funnel_run_id = _create_automation_run(cursor, campaign_id, int(normalized_funnel_template_id), "campaign_create")
         conn.commit()
+
+    if funnel_run_id:
+        _ensure_automation_run_worker(int(funnel_run_id))
 
     return {
         "status": f"{file_type.upper()} campaign imported",
         "campaign_id": campaign_id,
         "requests_created": len(request_ids),
         "contacts_imported": imported_count,
+        "funnel_run_id": funnel_run_id,
     }
 
 
@@ -7187,6 +7789,240 @@ async def get_campaign_status(campaign_id: int):
         contacts = [dict(row) for row in cursor.fetchall()]
         return {"campaign": dict(campaign), "requests": requests, "contacts": contacts}
 
+
+@app.get("/api/funnels")
+async def get_funnel_templates():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM automation_funnel_templates ORDER BY name")
+        templates_rows = []
+        for row in cursor.fetchall():
+            item = dict(row)
+            item["steps"] = _safe_json_loads(item.get("steps"), [])
+            templates_rows.append(item)
+    return {"funnels": templates_rows}
+
+
+@app.post("/api/funnels")
+async def create_funnel_template(request: Request):
+    data = await request.json()
+    name = str(data.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Funnel name is required")
+    steps = _normalize_funnel_steps(data.get("steps") or [])
+    if not any(step.get("enabled", True) for step in steps):
+        raise HTTPException(status_code=400, detail="At least one enabled funnel step is required")
+    retry_count = max(0, min(_safe_int(data.get("default_retry_count"), 2), 10))
+    description = str(data.get("description") or "").strip()
+    enabled = _coerce_bool_flag(data.get("enabled"), True)
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO automation_funnel_templates
+                (name, description, steps, default_retry_count, enabled)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (name, description, Json(steps), retry_count, enabled),
+        )
+        template_id = int(cursor.fetchone()["id"])
+        conn.commit()
+    return {"status": "Funnel created", "template_id": template_id}
+
+
+@app.put("/api/funnels/{template_id}")
+async def update_funnel_template(template_id: int, request: Request):
+    data = await request.json()
+    name = str(data.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Funnel name is required")
+    steps = _normalize_funnel_steps(data.get("steps") or [])
+    if not any(step.get("enabled", True) for step in steps):
+        raise HTTPException(status_code=400, detail="At least one enabled funnel step is required")
+    retry_count = max(0, min(_safe_int(data.get("default_retry_count"), 2), 10))
+    description = str(data.get("description") or "").strip()
+    enabled = _coerce_bool_flag(data.get("enabled"), True)
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM automation_funnel_templates WHERE id = %s", (template_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Funnel template not found")
+        cursor.execute(
+            """
+            UPDATE automation_funnel_templates
+            SET name = %s,
+                description = %s,
+                steps = %s,
+                default_retry_count = %s,
+                enabled = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (name, description, Json(steps), retry_count, enabled, template_id),
+        )
+        conn.commit()
+    return {"status": "Funnel updated", "template_id": template_id}
+
+
+@app.delete("/api/funnels/{template_id}")
+async def delete_funnel_template(template_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM automation_funnel_templates WHERE id = %s", (template_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Funnel template not found")
+        conn.commit()
+    return {"status": "Funnel deleted"}
+
+
+@app.post("/api/campaign/{campaign_id}/funnels/start")
+async def start_campaign_funnel(campaign_id: int, request: Request):
+    data = await request.json()
+    template_id = data.get("template_id")
+    if not template_id:
+        raise HTTPException(status_code=400, detail="template_id is required")
+    with get_db() as conn:
+        cursor = conn.cursor()
+        _ensure_campaign_exists(cursor, campaign_id)
+        cursor.execute(
+            """
+            SELECT id
+            FROM automation_runs
+            WHERE campaign_id = %s
+              AND status IN ('queued', 'running', 'waiting_confirmation')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (campaign_id,),
+        )
+        active = cursor.fetchone()
+        if active:
+            run_id = int(active["id"])
+        else:
+            run_id = _create_automation_run(cursor, campaign_id, int(template_id), "dashboard")
+        conn.commit()
+    _ensure_automation_run_worker(run_id)
+    with get_db() as conn:
+        cursor = conn.cursor()
+        run = _load_automation_run(cursor, run_id)
+        steps = _load_automation_steps(cursor, run_id)
+        logs = _load_automation_logs(cursor, run_id)
+    return {"run": _serialize_automation_run(run, steps, logs), "idempotent": bool(active)}
+
+
+@app.get("/api/campaign/{campaign_id}/funnel-runs")
+async def get_campaign_funnel_runs(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT ar.*, aft.name AS template_name
+            FROM automation_runs ar
+            JOIN automation_funnel_templates aft ON aft.id = ar.template_id
+            WHERE ar.campaign_id = %s
+            ORDER BY ar.created_at DESC
+            LIMIT 20
+            """,
+            (campaign_id,),
+        )
+        runs = [dict(row) for row in cursor.fetchall()]
+    return {"runs": runs}
+
+
+@app.get("/api/funnel-runs/{run_id}")
+async def get_funnel_run(run_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        run = _load_automation_run(cursor, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Funnel run not found")
+        steps = _load_automation_steps(cursor, run_id)
+        logs = _load_automation_logs(cursor, run_id)
+    return {"run": _serialize_automation_run(run, steps, logs)}
+
+
+@app.post("/api/funnel-runs/{run_id}/confirm-export")
+async def confirm_funnel_export(run_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        run = _load_automation_run(cursor, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Funnel run not found")
+        cursor.execute(
+            """
+            SELECT *
+            FROM automation_run_steps
+            WHERE run_id = %s
+              AND step_type = 'export'
+              AND status = 'waiting_confirmation'
+            ORDER BY step_order
+            LIMIT 1
+            """,
+            (run_id,),
+        )
+        step = cursor.fetchone()
+        if not step:
+            raise HTTPException(status_code=400, detail="No export step is waiting for confirmation")
+        config = _safe_json_loads(step.get("config"), {})
+        config["confirmed"] = True
+        cursor.execute(
+            """
+            UPDATE automation_run_steps
+            SET status = 'pending',
+                config = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (Json(config), step["id"]),
+        )
+        cursor.execute(
+            """
+            UPDATE automation_runs
+            SET status = 'queued',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (run_id,),
+        )
+        _append_automation_log(cursor, run_id, int(run["campaign_id"]), "Export confirmed by user", "info", int(step["id"]))
+        conn.commit()
+    _ensure_automation_run_worker(run_id)
+    return {"status": "Export confirmed", "run_id": run_id}
+
+
+@app.post("/api/funnel-runs/{run_id}/cancel")
+async def cancel_funnel_run(run_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        run = _load_automation_run(cursor, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Funnel run not found")
+        cursor.execute(
+            """
+            UPDATE automation_runs
+            SET status = 'cancelled',
+                completed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (run_id,),
+        )
+        cursor.execute(
+            """
+            UPDATE automation_run_steps
+            SET status = 'cancelled',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE run_id = %s
+              AND status IN ('pending', 'running', 'waiting_confirmation')
+            """,
+            (run_id,),
+        )
+        _append_automation_log(cursor, run_id, int(run["campaign_id"]), "Funnel cancelled by user", "warning")
+        conn.commit()
+    return {"status": "Funnel cancelled", "run_id": run_id}
+
+
 # Export Template Management
 @app.get("/api/templates")
 async def get_templates():
@@ -7441,6 +8277,7 @@ async def export_campaign(campaign_id: int, request: Request):
         export_catch_all = data.get('export_catch_all', False)
         export_catch_all_only = data.get('export_catch_all_only', False)
         exclude_public_emails = data.get('exclude_public_emails', False)
+        export_domain_ok = data.get('export_domain_ok', False)
 
         conditions = [
             "campaign_id = %s",
@@ -7453,6 +8290,8 @@ async def export_campaign(campaign_id: int, request: Request):
             placeholders = ','.join(['%s' for _ in PUBLIC_EMAIL_DOMAINS])
             conditions.append(f"lower(split_part(email, '@', 2)) NOT IN ({placeholders})")
             params.extend(PUBLIC_EMAIL_DOMAINS)
+        if export_domain_ok:
+            conditions.append("domain_status = 'Domain OK'")
 
         query = f"""
             SELECT * FROM contacts
@@ -9326,3 +10165,7 @@ async def create_default_templates():
                     ],
                 },
             )
+
+        conn.commit()
+
+    _ensure_automation_scheduler()

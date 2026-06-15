@@ -888,6 +888,21 @@ class PipelineEndpointTests(unittest.TestCase):
             )
         self.assertEqual(ctx.exception.status_code, 400)
 
+    def test_normalize_funnel_steps_keeps_supported_steps_and_config(self):
+        steps = self.main._normalize_funnel_steps([
+            {"type": "pipeline", "config": {"retry_existing": True}},
+            {"step_type": "enrichment", "label": "Custom Enrichment", "enabled": False, "config": {"template_id": 4}},
+            {"type": "unknown", "config": {"template_id": 99}},
+            "bad",
+        ])
+
+        self.assertEqual([step["type"] for step in steps], ["pipeline", "enrichment"])
+        self.assertEqual(steps[0]["label"], "Pipeline")
+        self.assertEqual(steps[0]["config"], {"retry_existing": True})
+        self.assertEqual(steps[1]["label"], "Custom Enrichment")
+        self.assertFalse(steps[1]["enabled"])
+        self.assertEqual(steps[1]["config"], {"template_id": 4})
+
     def test_csv_import_parses_semicolon_csv_and_suggests_fields(self):
         headers, rows = self.main._parse_csv_text("Company;Website;Owner Name;Email\nAcme;acme.com;Ann Lee;ann@acme.com\n")
         self.assertEqual(headers, ["Company", "Website", "Owner Name", "Email"])

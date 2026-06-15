@@ -29,6 +29,7 @@
                 <a href="/verify" class="app-chip hover:text-slate-900">Email Verification</a>
                 <a href="/enrichment" class="app-chip hover:text-slate-900">Enrichment Manager</a>
                 <a href="/sources" class="app-chip hover:text-slate-900">Sources Manager</a>
+                <a href="/funnels" class="app-chip hover:text-slate-900">Funnel Manager</a>
                 <form method="post" action="/auth/logout" class="inline">
                     <button type="submit" class="app-chip hover:text-slate-900">Logout</button>
                 </form>
@@ -81,6 +82,13 @@
                         </select>
                         <p class="mt-1 text-xs text-slate-500">Set once at creation and used by the pipeline maps stage.</p>
                     </div>
+                </div>
+                <div>
+                    <label class="block text-sm font-semibold text-gray-700 mb-1">Default Funnel</label>
+                    <select id="funnelTemplateSelect" name="funnel_template_id" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all">
+                        <option value="">No funnel - create campaign only</option>
+                    </select>
+                    <p class="mt-1 text-xs text-slate-500">When selected, the funnel starts now after the campaign is created.</p>
                 </div>
                 <div id="csvImportPanel" class="hidden rounded-lg border border-sky-200 bg-sky-50/50 p-4">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1745,6 +1753,7 @@
                 csvImportPreview = null;
                 updateLeadSourceMode();
                 await loadSourceTemplateOptions();
+                await loadFunnelTemplateOptions();
                 toggleCampaignForm();
                 await refreshCampaigns();
             } catch (error) {
@@ -2295,9 +2304,35 @@
             }
         }
 
+        async function loadFunnelTemplateOptions() {
+            const select = document.getElementById('funnelTemplateSelect');
+            if (!select) return;
+            const currentValue = select.value;
+            select.innerHTML = '<option value="">No funnel - create campaign only</option>';
+            try {
+                const response = await fetch('/api/funnels');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const data = await response.json();
+                (data.funnels || [])
+                    .filter(funnel => funnel.enabled !== false)
+                    .forEach(funnel => {
+                        const option = document.createElement('option');
+                        option.value = funnel.id;
+                        option.textContent = funnel.name;
+                        select.appendChild(option);
+                    });
+                select.value = currentValue || '';
+            } catch (error) {
+                console.warn('Could not load funnel templates:', error);
+            }
+        }
+
         document.addEventListener('DOMContentLoaded', () => {
             updateSearchPhraseCount();
             loadSourceTemplateOptions();
+            loadFunnelTemplateOptions();
             document.getElementById('sourceTemplateSelect')?.addEventListener('change', updateLeadSourceMode);
             document.getElementById('csvImportFile')?.addEventListener('change', () => {
                 csvImportPreview = null;

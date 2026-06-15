@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Funnel Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="app-shell">
+    <div class="app-container">
+        <header class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mb-8">
+            <a href="/" class="flex items-center gap-4">
+                <div class="rounded-2xl border border-white/60 bg-white/80 p-3 shadow-sm">
+                    <svg class="w-8 h-8 text-sky-600" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"></path></svg>
+                </div>
+                <div>
+                    <p class="app-chip">ScrapIQ</p>
+                    <h1 class="section-title text-2xl md:text-3xl font-semibold text-slate-900">Funnel Manager</h1>
+                    <p class="text-sm text-slate-600">Create campaign funnels and run scrape, enrichment, checks, verification, and export in order.</p>
+                </div>
+            </a>
+            <div class="flex flex-wrap items-center gap-2">
+                <a href="/" class="app-chip hover:text-slate-900">Dashboard</a>
+                <a href="/sources" class="app-chip hover:text-slate-900">Sources Manager</a>
+                <a href="/enrichment" class="app-chip hover:text-slate-900">Enrichment Manager</a>
+                <a href="/verify" class="app-chip hover:text-slate-900">Email Verification</a>
+                <a href="/export" class="app-chip hover:text-slate-900">Export Manager</a>
+                <form method="post" action="/auth/logout" class="inline">
+                    <button type="submit" class="app-chip hover:text-slate-900">Logout</button>
+                </form>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 xl:grid-cols-[430px,1fr] gap-6">
+            <section class="app-card p-6">
+                <div class="mb-5 flex items-start justify-between gap-3">
+                    <div>
+                        <h2 class="text-xl font-semibold text-slate-900">Saved Funnels</h2>
+                        <p class="text-sm text-slate-500">Use one as the default when creating a campaign.</p>
+                    </div>
+                    <button type="button" onclick="resetFunnelForm()" class="rounded-full bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-700">New</button>
+                </div>
+                <div id="funnelsList" class="space-y-3"></div>
+            </section>
+
+            <section class="space-y-6">
+                <div class="app-card p-6">
+                    <div class="mb-5">
+                        <h2 id="formTitle" class="text-xl font-semibold text-slate-900">Create Funnel</h2>
+                        <p class="text-sm text-slate-500">Steps run from top to bottom. Retries are per step.</p>
+                    </div>
+                    <form id="funnelForm" class="space-y-5">
+                        <input type="hidden" id="funnelId">
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <label class="block md:col-span-2">
+                                <span class="block text-sm font-semibold text-slate-700 mb-1">Funnel Name</span>
+                                <input id="funnelName" required class="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200" placeholder="Full campaign funnel">
+                            </label>
+                            <label class="block">
+                                <span class="block text-sm font-semibold text-slate-700 mb-1">Retry Count</span>
+                                <input id="funnelRetryCount" type="number" min="0" max="10" value="2" class="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200">
+                            </label>
+                        </div>
+                        <label class="block">
+                            <span class="block text-sm font-semibold text-slate-700 mb-1">Description</span>
+                            <textarea id="funnelDescription" rows="2" class="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200" placeholder="Optional notes"></textarea>
+                        </label>
+                        <label class="inline-flex items-center gap-2 text-sm text-slate-700">
+                            <input id="funnelEnabled" type="checkbox" checked class="rounded border-slate-300 text-sky-600 focus:ring-sky-500">
+                            <span>Enabled</span>
+                        </label>
+
+                        <div class="space-y-4">
+                            <div class="rounded-xl border border-slate-200 bg-white p-4">
+                                <label class="flex items-center gap-2 font-semibold text-slate-800">
+                                    <input id="stepPipelineEnabled" type="checkbox" checked class="rounded border-slate-300 text-sky-600 focus:ring-sky-500">
+                                    <span>1. Campaign Pipeline</span>
+                                </label>
+                                <p class="mt-1 text-xs text-slate-500">Starts the built-in pipeline. CSV/XLSX campaigns already completed will skip this step.</p>
+                            </div>
+
+                            <div class="rounded-xl border border-slate-200 bg-white p-4">
+                                <label class="flex items-center gap-2 font-semibold text-slate-800">
+                                    <input id="stepEnrichmentEnabled" type="checkbox" class="rounded border-slate-300 text-sky-600 focus:ring-sky-500">
+                                    <span>2. Enrichment</span>
+                                </label>
+                                <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <label class="block">
+                                        <span class="block text-xs font-semibold text-slate-600 mb-1">Enrichment Template</span>
+                                        <select id="enrichmentTemplateSelect" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"></select>
+                                    </label>
+                                    <label class="block">
+                                        <span class="block text-xs font-semibold text-slate-600 mb-1">Concurrency</span>
+                                        <input id="enrichmentConcurrency" type="number" min="1" max="100" value="1" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                                    </label>
+                                </div>
+                                <div class="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                                    <label class="inline-flex items-center gap-2"><input id="enrichmentOverwrite" type="checkbox" class="rounded border-slate-300 text-sky-600">Overwrite existing fields</label>
+                                    <label class="inline-flex items-center gap-2"><input id="enrichmentSkipMissing" type="checkbox" checked class="rounded border-slate-300 text-sky-600">Skip missing inputs</label>
+                                    <label class="inline-flex items-center gap-2"><input id="enrichmentValidOnly" type="checkbox" class="rounded border-slate-300 text-sky-600">Valid emails only</label>
+                                </div>
+                            </div>
+
+                            <div class="rounded-xl border border-slate-200 bg-white p-4">
+                                <label class="flex items-center gap-2 font-semibold text-slate-800">
+                                    <input id="stepDnsEnabled" type="checkbox" class="rounded border-slate-300 text-sky-600 focus:ring-sky-500">
+                                    <span>3. DNS / SSL Domain Check</span>
+                                </label>
+                                <div class="mt-3">
+                                    <label class="block">
+                                        <span class="block text-xs font-semibold text-slate-600 mb-1">DNS Checker Template</span>
+                                        <select id="dnsTemplateSelect" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"></select>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="rounded-xl border border-slate-200 bg-white p-4">
+                                <label class="flex items-center gap-2 font-semibold text-slate-800">
+                                    <input id="stepVerificationEnabled" type="checkbox" class="rounded border-slate-300 text-sky-600 focus:ring-sky-500">
+                                    <span>4. Email Verification</span>
+                                </label>
+                                <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <label class="block">
+                                        <span class="block text-xs font-semibold text-slate-600 mb-1">Verification Template</span>
+                                        <select id="verificationTemplateSelect" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"></select>
+                                    </label>
+                                    <label class="block">
+                                        <span class="block text-xs font-semibold text-slate-600 mb-1">Delay Seconds</span>
+                                        <input id="verificationDelay" type="number" min="0" step="0.25" value="2" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                                    </label>
+                                </div>
+                                <label class="mt-3 inline-flex items-center gap-2 text-sm text-slate-700">
+                                    <input id="verificationSkipPublic" type="checkbox" class="rounded border-slate-300 text-sky-600">
+                                    <span>Skip public providers</span>
+                                </label>
+                            </div>
+
+                            <div class="rounded-xl border border-slate-200 bg-white p-4">
+                                <label class="flex items-center gap-2 font-semibold text-slate-800">
+                                    <input id="stepExportEnabled" type="checkbox" class="rounded border-slate-300 text-sky-600 focus:ring-sky-500">
+                                    <span>5. Export</span>
+                                </label>
+                                <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <label class="block">
+                                        <span class="block text-xs font-semibold text-slate-600 mb-1">Export Template</span>
+                                        <select id="exportTemplateSelect" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"></select>
+                                    </label>
+                                    <label class="block">
+                                        <span class="block text-xs font-semibold text-slate-600 mb-1">Batch Size</span>
+                                        <input id="exportBatchSize" type="number" min="1" value="1000000" class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                                    </label>
+                                </div>
+                                <div class="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                                    <label class="inline-flex items-center gap-2"><input id="exportValidOnly" type="checkbox" checked class="rounded border-slate-300 text-sky-600">Valid email only</label>
+                                    <label class="inline-flex items-center gap-2"><input id="exportCatchAll" type="checkbox" class="rounded border-slate-300 text-sky-600">Include catch-all</label>
+                                    <label class="inline-flex items-center gap-2"><input id="exportCatchAllOnly" type="checkbox" class="rounded border-slate-300 text-sky-600">Catch-all only</label>
+                                    <label class="inline-flex items-center gap-2"><input id="exportExcludePublic" type="checkbox" class="rounded border-slate-300 text-sky-600">Do not export public emails</label>
+                                    <label class="inline-flex items-center gap-2"><input id="exportDomainOk" type="checkbox" class="rounded border-slate-300 text-sky-600">Domain OK only</label>
+                                    <label class="inline-flex items-center gap-2"><input id="exportRequireConfirmation" type="checkbox" class="rounded border-slate-300 text-sky-600">Require confirmation</label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="flex flex-wrap gap-3">
+                            <button type="submit" class="rounded-full bg-sky-600 px-5 py-2 text-sm font-semibold text-white hover:bg-sky-700">Save Funnel</button>
+                            <button type="button" onclick="resetFunnelForm()" class="rounded-full border border-slate-300 px-5 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Reset</button>
+                        </div>
+                    </form>
+                    <div id="saveStatus" class="mt-4 hidden rounded-lg border px-3 py-2 text-sm"></div>
+                </div>
+
+                <div class="app-card p-6">
+                    <div class="mb-5">
+                        <h2 class="text-xl font-semibold text-slate-900">Run Funnel</h2>
+                        <p class="text-sm text-slate-500">Start a saved funnel now for an existing campaign.</p>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <label class="block">
+                            <span class="block text-sm font-semibold text-slate-700 mb-1">Campaign</span>
+                            <select id="runCampaignSelect" class="w-full rounded-xl border border-slate-300 px-4 py-3"></select>
+                        </label>
+                        <label class="block">
+                            <span class="block text-sm font-semibold text-slate-700 mb-1">Funnel</span>
+                            <select id="runFunnelSelect" class="w-full rounded-xl border border-slate-300 px-4 py-3"></select>
+                        </label>
+                    </div>
+                    <div class="mt-4 flex flex-wrap gap-3">
+                        <button type="button" onclick="startSelectedFunnel()" class="rounded-full bg-indigo-600 px-5 py-2 text-sm font-semibold text-white hover:bg-indigo-700">Start Funnel</button>
+                        <button type="button" onclick="refreshActiveRun()" class="rounded-full border border-slate-300 px-5 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Refresh Run</button>
+                    </div>
+                    <div id="runStatusPanel" class="mt-5 hidden rounded-xl border border-slate-200 bg-white p-4">
+                        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                                <div id="runTitle" class="text-sm font-semibold text-slate-800">Run</div>
+                                <div id="runMeta" class="text-xs text-slate-500"></div>
+                            </div>
+                            <div class="flex flex-wrap gap-2">
+                                <button id="confirmExportBtn" type="button" onclick="confirmExport()" class="hidden rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700">Confirm Export</button>
+                                <button id="cancelRunBtn" type="button" onclick="cancelRun()" class="rounded-full border border-red-200 bg-red-50 px-4 py-2 text-xs font-semibold text-red-700 hover:bg-red-100">Cancel</button>
+                            </div>
+                        </div>
+                        <div id="runSteps" class="mt-4 space-y-2"></div>
+                        <div class="mt-4">
+                            <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Logs</div>
+                            <div id="runLogs" class="max-h-64 overflow-y-auto rounded-lg bg-slate-950 p-3 font-mono text-xs text-slate-100"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script>
+        let funnelTemplates = [];
+        let exportTemplates = [];
+        let enrichmentTemplates = [];
+        let verificationTemplates = [];
+        let campaigns = [];
+        let activeRunId = null;
+        let runPollTimer = null;
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function intValue(id, fallback = 0) {
+            const parsed = parseInt(document.getElementById(id)?.value || '', 10);
+            return Number.isFinite(parsed) ? parsed : fallback;
+        }
+
+        function numberValue(id, fallback = 0) {
+            const parsed = parseFloat(document.getElementById(id)?.value || '');
+            return Number.isFinite(parsed) ? parsed : fallback;
+        }
+
+        function checked(id) {
+            return Boolean(document.getElementById(id)?.checked);
+        }
+
+        function setChecked(id, value) {
+            const el = document.getElementById(id);
+            if (el) el.checked = Boolean(value);
+        }
+
+        function selectOptions(items, placeholder, selectedValue = '', filterFn = null) {
+            const filtered = filterFn ? items.filter(filterFn) : items;
+            const options = [`<option value="">${escapeHtml(placeholder)}</option>`];
+            filtered.forEach(item => {
+                const selected = String(item.id) === String(selectedValue || '') ? ' selected' : '';
+                const service = item.service ? ` (${item.service})` : '';
+                options.push(`<option value="${escapeHtml(item.id)}"${selected}>${escapeHtml(item.name || `#${item.id}`)}${escapeHtml(service)}</option>`);
+            });
+            return options.join('');
+        }
+
+        function populateSelects() {
+            document.getElementById('enrichmentTemplateSelect').innerHTML = selectOptions(enrichmentTemplates, 'Choose enrichment template');
+            document.getElementById('dnsTemplateSelect').innerHTML = selectOptions(
+                verificationTemplates,
+                'Choose DNS checker template',
+                '',
+                item => item.service === 'dns_ssl_checker'
+            );
+            document.getElementById('verificationTemplateSelect').innerHTML = selectOptions(
+                verificationTemplates,
+                'Choose verification template',
+                '',
+                item => item.service !== 'dns_ssl_checker'
+            );
+            document.getElementById('exportTemplateSelect').innerHTML = selectOptions(exportTemplates, 'Choose export template');
+            document.getElementById('runCampaignSelect').innerHTML = selectOptions(campaigns, 'Choose campaign');
+            document.getElementById('runFunnelSelect').innerHTML = selectOptions(
+                funnelTemplates.filter(item => item.enabled !== false),
+                'Choose funnel'
+            );
+        }
+
+        function stepBadgeClass(status) {
+            if (status === 'completed') return 'bg-green-100 text-green-700';
+            if (status === 'running' || status === 'queued') return 'bg-blue-100 text-blue-700';
+            if (status === 'waiting_confirmation') return 'bg-amber-100 text-amber-700';
+            if (status === 'failed' || status === 'cancelled') return 'bg-red-100 text-red-700';
+            return 'bg-slate-100 text-slate-600';
+        }
+
+        function showStatus(message, isError = false) {
+            const box = document.getElementById('saveStatus');
+            box.textContent = message;
+            box.className = `mt-4 rounded-lg border px-3 py-2 text-sm ${isError ? 'border-red-200 bg-red-50 text-red-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`;
+            box.classList.remove('hidden');
+        }
+
+        function collectSteps() {
+            const steps = [];
+            if (checked('stepPipelineEnabled')) {
+                steps.push({ type: 'pipeline', label: 'Campaign Pipeline', enabled: true, config: {} });
+            }
+            if (checked('stepEnrichmentEnabled')) {
+                const templateId = document.getElementById('enrichmentTemplateSelect').value;
+                if (!templateId) throw new Error('Choose an enrichment template.');
+                steps.push({
+                    type: 'enrichment',
+                    label: 'Enrichment',
+                    enabled: true,
+                    config: {
+                        template_id: Number(templateId),
+                        concurrency: intValue('enrichmentConcurrency', 1),
+                        max_retries: intValue('funnelRetryCount', 2),
+                        overwrite_existing: checked('enrichmentOverwrite'),
+                        skip_missing_input: checked('enrichmentSkipMissing'),
+                        valid_emails_only: checked('enrichmentValidOnly')
+                    }
+                });
+            }
+            if (checked('stepDnsEnabled')) {
+                const templateId = document.getElementById('dnsTemplateSelect').value;
+                if (!templateId) throw new Error('Choose a DNS checker template.');
+                steps.push({
+                    type: 'dns_check',
+                    label: 'DNS / SSL Domain Check',
+                    enabled: true,
+                    config: { template_id: Number(templateId), delay: 0 }
+                });
+            }
+            if (checked('stepVerificationEnabled')) {
+                const templateId = document.getElementById('verificationTemplateSelect').value;
+                if (!templateId) throw new Error('Choose an email verification template.');
+                steps.push({
+                    type: 'email_verification',
+                    label: 'Email Verification',
+                    enabled: true,
+                    config: {
+                        template_id: Number(templateId),
+                        delay: numberValue('verificationDelay', 2),
+                        skip_public_providers: checked('verificationSkipPublic')
+                    }
+                });
+            }
+            if (checked('stepExportEnabled')) {
+                const templateId = document.getElementById('exportTemplateSelect').value;
+                if (!templateId) throw new Error('Choose an export template.');
+                steps.push({
+                    type: 'export',
+                    label: 'Export',
+                    enabled: true,
+                    config: {
+                        template_id: Number(templateId),
+                        batch_size: intValue('exportBatchSize', 1000000),
+                        export_valid_only: checked('exportValidOnly'),
+                        export_catch_all: checked('exportCatchAll'),
+                        export_catch_all_only: checked('exportCatchAllOnly'),
+                        exclude_public_emails: checked('exportExcludePublic'),
+                        export_domain_ok: checked('exportDomainOk'),
+                        require_confirmation: checked('exportRequireConfirmation')
+                    }
+                });
+            }
+            if (!steps.length) throw new Error('Enable at least one funnel step.');
+            return steps;
+        }
+
+        function resetFunnelForm() {
+            document.getElementById('funnelForm').reset();
+            document.getElementById('funnelId').value = '';
+            document.getElementById('formTitle').textContent = 'Create Funnel';
+            document.getElementById('funnelRetryCount').value = '2';
+            document.getElementById('enrichmentConcurrency').value = '1';
+            document.getElementById('verificationDelay').value = '2';
+            document.getElementById('exportBatchSize').value = '1000000';
+            setChecked('funnelEnabled', true);
+            setChecked('stepPipelineEnabled', true);
+            setChecked('exportValidOnly', true);
+            document.getElementById('saveStatus').classList.add('hidden');
+            populateSelects();
+        }
+
+        function editFunnel(id) {
+            const funnel = funnelTemplates.find(item => Number(item.id) === Number(id));
+            if (!funnel) return;
+            resetFunnelForm();
+            document.getElementById('funnelId').value = funnel.id;
+            document.getElementById('formTitle').textContent = `Edit Funnel #${funnel.id}`;
+            document.getElementById('funnelName').value = funnel.name || '';
+            document.getElementById('funnelDescription').value = funnel.description || '';
+            document.getElementById('funnelRetryCount').value = funnel.default_retry_count ?? 2;
+            setChecked('funnelEnabled', funnel.enabled !== false);
+            setChecked('stepPipelineEnabled', false);
+            (funnel.steps || []).forEach(step => {
+                const config = step.config || {};
+                if (step.type === 'pipeline') {
+                    setChecked('stepPipelineEnabled', true);
+                } else if (step.type === 'enrichment') {
+                    setChecked('stepEnrichmentEnabled', true);
+                    document.getElementById('enrichmentTemplateSelect').value = config.template_id || '';
+                    document.getElementById('enrichmentConcurrency').value = config.concurrency || 1;
+                    setChecked('enrichmentOverwrite', config.overwrite_existing);
+                    setChecked('enrichmentSkipMissing', config.skip_missing_input !== false);
+                    setChecked('enrichmentValidOnly', config.valid_emails_only);
+                } else if (step.type === 'dns_check') {
+                    setChecked('stepDnsEnabled', true);
+                    document.getElementById('dnsTemplateSelect').value = config.template_id || '';
+                } else if (step.type === 'email_verification') {
+                    setChecked('stepVerificationEnabled', true);
+                    document.getElementById('verificationTemplateSelect').value = config.template_id || '';
+                    document.getElementById('verificationDelay').value = config.delay ?? 2;
+                    setChecked('verificationSkipPublic', config.skip_public_providers);
+                } else if (step.type === 'export') {
+                    setChecked('stepExportEnabled', true);
+                    document.getElementById('exportTemplateSelect').value = config.template_id || '';
+                    document.getElementById('exportBatchSize').value = config.batch_size || 1000000;
+                    setChecked('exportValidOnly', config.export_valid_only);
+                    setChecked('exportCatchAll', config.export_catch_all);
+                    setChecked('exportCatchAllOnly', config.export_catch_all_only);
+                    setChecked('exportExcludePublic', config.exclude_public_emails);
+                    setChecked('exportDomainOk', config.export_domain_ok);
+                    setChecked('exportRequireConfirmation', config.require_confirmation);
+                }
+            });
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        async function deleteFunnel(id) {
+            if (!confirm('Delete this funnel template?')) return;
+            const response = await fetch(`/api/funnels/${id}`, { method: 'DELETE' });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                alert(data.detail || 'Delete failed');
+                return;
+            }
+            await loadAll();
+        }
+
+        function renderFunnelsList() {
+            const container = document.getElementById('funnelsList');
+            if (!funnelTemplates.length) {
+                container.innerHTML = '<div class="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-500">No funnels saved yet.</div>';
+                return;
+            }
+            container.innerHTML = funnelTemplates.map(funnel => {
+                const steps = (funnel.steps || []).map(step => step.label || step.type).join(' -> ') || 'No steps';
+                return `
+                    <div class="rounded-xl border border-slate-200 bg-white p-4">
+                        <div class="flex items-start justify-between gap-3">
+                            <div>
+                                <div class="font-semibold text-slate-900">${escapeHtml(funnel.name)}</div>
+                                <div class="mt-1 text-xs text-slate-500">${escapeHtml(steps)}</div>
+                            </div>
+                            <span class="rounded-full px-2 py-1 text-xs font-semibold ${funnel.enabled === false ? 'bg-slate-100 text-slate-600' : 'bg-emerald-100 text-emerald-700'}">${funnel.enabled === false ? 'Disabled' : 'Enabled'}</span>
+                        </div>
+                        <div class="mt-3 flex flex-wrap gap-2">
+                            <button type="button" onclick="editFunnel(${Number(funnel.id)})" class="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-semibold text-sky-700 hover:bg-sky-100">Edit</button>
+                            <button type="button" onclick="deleteFunnel(${Number(funnel.id)})" class="rounded-full border border-red-200 bg-red-50 px-3 py-1 text-xs font-semibold text-red-700 hover:bg-red-100">Delete</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        async function saveFunnel(event) {
+            event.preventDefault();
+            try {
+                const id = document.getElementById('funnelId').value;
+                const payload = {
+                    name: document.getElementById('funnelName').value.trim(),
+                    description: document.getElementById('funnelDescription').value.trim(),
+                    default_retry_count: intValue('funnelRetryCount', 2),
+                    enabled: checked('funnelEnabled'),
+                    steps: collectSteps()
+                };
+                if (!payload.name) throw new Error('Funnel name is required.');
+                const response = await fetch(id ? `/api/funnels/${id}` : '/api/funnels', {
+                    method: id ? 'PUT' : 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+                showStatus(id ? 'Funnel updated.' : 'Funnel created.');
+                await loadAll();
+                if (!id && data.template_id) editFunnel(data.template_id);
+            } catch (error) {
+                showStatus(error.message, true);
+            }
+        }
+
+        async function startSelectedFunnel() {
+            const campaignId = document.getElementById('runCampaignSelect').value;
+            const templateId = document.getElementById('runFunnelSelect').value;
+            if (!campaignId || !templateId) {
+                alert('Choose a campaign and funnel.');
+                return;
+            }
+            const response = await fetch(`/api/campaign/${campaignId}/funnels/start`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ template_id: Number(templateId) })
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                alert(data.detail || 'Could not start funnel');
+                return;
+            }
+            renderRun(data.run);
+            startRunPolling();
+        }
+
+        function renderRun(run) {
+            if (!run) return;
+            activeRunId = run.id;
+            document.getElementById('runStatusPanel').classList.remove('hidden');
+            document.getElementById('runTitle').textContent = `Run #${run.id}: ${run.status}`;
+            document.getElementById('runMeta').textContent = `Campaign #${run.campaign_id} | Template #${run.template_id} | Step ${run.current_step_order || '-'}`;
+            document.getElementById('confirmExportBtn').classList.toggle('hidden', run.status !== 'waiting_confirmation');
+            document.getElementById('cancelRunBtn').disabled = ['completed', 'failed', 'cancelled'].includes(run.status);
+            document.getElementById('runSteps').innerHTML = (run.steps || []).map(step => `
+                <div class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <div class="text-sm font-semibold text-slate-800">${Number(step.step_order)}. ${escapeHtml(step.step_type)}</div>
+                        <span class="rounded-full px-2 py-1 text-xs font-semibold ${stepBadgeClass(step.status)}">${escapeHtml(step.status)}</span>
+                    </div>
+                    <div class="mt-1 text-xs text-slate-500">Attempts: ${Number(step.attempts || 0)} / ${Number(step.max_retries || 0) + 1}${step.external_run_id ? ` | External: ${escapeHtml(step.external_run_id)}` : ''}</div>
+                    ${step.error_message ? `<div class="mt-2 rounded border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700">${escapeHtml(step.error_message)}</div>` : ''}
+                </div>
+            `).join('');
+            const logs = run.logs || [];
+            document.getElementById('runLogs').innerHTML = logs.length
+                ? logs.map(log => `<div>[${escapeHtml(log.level || 'info')}] ${escapeHtml(log.message || '')}</div>`).join('')
+                : '<div>No logs yet.</div>';
+            if (['completed', 'failed', 'cancelled'].includes(run.status) && runPollTimer) {
+                clearInterval(runPollTimer);
+                runPollTimer = null;
+            }
+        }
+
+        async function refreshActiveRun() {
+            if (!activeRunId) return;
+            const response = await fetch(`/api/funnel-runs/${activeRunId}`);
+            const data = await response.json().catch(() => ({}));
+            if (response.ok) renderRun(data.run);
+        }
+
+        function startRunPolling() {
+            if (runPollTimer) clearInterval(runPollTimer);
+            runPollTimer = setInterval(refreshActiveRun, 3000);
+        }
+
+        async function confirmExport() {
+            if (!activeRunId) return;
+            const response = await fetch(`/api/funnel-runs/${activeRunId}/confirm-export`, { method: 'POST' });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                alert(data.detail || 'Could not confirm export');
+                return;
+            }
+            await refreshActiveRun();
+            startRunPolling();
+        }
+
+        async function cancelRun() {
+            if (!activeRunId || !confirm('Cancel this funnel run?')) return;
+            const response = await fetch(`/api/funnel-runs/${activeRunId}/cancel`, { method: 'POST' });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                alert(data.detail || 'Could not cancel run');
+                return;
+            }
+            await refreshActiveRun();
+        }
+
+        async function loadAll() {
+            const [funnelsRes, exportRes, enrichmentRes, verificationRes, campaignsRes] = await Promise.all([
+                fetch('/api/funnels'),
+                fetch('/api/templates'),
+                fetch('/api/enrichment/templates'),
+                fetch('/api/email-verification/templates'),
+                fetch('/api/campaigns/all')
+            ]);
+            const funnelsData = await funnelsRes.json();
+            const exportData = await exportRes.json();
+            const enrichmentData = await enrichmentRes.json();
+            const verificationData = await verificationRes.json();
+            const campaignsData = await campaignsRes.json();
+            funnelTemplates = funnelsData.funnels || [];
+            exportTemplates = exportData.templates || [];
+            enrichmentTemplates = enrichmentData.templates || [];
+            verificationTemplates = verificationData.templates || [];
+            campaigns = campaignsData.campaigns || [];
+            populateSelects();
+            renderFunnelsList();
+        }
+
+        document.getElementById('funnelForm').addEventListener('submit', saveFunnel);
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadAll();
+            resetFunnelForm();
+        });
+    </script>
+</body>
+</html>

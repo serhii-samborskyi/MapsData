@@ -306,6 +306,65 @@ def init_db():
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS automation_funnel_templates (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL DEFAULT '',
+                steps JSONB NOT NULL DEFAULT '[]'::jsonb,
+                default_retry_count INTEGER NOT NULL DEFAULT 2,
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS automation_runs (
+                id BIGSERIAL PRIMARY KEY,
+                campaign_id INTEGER NOT NULL REFERENCES search_campaigns(id) ON DELETE CASCADE,
+                template_id BIGINT NOT NULL REFERENCES automation_funnel_templates(id) ON DELETE CASCADE,
+                status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'waiting_confirmation', 'completed', 'failed', 'cancelled')),
+                current_step_order INTEGER,
+                max_retries INTEGER NOT NULL DEFAULT 2,
+                created_by TEXT,
+                latest_error TEXT,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS automation_run_steps (
+                id BIGSERIAL PRIMARY KEY,
+                run_id BIGINT NOT NULL REFERENCES automation_runs(id) ON DELETE CASCADE,
+                campaign_id INTEGER NOT NULL REFERENCES search_campaigns(id) ON DELETE CASCADE,
+                step_order INTEGER NOT NULL,
+                step_type TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'waiting_confirmation', 'completed', 'failed', 'skipped', 'cancelled')),
+                config JSONB NOT NULL DEFAULT '{}'::jsonb,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                max_retries INTEGER NOT NULL DEFAULT 2,
+                external_run_id TEXT,
+                error_message TEXT,
+                started_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(run_id, step_order)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS automation_run_logs (
+                id BIGSERIAL PRIMARY KEY,
+                run_id BIGINT NOT NULL REFERENCES automation_runs(id) ON DELETE CASCADE,
+                campaign_id INTEGER NOT NULL REFERENCES search_campaigns(id) ON DELETE CASCADE,
+                step_id BIGINT REFERENCES automation_run_steps(id) ON DELETE SET NULL,
+                level TEXT NOT NULL DEFAULT 'info',
+                message TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
 
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_runs_campaign_status ON pipeline_runs(campaign_id, status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_runs_campaign_updated_at ON pipeline_runs(campaign_id, updated_at DESC)")
@@ -318,6 +377,10 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_run_contacts_run_status ON enrichment_run_contacts(run_id, status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_run_contacts_campaign_status ON enrichment_run_contacts(campaign_id, status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_run_logs_run_created ON enrichment_run_logs(run_id, created_at DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_automation_runs_status_updated ON automation_runs(status, updated_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_automation_runs_campaign_status ON automation_runs(campaign_id, status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_automation_run_steps_run_order ON automation_run_steps(run_id, step_order)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_automation_run_logs_run_created ON automation_run_logs(run_id, created_at DESC)")
         cursor.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS source_data JSONB NOT NULL DEFAULT '{}'::jsonb")
         cursor.execute("ALTER TABLE requests ADD COLUMN IF NOT EXISTS error_details JSONB NOT NULL DEFAULT '{}'::jsonb")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_requests_campaign_id ON requests(campaign_id)")
