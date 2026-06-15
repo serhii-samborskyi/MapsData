@@ -6903,8 +6903,10 @@ async def get_campaign_requests(campaign_name: str, include_inuse: bool = False)
 
 @app.get("/api/request/{request_id}/status/{status}")
 async def update_request_status(request_id: int, status: str):
-    if status not in ['inuse', 'completed']:
-        raise HTTPException(status_code=400, detail="Invalid status. Must be 'inuse' or 'completed'")
+    allowed_statuses = {"pending", "inuse", "completed", "failed"}
+    if status not in allowed_statuses:
+        allowed = "', '".join(sorted(allowed_statuses))
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: '{allowed}'")
 
     with get_db() as conn:
         cursor = conn.cursor()
