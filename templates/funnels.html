@@ -160,6 +160,17 @@
                                     <label class="inline-flex items-center gap-2"><input id="exportDomainOk" type="checkbox" class="rounded border-slate-300 text-sky-600">Domain OK only</label>
                                     <label class="inline-flex items-center gap-2"><input id="exportRequireConfirmation" type="checkbox" class="rounded border-slate-300 text-sky-600">Require confirmation</label>
                                 </div>
+                                <div class="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                                    <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                        <label class="inline-flex items-center gap-2 text-sm font-semibold text-slate-800">
+                                            <input id="exportUseCustomMappings" type="checkbox" class="rounded border-slate-300 text-sky-600">
+                                            <span>Use custom export mappings for this funnel</span>
+                                        </label>
+                                        <button id="exportResetMappingsBtn" type="button" class="rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100">Reset from template</button>
+                                    </div>
+                                    <p id="exportMappingHelp" class="mt-2 text-xs text-slate-500">Unchecked uses the selected export template's saved mappings.</p>
+                                    <div id="exportMappingRows" class="mt-3 space-y-2"></div>
+                                </div>
                             </div>
                         </div>
 
@@ -220,6 +231,48 @@
         let campaigns = [];
         let activeRunId = null;
         let runPollTimer = null;
+        let exportFieldMappings = {};
+        const CONTACT_FIELD_OPTIONS = [
+            { value: 'business_name', label: 'Business Name' },
+            { value: 'email', label: 'Email' },
+            { value: 'phone', label: 'Phone' },
+            { value: 'domain', label: 'Domain' },
+            { value: 'address', label: 'Address' },
+            { value: 'category', label: 'Category' },
+            { value: 'rating', label: 'Rating' },
+            { value: 'review_count', label: 'Review Count' },
+            { value: 'facebook', label: 'Facebook' },
+            { value: 'instagram', label: 'Instagram' },
+            { value: 'twitter', label: 'Twitter' },
+            { value: 'yelp', label: 'Yelp' },
+            { value: 'full_name', label: 'Full Name' },
+            { value: 'firstname', label: 'First Name' },
+            { value: 'lastname', label: 'Last Name' },
+            { value: 'industry', label: 'Industry' },
+            { value: 'city', label: 'City' },
+            { value: 'state', label: 'State' },
+            { value: 'country', label: 'Country' },
+            { value: 'personal_job_position', label: 'Personal Job Position' },
+            { value: 'personal_prospect_location', label: 'Personal Prospect Location' },
+            { value: 'personal_user_social', label: 'Personal Social' },
+            { value: 'company', label: 'Company' },
+            { value: 'company_social', label: 'Company Social' },
+            { value: 'company_size', label: 'Company Size' },
+            { value: 'www', label: 'WWW' },
+            { value: 'icebreaker', label: 'Icebreaker' },
+            { value: 'time_zone_offset_min', label: 'Time Zone Offset' },
+            { value: 'notes', label: 'Notes' },
+            { value: 'tags_import', label: 'Tags' },
+            { value: 'screenshot', label: 'Screenshot' },
+            { value: 'logo', label: 'Logo' },
+            { value: 'place_id', label: 'Place ID' },
+            { value: 'request_id', label: 'Request ID' },
+            { value: 'campaign_id', label: 'Campaign ID' }
+        ];
+        for (let i = 1; i <= 20; i++) {
+            CONTACT_FIELD_OPTIONS.push({ value: `custom_${i}`, label: `Custom ${i}` });
+        }
+        const CONTACT_FIELD_SET = new Set(CONTACT_FIELD_OPTIONS.map(field => field.value));
 
         function escapeHtml(value) {
             return String(value ?? '')
@@ -228,6 +281,10 @@
                 .replace(/>/g, '&gt;')
                 .replace(/"/g, '&quot;')
                 .replace(/'/g, '&#39;');
+        }
+
+        function jsString(value) {
+            return JSON.stringify(String(value ?? ''));
         }
 
         function intValue(id, fallback = 0) {
@@ -247,6 +304,90 @@
         function setChecked(id, value) {
             const el = document.getElementById(id);
             if (el) el.checked = Boolean(value);
+        }
+
+        function parseFieldMappings(raw) {
+            if (!raw) return {};
+            if (typeof raw === 'string') {
+                try {
+                    const parsed = JSON.parse(raw);
+                    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+                } catch (error) {
+                    return {};
+                }
+            }
+            return typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+        }
+
+        function cloneFieldMappings(raw) {
+            return JSON.parse(JSON.stringify(parseFieldMappings(raw)));
+        }
+
+        function selectedExportTemplate() {
+            const id = document.getElementById('exportTemplateSelect')?.value;
+            return exportTemplates.find(template => String(template.id) === String(id || '')) || null;
+        }
+
+        function renderExportMappingOptions(selectedValue, isCustomValue) {
+            let html = '<option value="">Ignore</option>';
+            CONTACT_FIELD_OPTIONS.forEach(option => {
+                const selected = String(selectedValue || '') === option.value ? ' selected' : '';
+                html += `<option value="${escapeHtml(option.value)}"${selected}>${escapeHtml(option.label)}</option>`;
+            });
+            html += `<option value="_custom"${isCustomValue ? ' selected' : ''}>Static value</option>`;
+            return html;
+        }
+
+        function setExportMappingsFromSelectedTemplate(forceCustomOff = false) {
+            const template = selectedExportTemplate();
+            exportFieldMappings = cloneFieldMappings(template?.field_mappings);
+            if (forceCustomOff) {
+                setChecked('exportUseCustomMappings', false);
+            }
+            renderExportMappingRows();
+        }
+
+        function updateExportMapping(apiField, value) {
+            exportFieldMappings[apiField] = value;
+        }
+
+        function handleExportMappingSelect(apiField, value) {
+            const input = document.getElementById(`exportMappingCustom_${apiField}`);
+            if (value === '_custom') {
+                input.classList.remove('hidden');
+                input.focus();
+                exportFieldMappings[apiField] = input.value || '';
+                return;
+            }
+            input.classList.add('hidden');
+            exportFieldMappings[apiField] = value;
+        }
+
+        function renderExportMappingRows() {
+            const container = document.getElementById('exportMappingRows');
+            const help = document.getElementById('exportMappingHelp');
+            const useCustom = checked('exportUseCustomMappings');
+            const entries = Object.entries(exportFieldMappings || {});
+            help.textContent = useCustom
+                ? 'These mappings are saved in this funnel and override the selected export template.'
+                : "Unchecked uses the selected export template's saved mappings. Enable it to override fields for this funnel.";
+            if (!entries.length) {
+                container.innerHTML = '<div class="rounded border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">Choose an export template to load its fields.</div>';
+                return;
+            }
+            container.innerHTML = entries.map(([apiField, contactField]) => {
+                const isCustomValue = contactField && !CONTACT_FIELD_SET.has(contactField);
+                const disabled = useCustom ? '' : ' disabled';
+                return `
+                    <div class="grid grid-cols-1 gap-2 rounded border border-slate-200 bg-white p-2 md:grid-cols-[160px,1fr,1fr] md:items-center">
+                        <div class="text-xs font-semibold text-slate-700">${escapeHtml(apiField)}</div>
+                        <select class="rounded border border-slate-300 px-2 py-2 text-xs"${disabled} onchange="handleExportMappingSelect(${jsString(apiField)}, this.value)">
+                            ${renderExportMappingOptions(contactField, isCustomValue)}
+                        </select>
+                        <input id="exportMappingCustom_${escapeHtml(apiField)}" class="rounded border border-slate-300 px-2 py-2 text-xs ${isCustomValue ? '' : 'hidden'}" ${disabled} value="${isCustomValue ? escapeHtml(contactField) : ''}" placeholder="Static value" oninput="updateExportMapping(${jsString(apiField)}, this.value)">
+                    </div>
+                `;
+            }).join('');
         }
 
         function selectOptions(items, placeholder, selectedValue = '', filterFn = null) {
@@ -346,20 +487,24 @@
             if (checked('stepExportEnabled')) {
                 const templateId = document.getElementById('exportTemplateSelect').value;
                 if (!templateId) throw new Error('Choose an export template.');
+                const exportConfig = {
+                    template_id: Number(templateId),
+                    batch_size: intValue('exportBatchSize', 1000000),
+                    export_valid_only: checked('exportValidOnly'),
+                    export_catch_all: checked('exportCatchAll'),
+                    export_catch_all_only: checked('exportCatchAllOnly'),
+                    exclude_public_emails: checked('exportExcludePublic'),
+                    export_domain_ok: checked('exportDomainOk'),
+                    require_confirmation: checked('exportRequireConfirmation')
+                };
+                if (checked('exportUseCustomMappings')) {
+                    exportConfig.field_mappings = cloneFieldMappings(exportFieldMappings);
+                }
                 steps.push({
                     type: 'export',
                     label: 'Export',
                     enabled: true,
-                    config: {
-                        template_id: Number(templateId),
-                        batch_size: intValue('exportBatchSize', 1000000),
-                        export_valid_only: checked('exportValidOnly'),
-                        export_catch_all: checked('exportCatchAll'),
-                        export_catch_all_only: checked('exportCatchAllOnly'),
-                        exclude_public_emails: checked('exportExcludePublic'),
-                        export_domain_ok: checked('exportDomainOk'),
-                        require_confirmation: checked('exportRequireConfirmation')
-                    }
+                    config: exportConfig
                 });
             }
             if (!steps.length) throw new Error('Enable at least one funnel step.');
@@ -377,6 +522,9 @@
             setChecked('funnelEnabled', true);
             setChecked('stepPipelineEnabled', true);
             setChecked('exportValidOnly', true);
+            setChecked('exportUseCustomMappings', false);
+            exportFieldMappings = {};
+            renderExportMappingRows();
             document.getElementById('saveStatus').classList.add('hidden');
             populateSelects();
         }
@@ -421,6 +569,11 @@
                     setChecked('exportExcludePublic', config.exclude_public_emails);
                     setChecked('exportDomainOk', config.export_domain_ok);
                     setChecked('exportRequireConfirmation', config.require_confirmation);
+                    setChecked('exportUseCustomMappings', Boolean(config.field_mappings));
+                    exportFieldMappings = config.field_mappings
+                        ? cloneFieldMappings(config.field_mappings)
+                        : cloneFieldMappings(selectedExportTemplate()?.field_mappings);
+                    renderExportMappingRows();
                 }
             });
             window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -596,6 +749,13 @@
             renderFunnelsList();
         }
 
+        document.getElementById('exportTemplateSelect').addEventListener('change', () => {
+            setExportMappingsFromSelectedTemplate(false);
+        });
+        document.getElementById('exportUseCustomMappings').addEventListener('change', renderExportMappingRows);
+        document.getElementById('exportResetMappingsBtn').addEventListener('click', () => {
+            setExportMappingsFromSelectedTemplate(false);
+        });
         document.getElementById('funnelForm').addEventListener('submit', saveFunnel);
         document.addEventListener('DOMContentLoaded', async () => {
             await loadAll();
