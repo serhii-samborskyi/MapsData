@@ -3590,6 +3590,23 @@ def _load_automation_logs(cursor, run_id: int, limit: int = AUTOMATION_LOG_LIMIT
     return [dict(row) for row in reversed(cursor.fetchall())]
 
 
+def _remember_automation_external_run(run_id: int, step_id: int, external_id: Optional[str]):
+    if not external_id:
+        return
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE automation_run_steps
+            SET external_run_id = COALESCE(external_run_id, %s),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND run_id = %s
+            """,
+            (str(external_id), step_id, run_id),
+        )
+        conn.commit()
+
+
 def _serialize_automation_run(run: Optional[dict], steps: Optional[List[dict]] = None, logs: Optional[List[dict]] = None) -> Optional[dict]:
     if not run:
         return None
@@ -3768,11 +3785,12 @@ def _automation_step_pipeline(run_id: int, campaign_id: int, step_id: int, confi
         "retry": bool(config.get("retry_existing", False)),
     })))
     external_id = str(response.get("run_id") or "")
+    _remember_automation_external_run(run_id, step_id, external_id)
     ok, message = _wait_for_pipeline_completion(run_id, campaign_id, step_id)
     return ok, message, external_id
 
 
-def _automation_step_enrichment(run_id: int, campaign_id: int, config: dict) -> tuple[bool, str, Optional[str]]:
+def _automation_step_enrichment(run_id: int, campaign_id: int, step_id: int, config: dict) -> tuple[bool, str, Optional[str]]:
     template_id = config.get("template_id")
     if not template_id:
         return False, "Enrichment template is required", None
@@ -3781,11 +3799,12 @@ def _automation_step_enrichment(run_id: int, campaign_id: int, config: dict) -> 
     enrichment_run_id = int(enrichment_run.get("id") or 0)
     if not enrichment_run_id:
         return False, "Could not start enrichment run", None
+    _remember_automation_external_run(run_id, step_id, str(enrichment_run_id))
     ok, message = _wait_for_enrichment_completion(run_id, enrichment_run_id)
     return ok, message, str(enrichment_run_id)
 
 
-def _automation_step_verification(run_id: int, campaign_id: int, config: dict) -> tuple[bool, str, Optional[str]]:
+def _automation_step_verification(run_id: int, campaign_id: int, step_id: int, config: dict) -> tuple[bool, str, Optional[str]]:
     template_id = config.get("template_id")
     if not template_id:
         return False, "Verification template is required", None
@@ -3797,6 +3816,7 @@ def _automation_step_verification(run_id: int, campaign_id: int, config: dict) -
     job_id = str(response.get("job_id") or "")
     if not job_id:
         return False, "Could not start verification job", None
+    _remember_automation_external_run(run_id, step_id, job_id)
     ok, message = _wait_for_verification_completion(run_id, job_id)
     return ok, message, job_id
 
@@ -3831,12 +3851,95 @@ def _execute_automation_step_once(run_id: int, step: dict) -> tuple[bool, str, O
     if step_type == "pipeline":
         return _automation_step_pipeline(run_id, campaign_id, step_id, config)
     if step_type == "enrichment":
-        return _automation_step_enrichment(run_id, campaign_id, config)
+        return _automation_step_enrichment(run_id, campaign_id, step_id, config)
     if step_type == "dns_check" or step_type == "email_verification":
-        return _automation_step_verification(run_id, campaign_id, config)
+        return _automation_step_verification(run_id, campaign_id, step_id, config)
     if step_type == "export":
         return _automation_step_export(campaign_id, config)
     return False, f"Unsupported step type: {step_type}", None
+
+
+def _recover_running_automation_step(cursor, run_id: int, campaign_id: int, step: dict) -> bool:
+    if str(step.get("status") or "") != "running":
+        return False
+
+    step_id = int(step["id"])
+    step_type = str(step.get("step_type") or "")
+    external_id = str(step.get("external_run_id") or "").strip()
+
+    if step_type == "enrichment":
+        enrichment_run = None
+        if external_id:
+            enrichment_run = _load_enrichment_run(cursor, _safe_int(external_id, 0))
+        else:
+            config = step.get("config") or {}
+            template_id = _safe_int(config.get("template_id"), 0)
+            if template_id > 0:
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM enrichment_runs
+                    WHERE campaign_id = %s
+                      AND template_id = %s
+                      AND created_at >= COALESCE(%s, created_at)
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (campaign_id, template_id, step.get("started_at")),
+                )
+                row = cursor.fetchone()
+                enrichment_run = dict(row) if row else None
+
+        if enrichment_run:
+            status = str(enrichment_run.get("status") or "")
+            enrichment_run_id = str(enrichment_run.get("id") or "")
+            if status == "completed":
+                cursor.execute(
+                    """
+                    UPDATE automation_run_steps
+                    SET status = 'completed',
+                        external_run_id = COALESCE(NULLIF(external_run_id, ''), %s),
+                        error_message = NULL,
+                        completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    """,
+                    (enrichment_run_id, step_id),
+                )
+                _append_automation_log(cursor, run_id, campaign_id, f"Recovered completed enrichment run #{enrichment_run_id}", "info", step_id)
+                return True
+            if status in {"queued", "running", "paused"} and enrichment_run_id:
+                cursor.execute(
+                    """
+                    UPDATE automation_run_steps
+                    SET external_run_id = COALESCE(NULLIF(external_run_id, ''), %s),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    """,
+                    (enrichment_run_id, step_id),
+                )
+                return False
+
+    if step_type in {"dns_check", "email_verification"}:
+        if external_id:
+            with verification_jobs_lock:
+                job = verification_jobs.get(external_id)
+            if job and str(job.get("status") or "") in {"queued", "running"}:
+                return False
+        cursor.execute(
+            """
+            UPDATE automation_run_steps
+            SET status = 'pending',
+                error_message = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (step_id,),
+        )
+        _append_automation_log(cursor, run_id, campaign_id, f"Recovered stalled {step_type} step; restarting it", "warning", step_id)
+        return True
+
+    return False
 
 
 def _run_automation_run(run_id: int):
@@ -3871,6 +3974,9 @@ def _run_automation_run(run_id: int):
                     return
                 campaign_id = int(run["campaign_id"])
                 steps = _load_automation_steps(cursor, run_id)
+                if any(_recover_running_automation_step(cursor, run_id, campaign_id, step) for step in steps):
+                    conn.commit()
+                    continue
                 next_step = next((step for step in steps if step["status"] in {"pending", "running", "waiting_confirmation"}), None)
                 if not next_step:
                     cursor.execute(
