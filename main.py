@@ -3796,9 +3796,10 @@ def _automation_step_enrichment(run_id: int, campaign_id: int, step_id: int, con
         return False, "Enrichment template is required", None
     response = asyncio.run(start_enrichment_run(campaign_id, JsonRequest(config)))
     enrichment_run = response.get("run") or {}
-    enrichment_run_id = int(enrichment_run.get("id") or 0)
+    enrichment_run_id = _safe_int(enrichment_run.get("id") or enrichment_run.get("run_id"), 0)
     if not enrichment_run_id:
-        return False, "Could not start enrichment run", None
+        detail = response.get("detail") or response.get("error") or enrichment_run.get("latest_error")
+        return False, str(detail or "Could not start enrichment run"), None
     _remember_automation_external_run(run_id, step_id, str(enrichment_run_id))
     ok, message = _wait_for_enrichment_completion(run_id, enrichment_run_id)
     return ok, message, str(enrichment_run_id)

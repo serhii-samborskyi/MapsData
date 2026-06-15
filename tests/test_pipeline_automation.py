@@ -1303,6 +1303,47 @@ class PipelineUnitLogicTests(unittest.TestCase):
         self.assertEqual(payload["status"], "running")
         self.assertEqual(payload["processed_contacts"], 40)
 
+    def test_automation_enrichment_step_accepts_serialized_run_id(self):
+        calls = {}
+
+        async def fake_start_enrichment_run(campaign_id, request):
+            calls["campaign_id"] = campaign_id
+            calls["request_body"] = await request.json()
+            return {"run": {"run_id": 48, "status": "queued"}}
+
+        def fake_wait_for_enrichment_completion(run_id, enrichment_run_id):
+            calls["wait"] = (run_id, enrichment_run_id)
+            return True, "Enrichment completed"
+
+        def fake_remember_external_run(run_id, step_id, external_id):
+            calls["remember"] = (run_id, step_id, external_id)
+
+        original_start = self.main.start_enrichment_run
+        original_wait = self.main._wait_for_enrichment_completion
+        original_remember = self.main._remember_automation_external_run
+        self.main.start_enrichment_run = fake_start_enrichment_run
+        self.main._wait_for_enrichment_completion = fake_wait_for_enrichment_completion
+        self.main._remember_automation_external_run = fake_remember_external_run
+        try:
+            ok, message, external_id = self.main._automation_step_enrichment(
+                7,
+                220,
+                12,
+                {"template_id": 1, "concurrency": 10},
+            )
+        finally:
+            self.main.start_enrichment_run = original_start
+            self.main._wait_for_enrichment_completion = original_wait
+            self.main._remember_automation_external_run = original_remember
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Enrichment completed")
+        self.assertEqual(external_id, "48")
+        self.assertEqual(calls["campaign_id"], 220)
+        self.assertEqual(calls["request_body"]["template_id"], 1)
+        self.assertEqual(calls["wait"], (7, 48))
+        self.assertEqual(calls["remember"], (7, 12, "48"))
+
     def test_domain_checker_template_detection(self):
         self.assertTrue(self.main._is_domain_checker_template({"service": "dns_ssl_checker"}))
         self.assertTrue(self.main._is_domain_checker_template({"service": " DNS_SSL_CHECKER "}))
