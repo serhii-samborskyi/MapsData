@@ -381,13 +381,30 @@
                 return `
                     <div class="grid grid-cols-1 gap-2 rounded border border-slate-200 bg-white p-2 md:grid-cols-[160px,1fr,1fr] md:items-center">
                         <div class="text-xs font-semibold text-slate-700">${escapeHtml(apiField)}</div>
-                        <select class="rounded border border-slate-300 px-2 py-2 text-xs"${disabled} onchange="handleExportMappingSelect(${jsString(apiField)}, this.value)">
+                        <select data-export-api-field="${escapeHtml(apiField)}" class="rounded border border-slate-300 px-2 py-2 text-xs"${disabled} onchange="handleExportMappingSelect(${jsString(apiField)}, this.value)">
                             ${renderExportMappingOptions(contactField, isCustomValue)}
                         </select>
-                        <input id="exportMappingCustom_${escapeHtml(apiField)}" class="rounded border border-slate-300 px-2 py-2 text-xs ${isCustomValue ? '' : 'hidden'}" ${disabled} value="${isCustomValue ? escapeHtml(contactField) : ''}" placeholder="Static value" oninput="updateExportMapping(${jsString(apiField)}, this.value)">
+                        <input id="exportMappingCustom_${escapeHtml(apiField)}" data-export-api-field="${escapeHtml(apiField)}" class="rounded border border-slate-300 px-2 py-2 text-xs ${isCustomValue ? '' : 'hidden'}" ${disabled} value="${isCustomValue ? escapeHtml(contactField) : ''}" placeholder="Static value" oninput="updateExportMapping(${jsString(apiField)}, this.value)">
                     </div>
                 `;
             }).join('');
+        }
+
+        function collectExportFieldMappingsFromDom() {
+            const mappings = cloneFieldMappings(exportFieldMappings);
+            const customInputs = Array.from(document.querySelectorAll('#exportMappingRows input[data-export-api-field]'));
+            document.querySelectorAll('#exportMappingRows select[data-export-api-field]').forEach(select => {
+                const apiField = select.dataset.exportApiField;
+                if (!apiField) return;
+                if (select.value === '_custom') {
+                    const input = customInputs.find(item => item.dataset.exportApiField === apiField);
+                    mappings[apiField] = input ? input.value : '';
+                } else {
+                    mappings[apiField] = select.value;
+                }
+            });
+            exportFieldMappings = mappings;
+            return mappings;
         }
 
         function selectOptions(items, placeholder, selectedValue = '', filterFn = null) {
@@ -498,7 +515,7 @@
                     require_confirmation: checked('exportRequireConfirmation')
                 };
                 if (checked('exportUseCustomMappings')) {
-                    exportConfig.field_mappings = cloneFieldMappings(exportFieldMappings);
+                    exportConfig.field_mappings = collectExportFieldMappingsFromDom();
                 }
                 steps.push({
                     type: 'export',
@@ -635,9 +652,9 @@
                 });
                 const data = await response.json().catch(() => ({}));
                 if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-                showStatus(id ? 'Funnel updated.' : 'Funnel created.');
                 await loadAll();
-                if (!id && data.template_id) editFunnel(data.template_id);
+                editFunnel(id || data.template_id);
+                showStatus(id ? 'Funnel updated.' : 'Funnel created.');
             } catch (error) {
                 showStatus(error.message, true);
             }

@@ -1344,6 +1344,40 @@ class PipelineUnitLogicTests(unittest.TestCase):
         self.assertEqual(calls["wait"], (7, 48))
         self.assertEqual(calls["remember"], (7, 12, "48"))
 
+    def test_automation_export_step_batches_until_no_more_contacts(self):
+        calls = []
+
+        async def fake_export_campaign(campaign_id, request):
+            payload = await request.json()
+            calls.append({"campaign_id": campaign_id, "payload": payload})
+            offset = payload.get("offset", 0)
+            if offset >= 150:
+                raise self.main.HTTPException(status_code=404, detail="No contacts found")
+            return {"contacts_exported": 50}
+
+        original_export = self.main.export_campaign
+        self.main.export_campaign = fake_export_campaign
+        try:
+            ok, message, external_id = self.main._automation_step_export(
+                221,
+                {
+                    "template_id": 5,
+                    "batch_size": 50,
+                    "field_mappings": {"custom1": ""},
+                    "export_valid_only": True,
+                },
+            )
+        finally:
+            self.main.export_campaign = original_export
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Export completed: 150 contacts in 3 batch(es)")
+        self.assertIsNone(external_id)
+        self.assertEqual([call["payload"]["offset"] for call in calls], [0, 50, 100, 150])
+        self.assertEqual(calls[0]["campaign_id"], 221)
+        self.assertEqual(calls[0]["payload"]["field_mappings"], {"custom1": ""})
+        self.assertTrue(calls[0]["payload"]["export_valid_only"])
+
     def test_domain_checker_template_detection(self):
         self.assertTrue(self.main._is_domain_checker_template({"service": "dns_ssl_checker"}))
         self.assertTrue(self.main._is_domain_checker_template({"service": " DNS_SSL_CHECKER "}))

@@ -3826,9 +3826,10 @@ def _automation_step_export(campaign_id: int, config: dict) -> tuple[bool, str, 
     template_id = config.get("template_id")
     if not template_id:
         return False, "Export template is required", None
+    batch_size = max(1, _safe_int(config.get("batch_size"), 1000000))
     payload = {
         "template_id": template_id,
-        "batch_size": _safe_int(config.get("batch_size"), 1000000),
+        "batch_size": batch_size,
         "field_mappings": config.get("field_mappings"),
         "newListName": config.get("newListName", ""),
         "export_valid_only": bool(config.get("export_valid_only", False)),
@@ -3839,9 +3840,23 @@ def _automation_step_export(campaign_id: int, config: dict) -> tuple[bool, str, 
     }
     if payload["field_mappings"] is None:
         payload.pop("field_mappings")
-    response = asyncio.run(export_campaign(campaign_id, JsonRequest(payload)))
-    exported = response.get("contacts_exported", 0) if isinstance(response, dict) else 0
-    return True, f"Export completed: {exported} contacts", None
+    total_exported = 0
+    batches = 0
+    offset = 0
+    while True:
+        batch_payload = dict(payload)
+        batch_payload["offset"] = offset
+        try:
+            response = asyncio.run(export_campaign(campaign_id, JsonRequest(batch_payload)))
+        except HTTPException as exc:
+            if exc.status_code == 404 and offset > 0:
+                break
+            return False, f"{exc.status_code}: {exc.detail}", None
+        exported = _safe_int(response.get("contacts_exported") if isinstance(response, dict) else 0, 0)
+        total_exported += exported
+        batches += 1
+        offset += batch_size
+    return True, f"Export completed: {total_exported} contacts in {batches} batch(es)", None
 
 
 def _execute_automation_step_once(run_id: int, step: dict) -> tuple[bool, str, Optional[str]]:
