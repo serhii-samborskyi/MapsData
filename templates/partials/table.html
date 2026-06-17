@@ -111,6 +111,7 @@
             <td data-label="Actions" class="actions space-y-2">
                 <div class="hidden md:flex flex-wrap gap-2">
                     <button id="pipeline-start-btn-{{ campaign.id }}" onclick="startPipeline({{ campaign.id }})" class="bg-emerald-100 text-emerald-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-emerald-200 transition-all">Start Pipeline</button>
+                    <button onclick="stopCampaignFunnel({{ campaign.id }})" class="bg-red-100 text-red-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-red-200 transition-all">Stop Funnel</button>
                     <button onclick="togglePipeline({{ campaign.id }})" class="bg-slate-100 text-slate-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-slate-200 transition-all">Pipeline</button>
                     <button onclick="toggleRequests({{ campaign.id }})" class="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-blue-200 transition-all">Requests</button>
                     <button onclick="toggleContacts({{ campaign.id }})" class="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-xs font-medium hover:bg-purple-200 transition-all">Contacts</button>
@@ -135,6 +136,7 @@
                     </summary>
                     <div class="action-menu__panel">
                         <button id="pipeline-start-btn-mobile-{{ campaign.id }}" onclick="startPipeline({{ campaign.id }})" class="action-menu__item bg-emerald-100 text-emerald-700">Start Pipeline</button>
+                        <button onclick="stopCampaignFunnel({{ campaign.id }})" class="action-menu__item bg-red-100 text-red-700">Stop Funnel</button>
                         <button onclick="togglePipeline({{ campaign.id }})" class="action-menu__item bg-slate-100 text-slate-700">Pipeline</button>
                         <button onclick="toggleRequests({{ campaign.id }})" class="action-menu__item bg-blue-100 text-blue-700">Requests</button>
                         <button onclick="toggleContacts({{ campaign.id }})" class="action-menu__item bg-purple-100 text-purple-700">Contacts</button>

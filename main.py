@@ -1256,6 +1256,15 @@ def _run_http_source_campaign_job(campaign_id: int):
     try:
         _append_http_source_job_log(job, "HTTP source campaign runner started")
         while True:
+            if job.get("status") == "cancelled" or job.get("cancel_requested"):
+                job["status"] = "cancelled"
+                job["completed_at"] = _iso(_now_utc())
+                _append_http_source_job_log(job, "HTTP source campaign runner stopped")
+                with get_db() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE requests SET status = 'pending' WHERE campaign_id = %s AND status = 'inuse'", (campaign_id,))
+                    conn.commit()
+                return
             with get_db() as conn:
                 cursor = conn.cursor()
                 source_campaign = _load_http_source_campaign(cursor, campaign_id)
@@ -3550,6 +3559,126 @@ def _append_automation_log(cursor, run_id: int, campaign_id: int, message: str, 
         """,
         (run_id, campaign_id, step_id, level, message),
     )
+
+
+def _cancel_automation_child_step(cursor, step: dict) -> Optional[str]:
+    step_type = str(step.get("step_type") or "")
+    external_id = str(step.get("external_run_id") or "").strip()
+    campaign_id = _safe_int(step.get("campaign_id"), 0)
+    if step_type == "pipeline" and external_id.isdigit():
+        pipeline_run_id = int(external_id)
+        cursor.execute(
+            """
+            UPDATE pipeline_runs
+            SET status = 'canceled',
+                latest_error = 'Cancelled from funnel',
+                lease_expires_at = NULL,
+                canceled_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+              AND status NOT IN ('completed', 'failed', 'canceled')
+            """,
+            (pipeline_run_id,),
+        )
+        cursor.execute(
+            """
+            UPDATE pipeline_run_stages
+            SET status = 'canceled',
+                error_message = 'Cancelled from funnel',
+                canceled_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE run_id = %s
+              AND status IN ('pending', 'running', 'failed')
+            """,
+            (pipeline_run_id,),
+        )
+        cursor.execute("DELETE FROM pipeline_run_locks WHERE run_id = %s", (pipeline_run_id,))
+        return f"Pipeline run #{pipeline_run_id} cancelled"
+
+    if step_type == "enrichment" and external_id.isdigit():
+        enrichment_run_id = int(external_id)
+        cursor.execute(
+            """
+            UPDATE enrichment_runs
+            SET cancel_requested = TRUE,
+                pause_requested = FALSE,
+                status = CASE WHEN status IN ('queued', 'paused') THEN 'cancelled' ELSE status END,
+                completed_at = CASE WHEN status IN ('queued', 'paused') THEN CURRENT_TIMESTAMP ELSE completed_at END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+              AND status NOT IN ('completed', 'failed', 'cancelled')
+            """,
+            (enrichment_run_id,),
+        )
+        _append_enrichment_log(cursor, enrichment_run_id, campaign_id, "Cancel requested from funnel", "warning")
+        return f"Enrichment run #{enrichment_run_id} cancellation requested"
+
+    if step_type in {"dns_check", "email_verification"} and external_id:
+        with verification_jobs_lock:
+            job = verification_jobs.get(external_id)
+            if not job:
+                return None
+            if job.get("status") in {"completed", "failed", "cancelled"}:
+                return None
+            job["cancel_requested"] = True
+            if job.get("status") == "queued":
+                _mark_job_cancelled(job)
+            else:
+                job["message"] = "Stopping from funnel..."
+                _append_verification_log(job, "Stop requested from funnel")
+        return f"Verification job {external_id} cancellation requested"
+
+    if step_type == "pipeline" and campaign_id:
+        with http_source_campaign_jobs_lock:
+            job = http_source_campaign_jobs.get(campaign_id)
+            if job and job.get("status") in {"queued", "running"}:
+                job["status"] = "cancelled"
+                job["latest_error"] = "Cancelled from funnel"
+                job["completed_at"] = _iso(_now_utc())
+                _append_http_source_job_log(job, "Cancelled from funnel")
+                return "HTTP source campaign job cancelled"
+
+    return None
+
+
+def _cancel_automation_run(cursor, run: dict, reason: str = "Funnel cancelled by user") -> List[str]:
+    run_id = int(run["id"])
+    campaign_id = int(run["campaign_id"])
+    steps = _load_automation_steps(cursor, run_id)
+    child_messages: List[str] = []
+    for step in steps:
+        if str(step.get("status") or "") not in {"pending", "running", "waiting_confirmation"}:
+            continue
+        message = _cancel_automation_child_step(cursor, step)
+        if message:
+            child_messages.append(message)
+
+    cursor.execute(
+        """
+        UPDATE automation_runs
+        SET status = 'cancelled',
+            latest_error = %s,
+            completed_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+        """,
+        (reason, run_id),
+    )
+    cursor.execute(
+        """
+        UPDATE automation_run_steps
+        SET status = 'cancelled',
+            error_message = COALESCE(error_message, %s),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE run_id = %s
+          AND status IN ('pending', 'running', 'waiting_confirmation')
+        """,
+        (reason, run_id),
+    )
+    _append_automation_log(cursor, run_id, campaign_id, reason, "warning")
+    for message in child_messages:
+        _append_automation_log(cursor, run_id, campaign_id, message, "warning")
+    return child_messages
 
 
 def _load_automation_run(cursor, run_id: int) -> Optional[dict]:
@@ -8054,6 +8183,34 @@ async def get_campaign_funnel_runs(campaign_id: int):
     return {"runs": runs}
 
 
+@app.post("/api/campaign/{campaign_id}/funnels/stop")
+async def stop_campaign_funnel(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        _ensure_campaign_exists(cursor, campaign_id)
+        cursor.execute(
+            """
+            SELECT *
+            FROM automation_runs
+            WHERE campaign_id = %s
+              AND status IN ('queued', 'running', 'waiting_confirmation')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (campaign_id,),
+        )
+        run = cursor.fetchone()
+        if not run:
+            raise HTTPException(status_code=404, detail="No active funnel run found for this campaign")
+        child_messages = _cancel_automation_run(cursor, dict(run), "Funnel stopped from campaign")
+        conn.commit()
+    return {
+        "status": "Funnel stopped",
+        "run_id": int(run["id"]),
+        "child_jobs": child_messages,
+    }
+
+
 @app.get("/api/funnel-runs/{run_id}")
 async def get_funnel_run(run_id: int):
     with get_db() as conn:
@@ -8122,29 +8279,9 @@ async def cancel_funnel_run(run_id: int):
         run = _load_automation_run(cursor, run_id)
         if not run:
             raise HTTPException(status_code=404, detail="Funnel run not found")
-        cursor.execute(
-            """
-            UPDATE automation_runs
-            SET status = 'cancelled',
-                completed_at = CURRENT_TIMESTAMP,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s
-            """,
-            (run_id,),
-        )
-        cursor.execute(
-            """
-            UPDATE automation_run_steps
-            SET status = 'cancelled',
-                updated_at = CURRENT_TIMESTAMP
-            WHERE run_id = %s
-              AND status IN ('pending', 'running', 'waiting_confirmation')
-            """,
-            (run_id,),
-        )
-        _append_automation_log(cursor, run_id, int(run["campaign_id"]), "Funnel cancelled by user", "warning")
+        child_messages = _cancel_automation_run(cursor, run, "Funnel cancelled by user")
         conn.commit()
-    return {"status": "Funnel cancelled", "run_id": run_id}
+    return {"status": "Funnel cancelled", "run_id": run_id, "child_jobs": child_messages}
 
 
 # Export Template Management
