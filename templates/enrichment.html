@@ -344,6 +344,7 @@
                             </div>
                             <div class="flex items-center gap-2">
                                 <button onclick="editTemplate(event, ${template.id})" class="text-blue-600 hover:text-blue-800 text-sm px-2 py-1 border border-blue-300 rounded">Edit</button>
+                                <button onclick="duplicateTemplate(event, ${template.id})" class="text-indigo-600 hover:text-indigo-800 text-sm px-2 py-1 border border-indigo-300 rounded">Duplicate</button>
                                 <button onclick="deleteTemplate(event, ${template.id})" class="text-red-600 hover:text-red-800 text-sm px-2 py-1 border border-red-300 rounded">Delete</button>
                             </div>
                         </div>
@@ -602,6 +603,38 @@
                 await loadTemplates();
             } catch (error) {
                 alert(`Delete failed: ${error.message}`);
+            }
+        }
+
+        async function duplicateTemplate(clickEvent, templateId) {
+            if (clickEvent) clickEvent.stopPropagation();
+            try {
+                const templateResponse = await fetch(`/api/enrichment/templates/${templateId}`);
+                const template = await templateResponse.json().catch(() => ({}));
+                if (!templateResponse.ok) {
+                    throw new Error(template.detail || `HTTP ${templateResponse.status}`);
+                }
+
+                const response = await fetch('/api/enrichment/templates', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: `${template.name || 'Enrichment Template'} Copy`,
+                        service: template.service || 'http_enrichment',
+                        api_config: template.api_config || {},
+                        input_mapping: template.input_mapping || {},
+                        output_mapping: template.output_mapping || {},
+                        schema_cache: template.schema_cache || {}
+                    })
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(data.detail || `HTTP ${response.status}`);
+                }
+                await loadTemplates();
+                alert('Enrichment template duplicated.');
+            } catch (error) {
+                alert(`Duplicate failed: ${error.message}`);
             }
         }
 
