@@ -236,7 +236,13 @@
                                             Fields
                                         </summary>
                                         <div id="enrichment-fields-list-{{ campaign.id }}" class="mt-1 space-y-0.5 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-slate-600">
-                                            No field data yet
+                                            {% if campaign.enrichment_field_coverage %}
+                                                {% for item in campaign.enrichment_field_coverage %}
+                                                    <div>{{ item.api_field }} &rarr; {{ item.local_field }}: {{ item.found_count }}/{{ item.total_records }} ({{ item.percentage }}%)</div>
+                                                {% endfor %}
+                                            {% else %}
+                                                No field data yet
+                                            {% endif %}
                                         </div>
                                     </details>
                                 </div>

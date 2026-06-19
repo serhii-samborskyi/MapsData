@@ -4644,6 +4644,7 @@ async def get_campaigns(
             campaign["enrichment_processed_contacts"] = enrichment["processed_contacts"]
             campaign["enrichment_progress_percent"] = enrichment["progress_percent"]
             campaign["enrichment_message"] = enrichment["message"]
+            campaign["enrichment_field_coverage"] = enrichment.get("field_coverage", [])
             
             # Dashboard details are lazy-loaded via dedicated endpoints.
             campaign['requests'] = []
@@ -4955,6 +4956,16 @@ async def get_dashboard_runtime_status(campaign_ids: str = ""):
             for row in cursor.fetchall()
         }
 
+        enrichment_progress_by_campaign = {
+            campaign_id: _compute_enrichment_progress_payload(
+                campaign_id=campaign_id,
+                active_run=active_enrichment_runs.get(campaign_id),
+                latest_run=latest_enrichment_runs.get(campaign_id),
+                cursor=cursor,
+            )
+            for campaign_id in campaign_id_list
+        }
+
     with verification_jobs_lock:
         active_jobs = {}
         latest_jobs = {}
@@ -5035,12 +5046,7 @@ async def get_dashboard_runtime_status(campaign_ids: str = ""):
             "stats": stats,
             "requests": request_progress,
             "verification": verification,
-            "enrichment": _compute_enrichment_progress_payload(
-                campaign_id=campaign_id,
-                active_run=active_enrichment_runs.get(campaign_id),
-                latest_run=latest_enrichment_runs.get(campaign_id),
-                cursor=cursor,
-            ),
+            "enrichment": enrichment_progress_by_campaign.get(campaign_id, {}),
         }
 
     return {"campaigns": result}

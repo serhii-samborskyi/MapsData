@@ -1303,6 +1303,59 @@ class PipelineUnitLogicTests(unittest.TestCase):
         self.assertEqual(payload["status"], "running")
         self.assertEqual(payload["processed_contacts"], 40)
 
+    def test_compute_enrichment_progress_payload_includes_field_coverage(self):
+        class CoverageCursor:
+            def __init__(self):
+                self.api_field = ""
+
+            def execute(self, _query, params):
+                self.api_field = params[1]
+
+            def fetchone(self):
+                return {"found_count": {"owner_name": 8, "top_service": 6}.get(self.api_field, 0)}
+
+        run = {
+            "id": 49,
+            "campaign_id": 221,
+            "template_id": 1,
+            "status": "completed",
+            "total_contacts": 10,
+            "processed_contacts": 10,
+            "enriched_contacts": 10,
+            "failed_contacts": 0,
+            "skipped_contacts": 0,
+            "output_mapping": {
+                "owner_name": "full_name",
+                "top_service": "custom_4",
+            },
+        }
+
+        payload = self.main._compute_enrichment_progress_payload(
+            campaign_id=221,
+            active_run=None,
+            latest_run=run,
+            cursor=CoverageCursor(),
+        )
+
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["message"], "Enrichment completed")
+        self.assertEqual(payload["field_coverage"], [
+            {
+                "api_field": "owner_name",
+                "local_field": "full_name",
+                "found_count": 8,
+                "total_records": 10,
+                "percentage": 80.0,
+            },
+            {
+                "api_field": "top_service",
+                "local_field": "custom_4",
+                "found_count": 6,
+                "total_records": 10,
+                "percentage": 60.0,
+            },
+        ])
+
     def test_automation_enrichment_step_accepts_serialized_run_id(self):
         calls = {}
 
