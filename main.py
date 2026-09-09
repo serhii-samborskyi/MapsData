@@ -9,6 +9,7 @@ from typing import List, Union, Any, Optional, Dict
 from psycopg2 import DataError, IntegrityError
 from psycopg2.extras import Json
 import requests
+import prompt_enrichment
 import asyncio
 import hmac
 import hashlib
@@ -2228,6 +2229,8 @@ def _serialize_enrichment_run(run: Optional[dict]) -> dict:
         "missing_field_only": bool(run.get("missing_field_only")),
         "missing_field_name": str(run.get("missing_field_name") or "").strip(),
         "timeout_seconds": _normalize_enrichment_timeout(run.get("timeout_seconds")),
+        "service": run.get("service") or "http_enrichment",
+        "requests_per_minute": _safe_json_loads(run.get("prompt_config"), {}).get("requests_per_minute"),
     }
 
 
@@ -2504,6 +2507,7 @@ def _recompute_enrichment_run_counters(cursor, run_id: int):
 
 enrichment_workers: Dict[int, dict] = {}
 enrichment_workers_lock = threading.Lock()
+prompt_rate_check_lock = threading.Lock()
 
 # Initialize database
 init_db()
@@ -3190,6 +3194,136 @@ def _finalize_enrichment_contact_result(
         _append_enrichment_log(cursor, run_id, campaign_id, f"Failed {display_name}: {message}", "error", contact_id=contact_id)
 
 
+def _prompt_template_config(template: dict) -> dict:
+    config = dict(template.get("api_config") or {})
+    config["timeout_seconds"] = _normalize_enrichment_timeout(config.get("timeout_seconds"))
+    try:
+        return prompt_enrichment.normalize_config(config, template.get("output_mapping") or {}, ENRICHMENT_LOCAL_FIELD_SET)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+def _wait_for_prompt_slot(config: dict, run_id: Optional[int] = None) -> bool:
+    while True:
+        # Bound local DB connections while many contacts wait for the same endpoint.
+        with prompt_rate_check_lock, get_db() as conn:
+            cursor = conn.cursor()
+            if run_id is not None:
+                run = _load_enrichment_run(cursor, run_id)
+                if not run or run.get("cancel_requested") or run.get("pause_requested") or run.get("status") not in {"queued", "running"}:
+                    return False
+            key = config["endpoint_key"]
+            cursor.execute("""
+                INSERT INTO enrichment_api_rate_limits (endpoint_key) VALUES (%s)
+                ON CONFLICT (endpoint_key) DO NOTHING
+            """, (key,))
+            cursor.execute("""
+                SELECT next_request_at FROM enrichment_api_rate_limits
+                WHERE endpoint_key = %s FOR UPDATE
+            """, (key,))
+            cursor.fetchone()
+            # Serialize starts across campaigns and web processes, including retries/tests.
+            cursor.execute("""
+                SELECT GREATEST(0, EXTRACT(EPOCH FROM (next_request_at - clock_timestamp()))) AS delay
+                FROM enrichment_api_rate_limits WHERE endpoint_key = %s
+            """, (key,))
+            delay = float(cursor.fetchone()["delay"])
+            if delay <= 0:
+                cursor.execute("""
+                    SELECT MIN((prompt_config::jsonb->>'requests_per_minute')::integer) AS rate
+                    FROM enrichment_runs WHERE service = 'prompt_http'
+                      AND status IN ('queued', 'running') AND NOT cancel_requested AND NOT pause_requested
+                      AND prompt_config::jsonb->>'endpoint_key' = %s
+                """, (key,))
+                rate = min(config["requests_per_minute"], int(cursor.fetchone()["rate"] or config["requests_per_minute"]))
+                cursor.execute("""
+                    UPDATE enrichment_api_rate_limits
+                    SET next_request_at = clock_timestamp() + (%s * interval '1 second')
+                    WHERE endpoint_key = %s
+                """, (60.0 / rate, key))
+                conn.commit()
+                return True
+            conn.commit()
+        time.sleep(min(delay, 1.0))
+
+
+def _fetch_prompt_enrichment(config: dict, contact: dict, output_mapping: dict) -> dict:
+    url, prompt = prompt_enrichment.request_url(config, contact)
+    details = {"prompt": prompt, "request_url": url}
+    try:
+        response = requests.get(url, headers={"Accept": "application/json"}, timeout=config["timeout_seconds"])
+        details.update({"status_code": response.status_code, "response_text": response.text})
+        if response.status_code >= 400:
+            raise ValueError(f"HTTP {response.status_code}: {response.text[:500]}")
+        payload = response.json()
+        details["response_json"] = payload
+        values = prompt_enrichment.mapped_values(prompt_enrichment.extract_object(payload), output_mapping)
+        if not values:
+            raise ValueError("API response has no usable values for the selected JSON mappings")
+        details["values"] = values
+    except Exception as exc:
+        details["error"] = str(exc)
+    return details
+
+
+def _prompt_contact_updates(contact: dict, values: dict, output_mapping: dict, overwrite: bool) -> dict:
+    updates = _apply_enrichment_output_mapping(values, output_mapping)
+    return {key: value for key, value in updates.items()
+            if overwrite or _is_enrichment_field_missing(contact.get(key))}
+
+
+def _process_prompt_enrichment_contact(run_id, campaign_id, row_id, contact_id, config,
+                                       output_mapping, max_retries, overwrite, city_map):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM contacts WHERE id = %s AND campaign_id = %s", (contact_id, campaign_id))
+        contact = dict(cursor.fetchone() or {})
+    _apply_city_fallback_for_export([contact], city_map or {})
+    details = {"error": "Contact not found"}
+    for attempt in range(1, max_retries + 1):
+        if not _wait_for_prompt_slot(config, run_id):
+            with get_db() as conn:
+                conn.cursor().execute("UPDATE enrichment_run_contacts SET status = 'pending' WHERE id = %s", (row_id,))
+                conn.commit()
+            return
+        if contact:
+            details = _fetch_prompt_enrichment(config, contact, output_mapping)
+        with get_db() as conn:
+            cursor = conn.cursor()
+            run = _load_enrichment_run(cursor, run_id) or {}
+            if run.get("cancel_requested") or run.get("status") == "cancelled":
+                cursor.execute("UPDATE enrichment_run_contacts SET status = 'pending' WHERE id = %s", (row_id,))
+                conn.commit()
+                return
+            error = details.get("error")
+            if error and attempt < max_retries:
+                _append_enrichment_log(cursor, run_id, campaign_id, f"Attempt {attempt} failed: {error}", "warning", contact_id)
+                conn.commit()
+                continue
+            values = details.get("values", {})
+            updates = {}
+            if not error:
+                cursor.execute("SELECT * FROM contacts WHERE id = %s AND campaign_id = %s FOR UPDATE", (contact_id, campaign_id))
+                latest_contact = cursor.fetchone()
+                if latest_contact is None:
+                    error = "Contact not found"
+                else:
+                    updates = _prompt_contact_updates(dict(latest_contact), values, output_mapping, overwrite)
+                    try:
+                        _update_contact_fields(cursor, campaign_id, contact_id, updates)
+                    except (DataError, IntegrityError) as exc:
+                        conn.rollback()
+                        error = f"Could not save mapped fields: {exc}"
+            _finalize_enrichment_contact_result(
+                cursor, run_id, campaign_id, row_id, contact_id, str(contact.get("business_name") or ""),
+                "failed" if error else "enriched", attempt,
+                error or (", ".join(sorted(updates)) if updates else "Existing values retained"),
+                response_payload={**values, "_prompt_http": details},
+            )
+            conn.commit()
+            return
+
+
 def _process_enrichment_contact_task(
     run_id: int,
     campaign_id: int,
@@ -3204,7 +3338,14 @@ def _process_enrichment_contact_task(
     max_retries: int,
     timeout_seconds: int,
     request_city_map: Optional[dict[int, str]] = None,
+    prompt_config: Optional[dict] = None,
+    overwrite_existing: bool = False,
 ):
+    if prompt_config:
+        return _process_prompt_enrichment_contact(
+            run_id, campaign_id, run_contact_row_id, contact_id, prompt_config,
+            output_mapping, max_retries, overwrite_existing, request_city_map,
+        )
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -3331,6 +3472,8 @@ def _run_enrichment_job(run_id: int):
             max_retries = max(1, min(int(run.get("max_retries") or 1), 10))
             campaign_id = int(run.get("campaign_id"))
             timeout_seconds = _normalize_enrichment_timeout(run.get("timeout_seconds"))
+            prompt_config = _safe_json_loads(run.get("prompt_config"), {}) if run.get("service") == prompt_enrichment.SERVICE else None
+            overwrite_existing = bool(run.get("overwrite_existing"))
             request_city_map = _build_campaign_request_city_map(cursor, campaign_id)
 
             cursor.execute(
@@ -3450,6 +3593,8 @@ def _run_enrichment_job(run_id: int):
                             max_retries,
                             timeout_seconds,
                             request_city_map,
+                            prompt_config,
+                            overwrite_existing,
                         )
                         inflight[fut] = claimed
 
@@ -3485,24 +3630,17 @@ def _run_enrichment_job(run_id: int):
 
                 done, _pending = wait(list(inflight.keys()), timeout=0.6, return_when=FIRST_COMPLETED)
                 for fut in done:
-                    inflight.pop(fut, None)
+                    failed_item = inflight.pop(fut)
                     try:
                         fut.result()
                     except Exception as exc:
                         with get_db() as conn:
                             cursor = conn.cursor()
-                            cursor.execute(
-                                """
-                                UPDATE enrichment_runs
-                                SET latest_error = %s,
-                                    failed_contacts = failed_contacts + 1,
-                                    processed_contacts = processed_contacts + 1,
-                                    updated_at = CURRENT_TIMESTAMP
-                                WHERE id = %s
-                                """,
-                                (str(exc), run_id),
+                            _finalize_enrichment_contact_result(
+                                cursor, run_id, campaign_id, int(failed_item["id"]),
+                                int(failed_item["contact_id"]), "", "failed",
+                                int(failed_item.get("attempts") or 1), f"Worker failure: {exc}",
                             )
-                            _append_enrichment_log(cursor, run_id, campaign_id, f"Worker failure: {str(exc)}", "error")
                             conn.commit()
 
         executor.shutdown(wait=True, cancel_futures=False)
@@ -9466,6 +9604,9 @@ async def create_enrichment_template(request: Request):
 
     if not isinstance(input_mapping, dict) or not isinstance(output_mapping, dict):
         raise HTTPException(status_code=400, detail="input_mapping and output_mapping must be objects")
+    if service == prompt_enrichment.SERVICE:
+        api_config = _prompt_template_config({"api_config": api_config, "output_mapping": output_mapping})
+        input_mapping, schema_cache = {}, {}
 
     for output_key, local_field in output_mapping.items():
         normalized_output_key = _normalize_mapping_value(output_key)
@@ -9513,6 +9654,9 @@ async def update_enrichment_template(template_id: int, request: Request):
     input_mapping = data.get("input_mapping") if isinstance(data.get("input_mapping"), dict) else existing.get("input_mapping", {})
     output_mapping = data.get("output_mapping") if isinstance(data.get("output_mapping"), dict) else existing.get("output_mapping", {})
     schema_cache = data.get("schema_cache") if isinstance(data.get("schema_cache"), dict) else existing.get("schema_cache", {})
+    if service == prompt_enrichment.SERVICE:
+        api_config = _prompt_template_config({"api_config": api_config, "output_mapping": output_mapping})
+        input_mapping, schema_cache = {}, {}
 
     for output_key, local_field in output_mapping.items():
         normalized_output_key = _normalize_mapping_value(output_key)
@@ -9576,7 +9720,11 @@ async def start_enrichment_run(campaign_id: int, request: Request):
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
 
+    is_prompt = template.get("service") == prompt_enrichment.SERVICE
+    prompt_config = _prompt_template_config(template) if is_prompt else {}
     concurrency = max(1, min(int(data.get("concurrency") or 1), MAX_ENRICHMENT_CONCURRENCY))
+    if is_prompt:
+        concurrency = prompt_enrichment.automatic_concurrency(prompt_config, MAX_ENRICHMENT_CONCURRENCY)
     max_retries = max(1, min(int(data.get("max_retries") or 1), 10))
     overwrite_existing = bool(data.get("overwrite_existing", False))
     skip_missing_input = bool(data.get("skip_missing_input", True))
@@ -9594,11 +9742,16 @@ async def start_enrichment_run(campaign_id: int, request: Request):
 
     if not api_url:
         raise HTTPException(status_code=400, detail="api_url is required")
-    if not api_key:
+    if not api_key and not is_prompt:
         raise HTTPException(status_code=400, detail="api_key is required")
 
     input_mapping = data.get("input_mapping") if isinstance(data.get("input_mapping"), dict) else template.get("input_mapping", {})
     output_mapping = data.get("output_mapping") if isinstance(data.get("output_mapping"), dict) else template.get("output_mapping", {})
+    if is_prompt:
+        api_url, api_key = prompt_config["api_url"], ""
+        timeout_seconds = prompt_config["timeout_seconds"]
+        input_mapping, output_mapping = {}, template["output_mapping"]
+        skip_missing_input = False
     enrichment_fields = _selected_enrichment_fields(output_mapping)
     schema_cache = template.get("schema_cache") or {}
     required_inputs = data.get("required_inputs")
@@ -9654,9 +9807,11 @@ async def start_enrichment_run(campaign_id: int, request: Request):
                 input_mapping,
                 output_mapping,
                 required_inputs,
+                service,
+                prompt_config,
                 created_by
             )
-            VALUES (%s, %s, 'queued', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, 'queued', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -9676,6 +9831,8 @@ async def start_enrichment_run(campaign_id: int, request: Request):
                 json.dumps(input_mapping or {}),
                 json.dumps(output_mapping or {}),
                 json.dumps(required_inputs or []),
+                template.get("service") or "http_enrichment",
+                json.dumps(prompt_config),
                 "dashboard",
             ),
         )
@@ -9710,13 +9867,20 @@ async def start_enrichment_run(campaign_id: int, request: Request):
             contact_id = int(contact["id"])
             status = "pending"
             last_error = None
-            if not overwrite_existing and _contact_has_existing_output(contact, output_mapping):
+            outputs_present = (
+                all(not _is_enrichment_field_missing(contact.get(field)) for field in output_mapping.values())
+                if is_prompt else _contact_has_existing_output(contact, output_mapping)
+            )
+            if not overwrite_existing and outputs_present:
                 status = "skipped"
                 skipped_count += 1
                 skipped_reason_aggregate["output_already_present"] += 1
                 last_error = "Output fields already populated"
             else:
-                payload_preview, missing_required = _build_enrichment_payload(contact, input_mapping, required_inputs)
+                payload_preview, missing_required = (
+                    ({"prompt": prompt_enrichment.render_prompt(prompt_config["prompt_template"], contact)}, [])
+                    if is_prompt else _build_enrichment_payload(contact, input_mapping, required_inputs)
+                )
                 if skip_missing_input and missing_required:
                     status = "skipped"
                     skipped_count += 1
@@ -9823,6 +9987,28 @@ async def start_enrichment_run(campaign_id: int, request: Request):
     }
 
 
+def _test_prompt_enrichment(campaign_id: int, template: dict, overwrite: bool) -> dict:
+    config = _prompt_template_config(template)
+    with get_db() as conn:
+        cursor = conn.cursor()
+        _ensure_campaign_exists(cursor, campaign_id)
+        cursor.execute("SELECT * FROM contacts WHERE campaign_id = %s ORDER BY random() LIMIT 1", (campaign_id,))
+        contact = dict(cursor.fetchone() or {})
+        city_map = _build_campaign_request_city_map(cursor, campaign_id)
+    if not contact:
+        raise HTTPException(status_code=404, detail="No contacts found in campaign")
+    _apply_city_fallback_for_export([contact], city_map)
+    _wait_for_prompt_slot(config)
+    start = time.monotonic()
+    details = _fetch_prompt_enrichment(config, contact, template["output_mapping"])
+    details.update({"contact_id": contact["id"], "contact_name": contact.get("business_name"),
+                    "latency_ms": int((time.monotonic() - start) * 1000)})
+    if details.get("error"):
+        raise HTTPException(status_code=502, detail=details)
+    return {**details, "status": "ok", "mapped_local_updates_preview": _prompt_contact_updates(
+        contact, details["values"], template["output_mapping"], overwrite)}
+
+
 @app.post("/api/campaign/{campaign_id}/enrichment/test")
 async def test_enrichment_run(campaign_id: int, request: Request):
     data = await request.json()
@@ -9833,6 +10019,8 @@ async def test_enrichment_run(campaign_id: int, request: Request):
     template = EnrichmentTemplateManager.get_template(int(template_id))
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
+    if template.get("service") == prompt_enrichment.SERVICE:
+        return await asyncio.to_thread(_test_prompt_enrichment, campaign_id, template, bool(data.get("overwrite_existing", False)))
 
     template_api_config = template.get("api_config") or {}
     api_url = str(data.get("api_url") or template_api_config.get("api_url") or DEFAULT_ENRICHMENT_API_URL).strip()

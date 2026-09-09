@@ -44,15 +44,15 @@
         <div id="runControlsSection" class="app-card p-6 mb-6 hidden">
             <h2 class="text-xl font-semibold mb-4">Run Controls</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
+                <div id="runApiUrlWrap">
                     <label class="block text-sm font-medium mb-2">API URL (override optional)</label>
                     <input id="runApiUrl" type="text" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="https://.../api/public/enrich">
                 </div>
-                <div>
+                <div id="runApiKeyWrap">
                     <label class="block text-sm font-medium mb-2">API Key (override optional)</label>
                     <input id="runApiKey" type="password" class="w-full p-2 border border-gray-300 rounded-lg" placeholder="x-api-key">
                 </div>
-                <div>
+                <div id="runConcurrencyWrap">
                     <label class="block text-sm font-medium mb-2">Concurrency (1-100)</label>
                     <input id="runConcurrency" type="number" min="1" max="100" value="1" class="w-full p-2 border border-gray-300 rounded-lg">
                 </div>
@@ -61,6 +61,7 @@
                     <input id="runRetries" type="number" min="1" max="10" value="1" class="w-full p-2 border border-gray-300 rounded-lg">
                 </div>
             </div>
+            <div id="runPromptSummary" class="hidden mt-3 text-sm text-slate-700 whitespace-pre-wrap break-words"></div>
             <div class="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
                 <label class="flex items-center text-sm text-gray-700">
                     <input id="runOverwrite" type="checkbox" class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
@@ -145,13 +146,16 @@
                         </div>
                         <div>
                             <label class="block text-sm font-medium mb-2">Service</label>
-                            <input id="templateService" type="text" value="http_enrichment" class="w-full p-2 border border-gray-300 rounded-lg" readonly>
+                            <select id="templateService" class="w-full p-2 border border-gray-300 rounded-lg">
+                                <option value="prompt_http">Prompt HTTP API</option>
+                                <option value="http_enrichment">Enrichment API (schema)</option>
+                            </select>
                         </div>
                         <div>
                             <label class="block text-sm font-medium mb-2">API URL</label>
                             <input id="templateApiUrl" type="text" class="w-full p-2 border border-gray-300 rounded-lg" value="https://promising-investments-complexity-municipal.trycloudflare.com/api/public/enrich" required>
                         </div>
-                        <div>
+                        <div id="templateApiKeyWrap">
                             <label class="block text-sm font-medium mb-2">API Key</label>
                             <input id="templateApiKey" type="password" class="w-full p-2 border border-gray-300 rounded-lg" required>
                         </div>
@@ -159,7 +163,7 @@
                             <label class="block text-sm font-medium mb-2">Timeout (seconds)</label>
                             <input id="templateTimeoutSeconds" type="number" min="15" max="600" value="120" class="w-full p-2 border border-gray-300 rounded-lg" required>
                         </div>
-                        <div class="md:col-span-2">
+                        <div id="templateSchemaWrap" class="md:col-span-2">
                             <label class="block text-sm font-medium mb-2">Schema URL</label>
                             <div class="flex gap-2">
                                 <input id="templateSchemaUrl" type="text" class="flex-1 p-2 border border-gray-300 rounded-lg" value="https://promising-investments-complexity-municipal.trycloudflare.com/api/public/schema/enrichment" required>
@@ -169,7 +173,23 @@
                         </div>
                     </div>
 
-                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div id="promptTemplateFields" class="space-y-4 hidden">
+                        <div>
+                            <label for="templatePrompt" class="block text-sm font-medium mb-2">Prompt instruction</label>
+                            <textarea id="templatePrompt" rows="5" class="w-full p-3 border border-gray-300 rounded-lg" placeholder="Find the owner of &#123;&#123;company&#125;&#125; in &#123;&#123;city&#125;&#125;. Return JSON with name, phone, email."></textarea>
+                            <select id="promptTagSelect" aria-label="Insert contact field" class="mt-2 w-full md:w-72 p-2 border border-gray-300 rounded-lg"></select>
+                        </div>
+                        <div>
+                            <label for="templateRequestsPerMinute" class="block text-sm font-medium mb-2">Requests per minute</label>
+                            <input id="templateRequestsPerMinute" type="number" min="1" max="600" step="1" value="30" class="w-full md:w-48 p-2 border border-gray-300 rounded-lg">
+                        </div>
+                        <div>
+                            <h4 class="font-semibold mb-2">JSON field / Save to</h4>
+                            <div id="promptMappingRows" class="space-y-2"></div>
+                            <button id="addPromptMapping" type="button" class="mt-2 px-3 py-2 border border-gray-300 rounded-lg">Add mapping</button>
+                        </div>
+                    </div>
+                    <div id="schemaMappingFields" class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <div>
                             <h4 class="font-semibold mb-2">Input Mapping (API input -> local field/literal)</h4>
                             <div id="inputMappingRows" class="space-y-2"></div>
@@ -340,7 +360,8 @@
                         <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                             <div>
                                 <h3 class="font-medium">${escapeHtml(template.name)}</h3>
-                                <p class="text-sm text-gray-600">${escapeHtml((template.api_config || {}).api_url || '')}</p>
+                                <p class="text-sm text-gray-600 break-all">${escapeHtml((template.api_config || {}).api_url || '')}</p>
+                                ${template.service === 'prompt_http' ? `<p class="text-xs text-gray-600">Prompt HTTP API · ${Number(template.api_config.requests_per_minute || 30)} requests/min</p>` : ''}
                             </div>
                             <div class="flex items-center gap-2">
                                 <button onclick="editTemplate(event, ${template.id})" class="text-blue-600 hover:text-blue-800 text-sm px-2 py-1 border border-blue-300 rounded">Edit</button>
@@ -350,6 +371,7 @@
                         </div>
                     `;
                     list.appendChild(div);
+                    if (selectedTemplate?.id === template.id) selectTemplate(template, div);
                 });
             } catch (error) {
                 console.error('Error loading templates:', error);
@@ -370,6 +392,12 @@
             const config = template.api_config || {};
             document.getElementById('runApiUrl').value = config.api_url || '';
             document.getElementById('runApiKey').value = config.api_key || '';
+            const isPrompt = template.service === 'prompt_http';
+            ['runApiUrlWrap', 'runApiKeyWrap', 'runConcurrencyWrap'].forEach(id => document.getElementById(id).classList.toggle('hidden', isPrompt));
+            document.getElementById('runSkipMissing').closest('label').classList.toggle('hidden', isPrompt);
+            const summary = document.getElementById('runPromptSummary');
+            summary.classList.toggle('hidden', !isPrompt);
+            summary.textContent = isPrompt ? `${config.requests_per_minute || 30} requests/min · Automatic concurrency\n${config.prompt_template || ''}` : '';
             showRunControls();
             maybeShowSections();
         }
@@ -535,6 +563,45 @@
             return mapping;
         }
 
+        function setTemplateMode() {
+            const isPrompt = document.getElementById('templateService').value === 'prompt_http';
+            ['templateApiKeyWrap', 'templateSchemaWrap', 'schemaMappingFields'].forEach(id => document.getElementById(id).classList.toggle('hidden', isPrompt));
+            ['templateApiKey', 'templateSchemaUrl'].forEach(id => document.getElementById(id).required = !isPrompt);
+            document.getElementById('promptTemplateFields').classList.toggle('hidden', !isPrompt);
+            document.getElementById('templatePrompt').required = isPrompt;
+            document.getElementById('templateRequestsPerMinute').required = isPrompt;
+            document.querySelectorAll('#promptTemplateFields input, #promptTemplateFields select, #promptTemplateFields textarea').forEach(input => input.disabled = !isPrompt);
+            if (isPrompt && !document.getElementById('promptMappingRows').children.length) {
+                addPromptMapping('name', 'full_name');
+                addPromptMapping('phone', 'phone');
+                addPromptMapping('email', 'email');
+            }
+        }
+
+        function addPromptMapping(key = '', field = '') {
+            const row = document.createElement('div');
+            row.className = 'flex flex-wrap gap-2 items-center';
+            row.innerHTML = `<input data-prompt-key aria-label="JSON field" placeholder="name" value="${escapeHtml(key)}" required class="min-w-0 flex-1 p-2 border border-gray-300 rounded-lg">
+                <select data-prompt-field aria-label="Save to contact field" required class="min-w-0 flex-1 p-2 border border-gray-300 rounded-lg">${buildFieldOptions(field)}</select>
+                <button type="button" title="Remove mapping" aria-label="Remove mapping" class="w-9 h-9 shrink-0 border border-gray-300 rounded">&#215;</button>`;
+            row.querySelector('select').value = field;
+            row.querySelector('button').onclick = () => row.remove();
+            document.getElementById('promptMappingRows').appendChild(row);
+        }
+
+        function collectPromptMapping() {
+            const mapping = {};
+            document.querySelectorAll('[data-prompt-key]').forEach(input => {
+                const key = input.value.trim();
+                const field = input.parentElement.querySelector('select').value;
+                if (!key || !field) throw new Error('Choose a JSON field and destination for each mapping.');
+                if (Object.hasOwn(mapping, key)) throw new Error(`Duplicate JSON field: ${key}`);
+                mapping[key] = field;
+            });
+            if (!Object.keys(mapping).length) throw new Error('Add at least one output mapping.');
+            return mapping;
+        }
+
         async function createTemplate(event) {
             event.preventDefault();
             const name = String(document.getElementById('templateName').value || '').trim();
@@ -542,14 +609,22 @@
             const apiKey = String(document.getElementById('templateApiKey').value || '').trim();
             const timeoutSeconds = Number(document.getElementById('templateTimeoutSeconds').value || 120);
             const schemaUrl = String(document.getElementById('templateSchemaUrl').value || '').trim();
+            const service = document.getElementById('templateService').value;
+            const isPrompt = service === 'prompt_http';
 
-            if (!name || !apiUrl || !apiKey) {
+            if (!name || !apiUrl || (!isPrompt && !apiKey)) {
                 alert('Template name, API URL and API key are required.');
                 return;
             }
 
-            const inputMapping = collectInputMappingFromModal();
-            const outputMapping = collectOutputMappingFromModal();
+            const inputMapping = isPrompt ? {} : collectInputMappingFromModal();
+            let outputMapping;
+            try {
+                outputMapping = isPrompt ? collectPromptMapping() : collectOutputMappingFromModal();
+            } catch (error) {
+                alert(error.message);
+                return;
+            }
             const isEdit = !!editingTemplateId;
 
             try {
@@ -560,12 +635,16 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         name,
-                        service: 'http_enrichment',
+                        service,
                         api_config: {
                             api_url: apiUrl,
                             api_key: apiKey,
                             schema_url: schemaUrl,
                             timeout_seconds: timeoutSeconds,
+                            ...(isPrompt ? {
+                                prompt_template: document.getElementById('templatePrompt').value.trim(),
+                                requests_per_minute: Number(document.getElementById('templateRequestsPerMinute').value || 30),
+                            } : {}),
                         },
                         input_mapping: inputMapping,
                         output_mapping: outputMapping,
@@ -652,6 +731,14 @@
                 document.getElementById('templateModalTitle').textContent = 'Edit Enrichment Template';
                 document.getElementById('saveTemplateBtn').textContent = 'Update Template';
                 document.getElementById('templateName').value = template.name || '';
+                document.getElementById('templateService').value = template.service || 'http_enrichment';
+                document.getElementById('templatePrompt').value = template.api_config?.prompt_template || '';
+                document.getElementById('templateRequestsPerMinute').value = template.api_config?.requests_per_minute || 30;
+                document.getElementById('promptMappingRows').innerHTML = '';
+                if (template.service === 'prompt_http') {
+                    Object.entries(template.output_mapping || {}).forEach(([key, field]) => addPromptMapping(key, field));
+                }
+                setTemplateMode();
                 document.getElementById('templateApiUrl').value = (template.api_config || {}).api_url || '';
                 document.getElementById('templateApiKey').value = (template.api_config || {}).api_key || '';
                 document.getElementById('templateTimeoutSeconds').value = Number((template.api_config || {}).timeout_seconds || 120);
@@ -779,7 +866,8 @@
                     body: JSON.stringify({
                         template_id: selectedTemplate.id,
                         api_url: apiUrl,
-                        api_key: apiKey
+                        api_key: apiKey,
+                        overwrite_existing: document.getElementById('runOverwrite').checked
                     })
                 });
 
@@ -993,6 +1081,10 @@
         }
 
         function openCreateTemplateModal() {
+            document.getElementById('createTemplateForm').reset();
+            document.getElementById('templateApiUrl').value = 'https://automation.tunnel.leadtechx.com/v1/ai-overview?prompt={prompt}';
+            document.getElementById('promptMappingRows').innerHTML = '';
+            setTemplateMode();
             editingTemplateId = null;
             templateSchema = null;
             document.getElementById('templateModalTitle').textContent = 'Create Enrichment Template';
@@ -1016,6 +1108,24 @@
         }
 
         document.addEventListener('DOMContentLoaded', async () => {
+            const tagSelect = document.getElementById('promptTagSelect');
+            tagSelect.innerHTML = '<option value="">Insert contact field...</option>' + LOCAL_FIELDS.map(field => `<option value="${field}">${field}</option>`).join('');
+            tagSelect.addEventListener('change', () => {
+                if (!tagSelect.value) return;
+                const prompt = document.getElementById('templatePrompt');
+                const tag = String.fromCharCode(123, 123) + tagSelect.value + String.fromCharCode(125, 125);
+                prompt.setRangeText(tag, prompt.selectionStart, prompt.selectionEnd, 'end');
+                tagSelect.value = '';
+                prompt.focus();
+            });
+            document.getElementById('addPromptMapping').addEventListener('click', () => addPromptMapping());
+            document.getElementById('templateService').addEventListener('change', () => {
+                const isPrompt = document.getElementById('templateService').value === 'prompt_http';
+                document.getElementById('templateApiUrl').value = isPrompt
+                    ? 'https://automation.tunnel.leadtechx.com/v1/ai-overview?prompt={prompt}'
+                    : 'https://promising-investments-complexity-municipal.trycloudflare.com/api/public/enrich';
+                setTemplateMode();
+            });
             populateMissingFieldOptions('');
             updateMissingFieldToggleState();
             await loadCampaigns();

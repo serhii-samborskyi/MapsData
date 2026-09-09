@@ -417,6 +417,14 @@ def init_db():
         cursor.execute("ALTER TABLE search_campaigns ALTER COLUMN pinned SET NOT NULL")
         cursor.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS source_data JSONB NOT NULL DEFAULT '{}'::jsonb")
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS input_mapping TEXT DEFAULT '{}'")
+        cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS service TEXT NOT NULL DEFAULT 'http_enrichment'")
+        cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS prompt_config TEXT NOT NULL DEFAULT '{}'")
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS enrichment_api_rate_limits (
+                endpoint_key TEXT PRIMARY KEY,
+                next_request_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS output_mapping TEXT DEFAULT '{}'")
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS required_inputs TEXT DEFAULT '[]'")
         cursor.execute("ALTER TABLE enrichment_runs ADD COLUMN IF NOT EXISTS emails_only BOOLEAN")
