@@ -2231,6 +2231,7 @@ def _serialize_enrichment_run(run: Optional[dict]) -> dict:
         "timeout_seconds": _normalize_enrichment_timeout(run.get("timeout_seconds")),
         "service": run.get("service") or "http_enrichment",
         "requests_per_minute": _safe_json_loads(run.get("prompt_config"), {}).get("requests_per_minute"),
+        "error_summary": _enrichment_error_summary(run.get("latest_error")) if run.get("latest_error") else None,
     }
 
 
@@ -2341,11 +2342,23 @@ def _load_enrichment_logs(cursor, run_id: int, limit: int = MAX_ENRICHMENT_LOGS)
     safe_limit = max(1, min(int(limit or MAX_ENRICHMENT_LOGS), MAX_ENRICHMENT_LOGS))
     cursor.execute(
         """
-        SELECT id, contact_id, level, message, created_at
-        FROM enrichment_run_logs
-        WHERE run_id = %s
-        ORDER BY id DESC
-        LIMIT %s
+        WITH recent_logs AS (
+            SELECT id, run_id, contact_id, level, message, created_at
+            FROM enrichment_run_logs WHERE run_id = %s
+            ORDER BY id DESC LIMIT %s
+        ), ranked_logs AS (
+            SELECT *, ROW_NUMBER() OVER (PARTITION BY contact_id ORDER BY id DESC) AS contact_log_order
+            FROM recent_logs
+        )
+        SELECT l.*, c.business_name AS contact_name, rc.status AS contact_status,
+               er.output_mapping,
+               CASE WHEN l.contact_log_order = 1 AND rc.status IN ('enriched', 'failed')
+                    THEN rc.response_payload END AS result_payload
+        FROM ranked_logs l
+        JOIN enrichment_runs er ON er.id = l.run_id
+        LEFT JOIN enrichment_run_contacts rc ON rc.run_id = l.run_id AND rc.contact_id = l.contact_id
+        LEFT JOIN contacts c ON c.id = l.contact_id
+        ORDER BY l.id DESC
         """,
         (run_id, safe_limit),
     )
@@ -2353,6 +2366,19 @@ def _load_enrichment_logs(cursor, run_id: int, limit: int = MAX_ENRICHMENT_LOGS)
     rows.reverse()
     for row in rows:
         row["created_at"] = _iso(row.get("created_at"))
+        payload = row.pop("result_payload", None)
+        mapping = _safe_json_loads(row.pop("output_mapping", None), {})
+        latest = row.pop("contact_log_order", 0) == 1
+        status = row.get("contact_status")
+        if row.get("contact_id"):
+            row["contact_name"] = row.get("contact_name") or f"Contact #{row['contact_id']}"
+            if latest and status in {"enriched", "failed"}:
+                row["field_results"] = _enrichment_field_results(payload, mapping)
+                row["display_message"] = "Extracted results" if status == "enriched" else _enrichment_error_summary(row.get("message"))
+            else:
+                row["display_message"] = "Skipped" if status == "skipped" else "Retrying request"
+        else:
+            row["display_message"] = row.get("message") or ""
     return rows
 
 
@@ -2370,6 +2396,42 @@ def _is_enrichment_field_missing(value: Any) -> bool:
         return True
     normalized = str(value).strip().lower()
     return normalized in ENRICHMENT_MISSING_VALUE_MARKERS
+
+
+def _enrichment_field_results(response_data: Optional[dict], output_mapping: dict) -> List[dict]:
+    response_data = response_data if isinstance(response_data, dict) else {}
+    fields = []
+    for key, local_field in (output_mapping or {}).items():
+        key = _normalize_mapping_value(key)
+        local_field = _normalize_mapping_value(local_field)
+        if not local_field or local_field not in ENRICHMENT_LOCAL_FIELD_SET:
+            continue
+        value = response_data.get(key)
+        found = not _is_enrichment_field_missing(value)
+        fields.append({"api_field": key, "local_field": local_field, "found": found,
+                       "value": str(value).strip() if found else None})
+    return fields
+
+
+def _enrichment_error_summary(message: Any) -> str:
+    text = str(message or "")
+    http_status = re.search(r"\bHTTP\s+(\d{3})\b", text, re.IGNORECASE)
+    if http_status:
+        return f"API request failed (HTTP {http_status.group(1)})."
+    lowered = text.lower()
+    if "timeout" in lowered or "timed out" in lowered:
+        return "API request timed out."
+    if "no usable values" in lowered:
+        return "No requested fields found."
+    if "extract a json" in lowered or "decode" in lowered or "expecting value" in lowered:
+        return "Could not read JSON fields from the API response."
+    if "could not save mapped fields" in lowered:
+        return "Extracted values could not be saved."
+    if "required" in lowered or "no random contact" in lowered:
+        return "Missing required inputs."
+    if "no contacts" in lowered:
+        return "No contacts found in campaign."
+    return "Enrichment request failed."
 
 
 def _enrichment_mapping_source(mapping_value: Any) -> str:
@@ -10003,7 +10065,9 @@ def _test_prompt_enrichment(campaign_id: int, template: dict, overwrite: bool) -
     details = _fetch_prompt_enrichment(config, contact, template["output_mapping"])
     details.update({"contact_id": contact["id"], "contact_name": contact.get("business_name"),
                     "latency_ms": int((time.monotonic() - start) * 1000)})
+    details["field_results"] = _enrichment_field_results(details.get("values"), template["output_mapping"])
     if details.get("error"):
+        details["error_summary"] = _enrichment_error_summary(details["error"])
         raise HTTPException(status_code=502, detail=details)
     return {**details, "status": "ok", "mapped_local_updates_preview": _prompt_contact_updates(
         contact, details["values"], template["output_mapping"], overwrite)}
@@ -10125,6 +10189,8 @@ async def test_enrichment_run(campaign_id: int, request: Request):
                 "request_body": request_body,
                 "response_text": response_text,
                 "response_json": response_json,
+                "field_results": _enrichment_field_results({}, output_mapping),
+                "error_summary": f"API request failed (HTTP {response.status_code}).",
             },
         )
 
@@ -10141,6 +10207,7 @@ async def test_enrichment_run(campaign_id: int, request: Request):
         "request_body": request_body,
         "response_json": response_json,
         "mapped_local_updates_preview": mapped_preview,
+        "field_results": _enrichment_field_results(response_json, output_mapping),
     }
 
 

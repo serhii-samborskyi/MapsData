@@ -129,10 +129,19 @@ class PromptIntegrationTests(unittest.TestCase):
         test = self.client.post(f"/api/campaign/{cid}/enrichment/test", json={"template_id": tid})
         self.assertEqual(test.status_code, 200, test.text)
         self.assertIn("prompt", test.json())
+        fields = {field["api_field"]: field for field in test.json()["field_results"]}
+        self.assertEqual(fields["name"]["value"], "Test Owner")
+        self.assertTrue(fields["email"]["found"])
         self.assertEqual(self.row("SELECT COUNT(*) AS n FROM contacts WHERE campaign_id=%s AND full_name IS NULL", (cid,))["n"], 1)
         rid = self.start(cid, tid)
         self.main._run_enrichment_job(rid)
-        run = self.client.get(f"/api/enrichment/runs/{rid}").json()["run"]
+        run_response = self.client.get(f"/api/enrichment/runs/{rid}").json()
+        run = run_response["run"]
+        result_logs = [log for log in run_response["logs"] if "field_results" in log]
+        self.assertEqual(len(result_logs), 1)
+        self.assertEqual(result_logs[0]["display_message"], "Extracted results")
+        self.assertTrue(all(field["found"] for field in result_logs[0]["field_results"]))
+        self.assertNotIn("result_payload", result_logs[0])
         self.assertEqual((run["status"], run["enriched_contacts"], run["skipped_contacts"]), ("completed", 1, 1))
         contact = self.row("SELECT * FROM contacts WHERE campaign_id=%s AND email='existing@example.com'", (cid,))
         self.assertEqual(contact["full_name"], "Test Owner")
@@ -171,6 +180,41 @@ class PromptIntegrationTests(unittest.TestCase):
         result = self.row("SELECT * FROM enrichment_run_contacts WHERE run_id=%s", (rid,))
         self.assertEqual((result["status"], result["attempts"]), ("failed", 2))
         self.assertIn("Provider unavailable", result["response_payload"]["_prompt_http"]["response_text"])
+        status = self.client.get(f"/api/enrichment/runs/{rid}").json()
+        self.assertEqual(status["run"]["error_summary"], "API request failed (HTTP 502).")
+        result_logs = [log for log in status["logs"] if "field_results" in log]
+        self.assertEqual(len(result_logs), 1)
+        self.assertTrue(all(not field["found"] for field in result_logs[0]["field_results"]))
+        self.assertNotIn("Provider unavailable", result_logs[0]["display_message"])
+        test = self.client.post(f"/api/campaign/{cid}/enrichment/test", json={"template_id": tid})
+        self.assertEqual(test.status_code, 502)
+        self.assertEqual(test.json()["detail"]["error_summary"], "API request failed (HTTP 502).")
+        self.assertEqual(len(test.json()["detail"]["field_results"]), 3)
+
+    def test_partial_results_and_legacy_logs_use_saved_run_mapping(self):
+        self.template["output_mapping"]["website"] = "domain"
+        tid = self.create_template()
+        cid = self.campaign([{}])
+        test = self.client.post(f"/api/campaign/{cid}/enrichment/test", json={"template_id": tid})
+        fields = {field["api_field"]: field for field in test.json()["field_results"]}
+        self.assertFalse(fields["website"]["found"])
+        self.assertIsNone(fields["website"]["value"])
+        rid = self.start(cid, tid)
+        self.main._run_enrichment_job(rid)
+        with self.main.get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE enrichment_runs SET service='http_enrichment' WHERE id=%s", (rid,))
+            cursor.execute("UPDATE enrichment_run_contacts SET response_payload=%s::jsonb WHERE run_id=%s",
+                           (json.dumps({"name": "Legacy Owner", "email": "Unknown", "phone": "123", "other": "metadata"}), rid))
+            conn.commit()
+        self.client.put(f"/api/enrichment/templates/{tid}", json={**self.template, "output_mapping": {"different": "custom_1"}})
+        logs = self.client.get(f"/api/enrichment/runs/{rid}").json()["logs"]
+        result_log = next(log for log in logs if "field_results" in log)
+        fields = {field["api_field"]: field for field in result_log["field_results"]}
+        self.assertEqual(set(fields), {"name", "email", "phone", "website"})
+        self.assertEqual(fields["name"]["value"], "Legacy Owner")
+        self.assertFalse(fields["email"]["found"])
+        self.assertFalse(fields["website"]["found"])
 
     def test_invalid_typed_output_finishes_instead_of_leaving_contact_processing(self):
         self.template["output_mapping"] = {"name": "rating"}
