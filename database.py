@@ -16,6 +16,7 @@ def get_db():
 def init_db():
     with get_db() as conn:
         cursor = conn.cursor()
+        cursor.execute("SELECT pg_advisory_xact_lock(hashtext('mapsdata_schema_init'))")
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS search_campaigns (
                 id SERIAL PRIMARY KEY,
@@ -250,6 +251,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS pipeline_runs (
                 id BIGSERIAL PRIMARY KEY,
                 campaign_id INTEGER NOT NULL REFERENCES search_campaigns(id) ON DELETE CASCADE,
+                execution_mode TEXT NOT NULL DEFAULT 'batch' CHECK (execution_mode IN ('batch', 'streaming')),
                 status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'canceled')),
                 current_stage TEXT NOT NULL CHECK (current_stage IN ('maps_scrape', 'cleanup_contacts', 'email_fast', 'email_fallback', 'finalize')),
                 retries INTEGER NOT NULL DEFAULT 0,
@@ -269,6 +271,7 @@ def init_db():
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        cursor.execute("ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT 'batch' CHECK (execution_mode IN ('batch', 'streaming'))")
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS pipeline_run_stages (
                 id BIGSERIAL PRIMARY KEY,
@@ -465,6 +468,10 @@ def init_db():
             END
             $$;
         """)
+        import streaming
+        streaming.init_schema(cursor)
+        from remote_mcp import init_schema as init_mcp_schema
+        init_mcp_schema(cursor)
         conn.commit()
 
         # Add new columns to existing contacts table if they don't exist

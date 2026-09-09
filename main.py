@@ -10,6 +10,9 @@ from psycopg2 import DataError, IntegrityError
 from psycopg2.extras import Json
 import requests
 import prompt_enrichment
+import streaming
+import streaming_campaigns
+import sys
 import asyncio
 import hmac
 import hashlib
@@ -1188,19 +1191,23 @@ def _load_http_source_campaign(cursor, campaign_id: int) -> dict:
             sc.id AS campaign_id,
             sc.name AS campaign_name,
             sc.status AS campaign_status,
+            sc.source_snapshot,
             st.id AS source_id,
             st.name AS source_name,
             st.source_type,
             st.enabled,
             st.config
         FROM search_campaigns sc
-        JOIN source_templates st ON st.id = sc.source_template_id
+        LEFT JOIN source_templates st ON st.id = sc.source_template_id
         WHERE sc.id = %s
     """, (campaign_id,))
     row = cursor.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Campaign or source template not found")
     data = dict(row)
+    snapshot = data.pop("source_snapshot", None)
+    if snapshot:
+        data.update(source_id=snapshot.get("id"), source_name=snapshot.get("name"), source_type=snapshot.get("source_type"), enabled=snapshot.get("enabled", True), config=snapshot.get("config", {}))
     if _normalize_source_template_type(data.get("source_type")) != "http_api":
         raise HTTPException(status_code=400, detail="Campaign source is not an HTTP API source")
     if not bool(data.get("enabled")):
@@ -2903,7 +2910,7 @@ def _run_verification_job(job_id: str):
             _append_verification_log(job, "Skipping public email providers")
 
     try:
-        template = EmailVerificationManager.get_template(job["template_id"])
+        template = job.get("template_snapshot") or EmailVerificationManager.get_template(job["template_id"])
         if not template:
             raise RuntimeError("Template not found")
         if _is_domain_checker_template(template):
@@ -3299,10 +3306,17 @@ def _wait_for_prompt_slot(config: dict, run_id: Optional[int] = None) -> bool:
                 """, (key,))
                 rate = min(config["requests_per_minute"], int(cursor.fetchone()["rate"] or config["requests_per_minute"]))
                 cursor.execute("""
+                    SELECT MAX(s.stream_interval) AS delay FROM automation_run_steps s
+                    JOIN automation_runs r ON r.id = s.run_id
+                    WHERE s.stream_bucket = %s AND r.status IN ('queued', 'running')
+                """, (key,))
+                streaming_delay = float(cursor.fetchone()["delay"] or 0)
+                cursor.execute("""
                     UPDATE enrichment_api_rate_limits
-                    SET next_request_at = clock_timestamp() + (%s * interval '1 second')
+                    SET next_request_at = clock_timestamp() + (%s * interval '1 second'),
+                        last_dispatch_at = clock_timestamp()
                     WHERE endpoint_key = %s
-                """, (60.0 / rate, key))
+                """, (max(60.0 / rate, streaming_delay), key))
                 conn.commit()
                 return True
             conn.commit()
@@ -3844,6 +3858,10 @@ def _cancel_automation_child_step(cursor, step: dict) -> Optional[str]:
 def _cancel_automation_run(cursor, run: dict, reason: str = "Funnel cancelled by user") -> List[str]:
     run_id = int(run["id"])
     campaign_id = int(run["campaign_id"])
+    if run.get("execution_mode") == "streaming":
+        cursor.execute("SELECT id FROM automation_runs WHERE id = %s FOR UPDATE", (run_id,))
+        streaming.cancel(cursor, run_id)
+        cursor.execute("UPDATE search_campaigns SET daemon_ignore = TRUE, status = 'inactive' WHERE id = %s", (campaign_id,))
     steps = _load_automation_steps(cursor, run_id)
     child_messages: List[str] = []
     for step in steps:
@@ -3941,30 +3959,56 @@ def _serialize_automation_run(run: Optional[dict], steps: Optional[List[dict]] =
         return None
     payload = dict(run)
     if steps is not None:
-        payload["steps"] = steps
+        payload["steps"] = [{**step, "config": {k: v for k, v in (step.get("config") or {}).items() if k != "template_snapshot"}} for step in steps]
     if logs is not None:
         payload["logs"] = logs
+    if run.get("execution_mode") == "streaming":
+        with get_db() as conn:
+            payload["stream_progress"] = streaming.progress(conn.cursor(), run["id"])
+        payload["stream_open"] = not run.get("stream_source_closed", False) and run.get("status") not in {"completed", "failed", "cancelled"}
+        payload["stream_blocked"] = any(item.get("blocked", 0) for item in payload["stream_progress"])
     return payload
 
 
-def _create_automation_run(cursor, campaign_id: int, template_id: int, created_by: str = "dashboard") -> int:
-    cursor.execute("SELECT * FROM automation_funnel_templates WHERE id = %s AND enabled = TRUE", (template_id,))
+def _create_automation_run(cursor, campaign_id: int, template_id: int, created_by: str = "dashboard", overrides: Optional[dict] = None, frozen_plan: Optional[dict] = None) -> int:
+    if frozen_plan is not None:
+        # Retain the FK target until commit; all executable settings come from the approved plan.
+        cursor.execute("SELECT id FROM automation_funnel_templates WHERE id = %s FOR KEY SHARE", (template_id,))
+    else:
+        cursor.execute("SELECT * FROM automation_funnel_templates WHERE id = %s AND enabled = TRUE", (template_id,))
     template = cursor.fetchone()
     if not template:
         raise HTTPException(status_code=404, detail="Funnel template not found")
 
-    steps = _normalize_funnel_steps(_safe_json_loads(template.get("steps"), []))
+    if frozen_plan is not None:
+        template = frozen_plan
+        template_name = frozen_plan.get("funnel_name")
+        mode = streaming_campaigns.execution_mode(frozen_plan["execution_mode"])
+        steps = frozen_plan["steps"]
+    else:
+        template_name = template.get("name")
+        overrides = overrides or {}
+        mode = streaming_campaigns.execution_mode(overrides.get("execution_mode"), template.get("execution_mode", "batch"))
+        steps = _normalize_funnel_steps(_safe_json_loads(template.get("steps"), []))
+        if mode == "streaming" or overrides.get("export_template_id") or overrides.get("sendread_ab_list_id"):
+            steps = streaming_campaigns.freeze_steps(cursor, sys.modules[__name__], dict(template), overrides)
     if not any(step.get("enabled", True) for step in steps):
         raise HTTPException(status_code=400, detail="Funnel has no enabled steps")
+    if mode == "streaming" and frozen_plan is None:
+        cursor.execute("SELECT source_template_id, source_snapshot FROM search_campaigns WHERE id = %s", (campaign_id,))
+        campaign = cursor.fetchone()
+        if campaign and not campaign.get("source_snapshot"):
+            source = _ensure_source_template(cursor, campaign.get("source_template_id"))
+            cursor.execute("UPDATE search_campaigns SET source_snapshot = %s WHERE id = %s", (Json(streaming.clean_json(source or {"name": "Google Maps", "source_type": "builtin_google_maps", "config": {}})), campaign_id))
 
     retry_count = max(0, min(_safe_int(template.get("default_retry_count"), 2), 10))
     cursor.execute(
         """
-        INSERT INTO automation_runs (campaign_id, template_id, status, max_retries, created_by)
-        VALUES (%s, %s, 'queued', %s, %s)
+        INSERT INTO automation_runs (campaign_id, template_id, status, max_retries, created_by, execution_mode)
+        VALUES (%s, %s, 'queued', %s, %s, %s)
         RETURNING id
         """,
-        (campaign_id, template_id, retry_count, created_by),
+        (campaign_id, template_id, retry_count, created_by, mode),
     )
     run_id = int(cursor.fetchone()["id"])
 
@@ -3982,7 +4026,7 @@ def _create_automation_run(cursor, campaign_id: int, template_id: int, created_b
         )
         step_order += 1
 
-    _append_automation_log(cursor, run_id, campaign_id, f"Funnel run created from template: {template.get('name')}")
+    _append_automation_log(cursor, run_id, campaign_id, f"Funnel run created from template: {template_name}")
     return run_id
 
 
@@ -4022,7 +4066,7 @@ def _wait_for_pipeline_completion(run_id: int, campaign_id: int, step_id: int) -
 def _get_campaign_source_type(cursor, campaign_id: int) -> str:
     cursor.execute(
         """
-        SELECT st.source_type
+        SELECT COALESCE(sc.source_snapshot->>'source_type', st.source_type) AS source_type
         FROM search_campaigns sc
         LEFT JOIN source_templates st ON st.id = sc.source_template_id
         WHERE sc.id = %s
@@ -4030,7 +4074,10 @@ def _get_campaign_source_type(cursor, campaign_id: int) -> str:
         (campaign_id,),
     )
     row = cursor.fetchone()
-    return _normalize_source_template_type(row.get("source_type")) if row and row.get("source_type") else "builtin_google_maps"
+    source_type = row.get("source_type") if row else None
+    if not source_type or source_type == "builtin_google_maps":
+        return "builtin_google_maps"
+    return _normalize_source_template_type(source_type)
 
 
 def _wait_for_http_source_completion(run_id: int, campaign_id: int) -> tuple[bool, str]:
@@ -4123,7 +4170,9 @@ def _automation_step_enrichment(run_id: int, campaign_id: int, step_id: int, con
     template_id = config.get("template_id")
     if not template_id:
         return False, "Enrichment template is required", None
-    response = asyncio.run(start_enrichment_run(campaign_id, JsonRequest(config)))
+    child_request = JsonRequest(config)
+    child_request.template_snapshot = config.get("template_snapshot")
+    response = asyncio.run(start_enrichment_run(campaign_id, child_request))
     enrichment_run = response.get("run") or {}
     enrichment_run_id = _safe_int(enrichment_run.get("id") or enrichment_run.get("run_id"), 0)
     if not enrichment_run_id:
@@ -4138,11 +4187,13 @@ def _automation_step_verification(run_id: int, campaign_id: int, step_id: int, c
     template_id = config.get("template_id")
     if not template_id:
         return False, "Verification template is required", None
-    response = asyncio.run(start_verification_job(campaign_id, JsonRequest({
+    child_request = JsonRequest({
         "template_id": template_id,
         "delay": config.get("delay", 0),
         "skip_public_providers": config.get("skip_public_providers", False),
-    })))
+    })
+    child_request.template_snapshot = config.get("template_snapshot")
+    response = asyncio.run(start_verification_job(campaign_id, child_request))
     job_id = str(response.get("job_id") or "")
     if not job_id:
         return False, "Could not start verification job", None
@@ -4152,6 +4203,8 @@ def _automation_step_verification(run_id: int, campaign_id: int, step_id: int, c
 
 
 def _automation_step_export(campaign_id: int, config: dict) -> tuple[bool, str, Optional[str]]:
+    from copy import deepcopy
+
     template_id = config.get("template_id")
     if not template_id:
         return False, "Export template is required", None
@@ -4169,6 +4222,8 @@ def _automation_step_export(campaign_id: int, config: dict) -> tuple[bool, str, 
     }
     if payload["field_mappings"] is None:
         payload.pop("field_mappings")
+    if config.get("sendread_ab_list_id") is not None:
+        payload["sendread_ab_list_id"] = config["sendread_ab_list_id"]
     total_exported = 0
     batches = 0
     offset = 0
@@ -4176,7 +4231,10 @@ def _automation_step_export(campaign_id: int, config: dict) -> tuple[bool, str, 
         batch_payload = dict(payload)
         batch_payload["offset"] = offset
         try:
-            response = asyncio.run(export_campaign(campaign_id, JsonRequest(batch_payload)))
+            export_request = JsonRequest(batch_payload)
+            if config.get("template_snapshot") is not None:
+                export_request._template_snapshot = deepcopy(config["template_snapshot"])
+            response = asyncio.run(export_campaign(campaign_id, export_request))
         except HTTPException as exc:
             if exc.status_code == 404 and offset > 0:
                 break
@@ -4289,6 +4347,12 @@ def _recover_running_automation_step(cursor, run_id: int, campaign_id: int, step
 
 def _run_automation_run(run_id: int):
     try:
+        with get_db() as mode_conn:
+            mode_run = _load_automation_run(mode_conn.cursor(), run_id)
+        if mode_run and mode_run.get("execution_mode") == "streaming":
+            import streaming_runtime
+            streaming_runtime.run(sys.modules[__name__], run_id)
+            return
         with get_db() as conn:
             cursor = conn.cursor()
             run = _load_automation_run(cursor, run_id)
@@ -4500,6 +4564,7 @@ def _automation_scheduler_loop():
         try:
             with get_db() as conn:
                 cursor = conn.cursor()
+                streaming.recover_stopped(cursor)
                 cursor.execute(
                     """
                     SELECT id
@@ -4510,6 +4575,7 @@ def _automation_scheduler_loop():
                     """
                 )
                 run_ids = [int(row["id"]) for row in cursor.fetchall()]
+                conn.commit()
             for run_id in run_ids:
                 _ensure_automation_run_worker(run_id)
         except Exception:
@@ -4674,8 +4740,8 @@ async def get_campaigns(
                 sc.status,
                 COALESCE(sc.maps_scrape_mode, 'slow') AS maps_scrape_mode,
                 sc.source_template_id,
-                COALESCE(st.name, 'Google Maps (built-in)') AS source_name,
-                CASE WHEN sc.source_template_id IS NULL THEN 'builtin_google_maps' ELSE COALESCE(st.source_type, 'generic') END AS source_type,
+                COALESCE(sc.source_snapshot->>'name', st.name, 'Google Maps (built-in)') AS source_name,
+                COALESCE(sc.source_snapshot->>'source_type', CASE WHEN sc.source_template_id IS NULL THEN 'builtin_google_maps' ELSE COALESCE(st.source_type, 'generic') END) AS source_type,
                 COALESCE(sc.scrape_maps_only, FALSE) AS scrape_maps_only,
                 COALESCE(sc.daemon_ignore, FALSE) AS daemon_ignore,
                 COALESCE(sc.pinned, FALSE) AS pinned
@@ -5439,6 +5505,9 @@ async def create_campaign(
     source_template_id: Optional[str] = Form(None),
     scrape_maps_only: Optional[str] = Form(None),
     funnel_template_id: Optional[str] = Form(None),
+    execution_mode: Optional[str] = Form(None),
+    export_template_id: Optional[str] = Form(None),
+    sendread_ab_list_id: Optional[str] = Form(None),
 ):
     phrases = [p.strip() for p in search_phrases.split("\n") if p.strip()]
     requested_mode = str(maps_scrape_mode or "").strip().lower()
@@ -5464,7 +5533,9 @@ async def create_campaign(
                 (campaign_id, phrase, "pending")
             )
         if normalized_funnel_template_id:
-            funnel_run_id = _create_automation_run(cursor, int(campaign_id), int(normalized_funnel_template_id), "campaign_create")
+            overrides = {key: value for key, value in {"execution_mode": execution_mode, "export_template_id": export_template_id, "sendread_ab_list_id": sendread_ab_list_id}.items() if isinstance(value, str) and value.strip()}
+            funnel_run_id = _create_automation_run(cursor, int(campaign_id), int(normalized_funnel_template_id), "campaign_create", overrides)
+            cursor.execute("UPDATE search_campaigns SET source_snapshot = %s WHERE id = %s", (Json(source_template or {"source_type": "builtin_google_maps", "name": "Google Maps", "config": {}}), campaign_id))
         conn.commit()
     http_source_runner_started = False
     if source_template and _normalize_source_template_type(source_template.get("source_type")) == "http_api":
@@ -5515,6 +5586,9 @@ async def import_csv_campaign(
     static_fields: str = Form("[]"),
     funnel_template_id: Optional[str] = Form(None),
     file: UploadFile = File(...),
+    execution_mode: Optional[str] = Form(None),
+    export_template_id: Optional[str] = Form(None),
+    sendread_ab_list_id: Optional[str] = Form(None),
 ):
     campaign_name = str(name or "").strip()
     request_lines = [line.strip() for line in str(request_text or "").splitlines() if line.strip()]
@@ -5599,7 +5673,8 @@ async def import_csv_campaign(
             imported_count += 1
 
         if normalized_funnel_template_id:
-            funnel_run_id = _create_automation_run(cursor, campaign_id, int(normalized_funnel_template_id), "campaign_create")
+            overrides = {key: value for key, value in {"execution_mode": execution_mode, "export_template_id": export_template_id, "sendread_ab_list_id": sendread_ab_list_id}.items() if isinstance(value, str) and value.strip()}
+            funnel_run_id = _create_automation_run(cursor, campaign_id, int(normalized_funnel_template_id), "campaign_create", overrides)
         conn.commit()
 
     if funnel_run_id:
@@ -6049,6 +6124,7 @@ async def get_campaign_source_template(campaign_id: int):
                 sc.id,
                 sc.name,
                 sc.source_template_id,
+                sc.source_snapshot,
                 COALESCE(sc.maps_scrape_mode, 'slow') AS maps_scrape_mode,
                 COALESCE(sc.scrape_maps_only, FALSE) AS scrape_maps_only,
                 st.id AS template_id,
@@ -6067,6 +6143,11 @@ async def get_campaign_source_template(campaign_id: int):
         if not row:
             raise HTTPException(status_code=404, detail="Campaign not found")
         data = dict(row)
+
+    if data.get("source_snapshot"):
+        return {"campaign_id": campaign_id, "campaign_name": data.get("name"),
+                "maps_scrape_mode": _normalize_maps_scrape_mode(data.get("maps_scrape_mode"), "slow"),
+                "scrape_maps_only": bool(data.get("scrape_maps_only")), "source": data["source_snapshot"]}
 
     source_template_id = data.get("source_template_id")
     if not source_template_id:
@@ -6313,12 +6394,25 @@ async def start_campaign_pipeline(campaign_id: int, request: Request):
                 "pipeline_status": run["status"],
                 "current_stage": run["current_stage"],
                 "current_stage_status": stage_row["status"] if stage_row else run["status"],
+                "execution_mode": run.get("execution_mode") or "batch",
             }
+
+        # Freeze the mode before scraping; the funnel may finish before Maps is acknowledged.
+        cursor.execute("""
+            SELECT execution_mode
+            FROM automation_runs
+            WHERE campaign_id = %s
+              AND status IN ('queued', 'running', 'waiting_confirmation')
+            ORDER BY id DESC
+            LIMIT 1
+        """, (campaign_id,))
+        automation_run = cursor.fetchone()
+        execution_mode = "streaming" if automation_run and automation_run.get("execution_mode") == "streaming" else "batch"
 
         retries = 0
         if retry_requested:
             cursor.execute("""
-                SELECT retries
+                SELECT retries, execution_mode
                 FROM pipeline_runs
                 WHERE campaign_id = %s
                 ORDER BY created_at DESC, id DESC
@@ -6327,6 +6421,7 @@ async def start_campaign_pipeline(campaign_id: int, request: Request):
             previous_run = cursor.fetchone()
             if previous_run:
                 retries = int(previous_run.get("retries", 0)) + 1
+                execution_mode = previous_run.get("execution_mode") or "batch"
 
         now = _now_utc()
         request_progress = _get_campaign_request_progress(cursor, campaign_id)
@@ -6348,6 +6443,7 @@ async def start_campaign_pipeline(campaign_id: int, request: Request):
             cursor.execute("""
                 INSERT INTO pipeline_runs (
                     campaign_id,
+                    execution_mode,
                     status,
                     current_stage,
                     retries,
@@ -6356,10 +6452,11 @@ async def start_campaign_pipeline(campaign_id: int, request: Request):
                     created_at,
                     updated_at
                 )
-                VALUES (%s, 'pending', %s, %s, %s, %s, %s, %s)
-                RETURNING id, status, current_stage
+                VALUES (%s, %s, 'pending', %s, %s, %s, %s, %s, %s)
+                RETURNING id, status, current_stage, execution_mode
             """, (
                 campaign_id,
+                execution_mode,
                 PIPELINE_STAGES[0],
                 retries,
                 actor,
@@ -6393,6 +6490,7 @@ async def start_campaign_pipeline(campaign_id: int, request: Request):
                 "pipeline_status": run["status"],
                 "current_stage": run["current_stage"],
                 "current_stage_status": stage_row["status"] if stage_row else run["status"],
+                "execution_mode": run.get("execution_mode") or "batch",
             }
         run_id = created_run["id"]
 
@@ -6431,6 +6529,7 @@ async def start_campaign_pipeline(campaign_id: int, request: Request):
         "campaign_id": campaign_id,
         "pipeline_status": created_run["status"],
         "current_stage": created_run["current_stage"],
+        "execution_mode": created_run.get("execution_mode") or "batch",
     }
 
 
@@ -6496,8 +6595,8 @@ async def claim_pipeline_stage(request: Request):
                 sc.name AS campaign_name,
                 COALESCE(sc.maps_scrape_mode, 'slow') AS maps_scrape_mode,
                 sc.source_template_id,
-                COALESCE(st.name, 'Google Maps (built-in)') AS source_name,
-                CASE WHEN sc.source_template_id IS NULL THEN 'builtin_google_maps' ELSE COALESCE(st.source_type, 'generic') END AS source_type,
+                COALESCE(sc.source_snapshot->>'name', st.name, 'Google Maps (built-in)') AS source_name,
+                COALESCE(sc.source_snapshot->>'source_type', CASE WHEN sc.source_template_id IS NULL THEN 'builtin_google_maps' ELSE COALESCE(st.source_type, 'generic') END) AS source_type,
                 COALESCE(sc.scrape_maps_only, FALSE) AS scrape_maps_only
             FROM pipeline_runs pr
             JOIN search_campaigns sc ON sc.id = pr.campaign_id
@@ -6625,6 +6724,7 @@ async def claim_pipeline_stage(request: Request):
                 "source_name": run.get("source_name") or "Google Maps (built-in)",
                 "source_type": run.get("source_type") or "builtin_google_maps",
                 "scrape_maps_only": bool(run.get("scrape_maps_only")),
+                "execution_mode": run.get("execution_mode") or "batch",
             }
 
         for run in candidate_runs:
@@ -7001,8 +7101,10 @@ async def complete_pipeline_stage(run_id: int, request: Request):
 
         next_stage = _next_pipeline_stage(stage_to_complete)
         skipped_stages: List[str] = []
-        if next_stage is not None and _is_scrape_maps_only_campaign(cursor, run["campaign_id"]):
-            while next_stage in PIPELINE_EMAIL_STAGES:
+        streaming_pipeline = run.get("execution_mode") == "streaming"
+        skip_pipeline_stages = {"cleanup_contacts", *PIPELINE_EMAIL_STAGES} if streaming_pipeline else PIPELINE_EMAIL_STAGES
+        if next_stage is not None and (streaming_pipeline or _is_scrape_maps_only_campaign(cursor, run["campaign_id"])):
+            while next_stage in skip_pipeline_stages:
                 cursor.execute("""
                     UPDATE pipeline_run_stages
                     SET status = 'completed',
@@ -8279,11 +8381,11 @@ async def create_funnel_template(request: Request):
         cursor.execute(
             """
             INSERT INTO automation_funnel_templates
-                (name, description, steps, default_retry_count, enabled)
-            VALUES (%s, %s, %s, %s, %s)
+                (name, description, steps, default_retry_count, enabled, execution_mode)
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
-            (name, description, Json(steps), retry_count, enabled),
+            (name, description, Json(steps), retry_count, enabled, streaming_campaigns.execution_mode(data.get("execution_mode"))),
         )
         template_id = int(cursor.fetchone()["id"])
         conn.commit()
@@ -8315,10 +8417,11 @@ async def update_funnel_template(template_id: int, request: Request):
                 steps = %s,
                 default_retry_count = %s,
                 enabled = %s,
+                execution_mode = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
             """,
-            (name, description, Json(steps), retry_count, enabled, template_id),
+            (name, description, Json(steps), retry_count, enabled, streaming_campaigns.execution_mode(data.get("execution_mode")), template_id),
         )
         conn.commit()
     return {"status": "Funnel updated", "template_id": template_id}
@@ -8359,7 +8462,7 @@ async def start_campaign_funnel(campaign_id: int, request: Request):
         if active:
             run_id = int(active["id"])
         else:
-            run_id = _create_automation_run(cursor, campaign_id, int(template_id), "dashboard")
+            run_id = _create_automation_run(cursor, campaign_id, int(template_id), "dashboard", data)
         conn.commit()
     _ensure_automation_run_worker(run_id)
     with get_db() as conn:
@@ -8436,6 +8539,14 @@ async def confirm_funnel_export(run_id: int):
         run = _load_automation_run(cursor, run_id)
         if not run:
             raise HTTPException(status_code=404, detail="Funnel run not found")
+        if run.get("execution_mode") == "streaming":
+            cursor.execute("SELECT * FROM automation_runs WHERE id = %s FOR UPDATE", (run_id,))
+            run = dict(cursor.fetchone())
+            if run["status"] not in {"queued", "running", "waiting_confirmation"}:
+                raise HTTPException(status_code=409, detail="Streaming funnel is no longer active")
+            cursor.execute("SELECT 1 FROM automation_stream_tasks WHERE run_id = %s AND status IN ('blocked', 'uncertain') LIMIT 1", (run_id,))
+            if cursor.fetchone():
+                raise HTTPException(status_code=409, detail="Resolve delivery issues before confirming export")
         cursor.execute(
             """
             SELECT *
@@ -8452,6 +8563,8 @@ async def confirm_funnel_export(run_id: int):
         if not step:
             raise HTTPException(status_code=400, detail="No export step is waiting for confirmation")
         config = _safe_json_loads(step.get("config"), {})
+        if run.get("execution_mode") == "streaming" and (not config.get("require_confirmation") or config.get("confirmed")):
+            raise HTTPException(status_code=409, detail="Export is waiting for recovery, not approval")
         config["confirmed"] = True
         cursor.execute(
             """
@@ -8695,6 +8808,8 @@ async def preview_export(
 
 @app.post("/api/campaign/{campaign_id}/export")
 async def export_campaign(campaign_id: int, request: Request):
+    from copy import deepcopy
+
     data = await request.json()
     template_id = data.get('template_id')
     batch_size = data.get('batch_size', 10)
@@ -8702,9 +8817,26 @@ async def export_campaign(campaign_id: int, request: Request):
     if not template_id:
         raise HTTPException(status_code=400, detail="Template ID required")
 
-    template = TemplateManager.get_template(template_id)
+    # Frozen credentials are internal request state, never accepted from JSON.
+    frozen_template = getattr(request, "_template_snapshot", None) if isinstance(request, JsonRequest) else None
+    if frozen_template is not None:
+        if not isinstance(frozen_template, dict) or frozen_template.get("id") != template_id:
+            raise HTTPException(status_code=400, detail="Invalid internal export template snapshot")
+        template = deepcopy(frozen_template)
+    else:
+        template = TemplateManager.get_template(template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
+
+    if data.get("sendread_ab_list_id") is not None:
+        if template.get("service") not in ("sendread_campaign", "sendread_list"):
+            raise HTTPException(status_code=400, detail="A/B list override requires a SendRead export template")
+        ab_list_id = str(data["sendread_ab_list_id"]).strip()
+        if not ab_list_id:
+            raise HTTPException(status_code=400, detail="SendRead A/B list ID cannot be empty")
+        template = deepcopy(template)
+        template["api_config"]["sendread_target_id"] = ab_list_id
+        template["api_config"]["sendread_target_type"] = "ab_test_list"
 
     # Use field_mappings from request if provided, otherwise use template's field_mappings
     field_mappings = data.get('field_mappings', template['field_mappings'])
@@ -9332,7 +9464,8 @@ async def start_verification_job(campaign_id: int, request: Request):
     if delay < 0:
         raise HTTPException(status_code=400, detail="Delay must be zero or positive")
 
-    template = EmailVerificationManager.get_template(template_id)
+    template = getattr(request, "template_snapshot", None) if isinstance(request, JsonRequest) else None
+    template = template or EmailVerificationManager.get_template(template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
 
@@ -9348,6 +9481,7 @@ async def start_verification_job(campaign_id: int, request: Request):
             "job_id": job_id,
             "campaign_id": campaign_id,
             "template_id": template_id,
+            "template_snapshot": template,
             "template_service": str(template.get("service") or "myemailverifier"),
             "delay": delay,
             "skip_public_providers": skip_public_providers,
@@ -9778,7 +9912,8 @@ async def start_enrichment_run(campaign_id: int, request: Request):
     if not template_id:
         raise HTTPException(status_code=400, detail="template_id is required")
 
-    template = EnrichmentTemplateManager.get_template(int(template_id))
+    template = getattr(request, "template_snapshot", None) if isinstance(request, JsonRequest) else None
+    template = template or EnrichmentTemplateManager.get_template(int(template_id))
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
 
@@ -10691,3 +10826,10 @@ async def create_default_templates():
         conn.commit()
 
     _ensure_automation_scheduler()
+
+
+import streaming_api
+app.include_router(streaming_api.router(sys.modules[__name__]))
+
+import mcp_integration
+mcp_integration.install(sys.modules[__name__])

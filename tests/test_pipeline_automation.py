@@ -10,6 +10,7 @@ def _install_stub_modules():
     psycopg2 = types.ModuleType("psycopg2")
     psycopg2.DataError = type("DataError", (Exception,), {})
     psycopg2.IntegrityError = type("IntegrityError", (Exception,), {})
+    psycopg2.sql = types.SimpleNamespace()
     sys.modules["psycopg2"] = psycopg2
 
     psycopg2_extras = types.ModuleType("psycopg2.extras")
@@ -33,6 +34,9 @@ def _install_stub_modules():
         def mount(self, *args, **kwargs):
             return None
 
+        def include_router(self, *args, **kwargs):
+            return None
+
         def _decorator(self, *args, **kwargs):
             def wrapper(func):
                 return func
@@ -53,6 +57,7 @@ def _install_stub_modules():
         pass
 
     fastapi.FastAPI = FastAPI
+    fastapi.APIRouter = FastAPI
     fastapi.File = File
     fastapi.Form = Form
     fastapi.Request = Request
@@ -274,8 +279,10 @@ class ScriptedCursor:
         self.index = 0
         self.rowcount = 0
         self._last_step = None
+        self.queries = []
 
     def execute(self, query, params=None):
+        self.queries.append((query, params))
         if self.index >= len(self.steps):
             raise AssertionError(f"Unexpected query: {query}")
         step = self.steps[self.index]
@@ -346,6 +353,52 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertTrue(response["idempotent"])
         self.assertEqual(response["run_id"], 15)
         self.assertEqual(response["current_stage"], "maps_scrape")
+        self.assertEqual(response["execution_mode"], "batch")
+        self.assertEqual(cursor.index, 3)
+
+    def test_start_persists_execution_mode_before_scraping(self):
+        for automation_run, expected_mode in (
+            (None, "batch"),
+            ({"execution_mode": "batch"}, "batch"),
+            ({"execution_mode": "streaming"}, "streaming"),
+        ):
+            with self.subTest(automation_run=automation_run):
+                steps = [
+                    {"match": "select id from search_campaigns", "fetchone": {"id": 7}},
+                    {"match": "from pipeline_runs", "fetchone": None},
+                    {"match": "from automation_runs", "fetchone": automation_run},
+                    {"match": "from requests", "fetchone": {"total_requests": 1, "pending_requests": 1}},
+                    {"match": "update requests", "rowcount": 0},
+                    {"match": "update search_campaigns", "rowcount": 0},
+                    {"match": "insert into pipeline_runs", "fetchone": {
+                        "id": 99, "status": "pending", "current_stage": "maps_scrape",
+                        "execution_mode": expected_mode,
+                    }},
+                ] + [{"match": "insert into pipeline_run_stages", "rowcount": 1} for _ in self.main.PIPELINE_STAGES]
+                cursor, conn = self._patch_db(steps)
+
+                response = asyncio.run(self.main.start_campaign_pipeline(7, FakeRequest({})))
+
+                query, params = next((query, params) for query, params in cursor.queries if "INSERT INTO pipeline_runs" in query)
+                self.assertIn("execution_mode", query)
+                self.assertEqual(params[:3], (7, expected_mode, "maps_scrape"))
+                self.assertEqual(response["execution_mode"], expected_mode)
+                self.assertEqual(cursor.index, len(steps))
+                self.assertEqual(conn.commits, 1)
+
+    def test_idempotent_start_preserves_stored_streaming_mode(self):
+        cursor, _ = self._patch_db([
+            {"match": "select id from search_campaigns", "fetchone": {"id": 1}},
+            {"match": "from pipeline_runs", "fetchone": {
+                "id": 15, "status": "running", "current_stage": "maps_scrape", "execution_mode": "streaming",
+            }},
+            {"match": "from pipeline_run_stages", "fetchone": {"status": "running"}},
+        ])
+
+        response = asyncio.run(self.main.start_campaign_pipeline(1, FakeRequest({})))
+
+        self.assertTrue(response["idempotent"])
+        self.assertEqual(response["execution_mode"], "streaming")
         self.assertEqual(cursor.index, 3)
 
     def test_claim_returns_none_when_lock_is_active_for_other_worker(self):
@@ -709,6 +762,38 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(response["pipeline_status"], "running")
         self.assertEqual(response["skipped_stages"], ["email_fast", "email_fallback"])
 
+    def test_maps_completion_keeps_mode_after_streaming_funnel_finishes(self):
+        for mode in ("streaming", "batch"):
+            with self.subTest(mode=mode):
+                skipped = ["cleanup_contacts", "email_fast", "email_fallback"] if mode == "streaming" else []
+                steps = [
+                    {"match": "select * from pipeline_runs where id = %s", "fetchone": {
+                        "id": 77, "campaign_id": 9, "status": "running", "current_stage": "maps_scrape",
+                        "worker_id": "daemon-1", "execution_mode": mode,
+                    }},
+                    {"match": "from requests", "fetchone": {"total_requests": 1, "completed_requests": 1}},
+                    {"match": "from pipeline_run_locks", "fetchone": None},
+                    {"match": "update pipeline_run_stages", "rowcount": 1},
+                ]
+                if mode == "batch":
+                    steps.append({"match": "select coalesce(scrape_maps_only, false)", "fetchone": {"scrape_maps_only": False}})
+                steps.extend({"match": "update pipeline_run_stages", "rowcount": 1} for _ in skipped)
+                steps.extend([
+                    {"match": "update pipeline_runs", "rowcount": 1},
+                    {"match": "update pipeline_run_stages", "rowcount": 1},
+                    {"match": "insert into pipeline_run_locks", "rowcount": 1},
+                ])
+                cursor, _ = self._patch_db(steps)
+
+                response = asyncio.run(self.main.complete_pipeline_stage(
+                    77, FakeRequest({"worker_id": "daemon-1", "stage": "maps_scrape"}),
+                ))
+
+                self.assertEqual(response["next_stage"], "finalize" if mode == "streaming" else "cleanup_contacts")
+                self.assertEqual(response["skipped_stages"], skipped)
+                self.assertEqual(cursor.index, len(steps))
+                self.assertFalse(any("automation_runs" in query.lower() for query, _ in cursor.queries))
+
     def test_claim_returns_maps_mode_and_machine_fields(self):
         self._patch_db([
             {"match": "pg_advisory_xact_lock"},
@@ -745,8 +830,34 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(response["stage"], "maps_scrape")
         self.assertEqual(response["pipeline_status"], "running")
         self.assertEqual(response["maps_scrape_mode"], "fast")
+        self.assertEqual(response["execution_mode"], "batch")
         self.assertEqual(response["worker_id"], "daemon-a")
         self.assertEqual(response["machine_id"], "daemon-a")
+
+    def test_claim_returns_stored_streaming_mode_without_active_funnel_lookup(self):
+        steps = [
+            {"match": "pg_advisory_xact_lock"},
+            {"match": "from pipeline_run_locks prl", "fetchall": []},
+            {"match": "from pipeline_runs pr", "fetchall": [{
+                "id": 42, "campaign_id": 7, "status": "pending", "current_stage": "maps_scrape",
+                "execution_mode": "streaming",
+            }]},
+            {"match": "from pipeline_run_stages", "fetchall": [
+                {"run_id": 42, "stage": "maps_scrape", "stage_order": 0, "status": "pending"},
+            ]},
+            {"match": "from pipeline_run_locks where run_id", "fetchone": None},
+            {"match": "insert into pipeline_run_locks", "rowcount": 1},
+            {"match": "update pipeline_runs", "rowcount": 1},
+            {"match": "update pipeline_run_stages", "rowcount": 1},
+        ]
+        cursor, _ = self._patch_db(steps)
+
+        response = asyncio.run(self.main.claim_pipeline_stage(FakeRequest({"worker_id": "daemon-a"})))
+
+        self.assertTrue(response["claimed"])
+        self.assertEqual(response["execution_mode"], "streaming")
+        self.assertEqual(cursor.index, len(steps))
+        self.assertFalse(any("automation_runs" in query.lower() for query, _ in cursor.queries))
 
     def test_claim_free_machine_policy_blocks_second_run_even_without_other_workers(self):
         now = datetime.utcnow()
@@ -799,6 +910,7 @@ class PipelineEndpointTests(unittest.TestCase):
         self._patch_db([
             {"match": "select id from search_campaigns", "fetchone": {"id": 12}},
             {"match": "from pipeline_runs", "fetchone": None},
+            {"match": "from automation_runs", "fetchone": None},
             {"match": "select retries", "fetchone": {"retries": 2}},
             {"match": "from requests", "fetchone": {"total_requests": 0, "completed_requests": 0, "pending_requests": 0, "inuse_requests": 0, "reserved_requests": 0}},
             {"match": "insert into pipeline_runs", "fetchone": {"id": 99, "status": "pending", "current_stage": "maps_scrape"}},
@@ -812,6 +924,28 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertFalse(retry_response["idempotent"])
         self.assertEqual(retry_response["run_id"], 99)
         self.assertEqual(retry_response["current_stage"], "maps_scrape")
+        self.assertEqual(retry_response["execution_mode"], "batch")
+
+    def test_retry_preserves_streaming_mode_after_funnel_finishes(self):
+        steps = [
+            {"match": "select id from search_campaigns", "fetchone": {"id": 12}},
+            {"match": "from pipeline_runs", "fetchone": None},
+            {"match": "from automation_runs", "fetchone": None},
+            {"match": "select retries, execution_mode", "fetchone": {"retries": 2, "execution_mode": "streaming"}},
+            {"match": "from requests", "fetchone": {"total_requests": 1, "completed_requests": 1}},
+            {"match": "insert into pipeline_runs", "fetchone": {
+                "id": 99, "status": "pending", "current_stage": "maps_scrape", "execution_mode": "streaming",
+            }},
+        ] + [{"match": "insert into pipeline_run_stages", "rowcount": 1} for _ in self.main.PIPELINE_STAGES]
+        cursor, _ = self._patch_db(steps)
+
+        response = asyncio.run(self.main.start_campaign_pipeline(12, FakeRequest({"retry": True})))
+
+        query, params = next((query, params) for query, params in cursor.queries if "INSERT INTO pipeline_runs" in query)
+        self.assertIn("execution_mode", query)
+        self.assertEqual(params[:4], (12, "streaming", "maps_scrape", 3))
+        self.assertEqual(response["execution_mode"], "streaming")
+        self.assertEqual(cursor.index, len(steps))
 
     def test_create_campaign_defaults_maps_mode_to_slow(self):
         self._patch_db([

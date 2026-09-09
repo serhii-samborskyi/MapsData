@@ -45,7 +45,7 @@
                 <div id="funnelsList" class="space-y-3"></div>
             </section>
 
-            <section class="space-y-6">
+            <section class="min-w-0 space-y-6">
                 <div class="app-card p-6">
                     <div class="mb-5">
                         <h2 id="formTitle" class="text-xl font-semibold text-slate-900">Create Funnel</h2>
@@ -63,6 +63,19 @@
                                 <input id="funnelRetryCount" type="number" min="0" max="10" value="2" class="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200">
                             </label>
                         </div>
+                        <fieldset class="min-w-0">
+                            <legend class="mb-1 text-sm font-semibold text-slate-700">Execution Mode</legend>
+                            <div class="grid max-w-md grid-cols-2 gap-1 rounded-lg border border-slate-300 bg-white p-1">
+                                <label class="min-w-0 cursor-pointer">
+                                    <input type="radio" name="funnel_execution_mode" value="batch" checked class="peer sr-only">
+                                    <span class="block rounded px-3 py-2 text-center text-sm text-slate-700 peer-checked:bg-sky-100 peer-checked:text-sky-800 peer-focus-visible:ring-2 peer-focus-visible:ring-sky-500">Batch</span>
+                                </label>
+                                <label class="min-w-0 cursor-pointer">
+                                    <input type="radio" name="funnel_execution_mode" value="streaming" class="peer sr-only">
+                                    <span class="block rounded px-3 py-2 text-center text-sm text-slate-700 peer-checked:bg-sky-100 peer-checked:text-sky-800 peer-focus-visible:ring-2 peer-focus-visible:ring-sky-500">Streaming</span>
+                                </label>
+                            </div>
+                        </fieldset>
                         <label class="block">
                             <span class="block text-sm font-semibold text-slate-700 mb-1">Description</span>
                             <textarea id="funnelDescription" rows="2" class="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200" placeholder="Optional notes"></textarea>
@@ -198,21 +211,55 @@
                             <select id="runFunnelSelect" class="w-full rounded-xl border border-slate-300 px-4 py-3"></select>
                         </label>
                     </div>
+                    <fieldset id="runOptions" disabled class="mt-4 min-w-0 space-y-4">
+                        <fieldset class="min-w-0">
+                            <legend class="mb-1 text-sm font-semibold text-slate-700">Execution Mode</legend>
+                            <div class="grid grid-cols-1 gap-1 rounded-lg border border-slate-300 bg-white p-1 sm:grid-cols-3">
+                                <label class="min-w-0 cursor-pointer">
+                                    <input type="radio" name="run_execution_mode" value="" checked class="peer sr-only">
+                                    <span id="runExecutionModeDefault" class="flex h-full items-center justify-center rounded px-2 py-2 text-center text-sm text-slate-700 peer-checked:bg-sky-100 peer-checked:text-sky-800 peer-focus-visible:ring-2 peer-focus-visible:ring-sky-500 peer-disabled:opacity-50">Default (Batch)</span>
+                                </label>
+                                <label class="min-w-0 cursor-pointer">
+                                    <input type="radio" name="run_execution_mode" value="batch" class="peer sr-only">
+                                    <span class="flex h-full items-center justify-center rounded px-2 py-2 text-center text-sm text-slate-700 peer-checked:bg-sky-100 peer-checked:text-sky-800 peer-focus-visible:ring-2 peer-focus-visible:ring-sky-500 peer-disabled:opacity-50">Batch</span>
+                                </label>
+                                <label class="min-w-0 cursor-pointer">
+                                    <input type="radio" name="run_execution_mode" value="streaming" class="peer sr-only">
+                                    <span class="flex h-full items-center justify-center rounded px-2 py-2 text-center text-sm text-slate-700 peer-checked:bg-sky-100 peer-checked:text-sky-800 peer-focus-visible:ring-2 peer-focus-visible:ring-sky-500 peer-disabled:opacity-50">Streaming</span>
+                                </label>
+                            </div>
+                        </fieldset>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <label class="block min-w-0">
+                                <span class="block text-sm font-semibold text-slate-700 mb-1">Export Template (This Run)</span>
+                                <select id="runExportTemplateSelect" class="w-full min-w-0 rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-50"></select>
+                            </label>
+                            <label class="block min-w-0">
+                                <span class="block text-sm font-semibold text-slate-700 mb-1">SendRead AB List ID (This Run)</span>
+                                <input id="runSendreadAbListId" type="text" autocomplete="off" placeholder="Template default" disabled class="w-full min-w-0 rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-50">
+                            </label>
+                        </div>
+                    </fieldset>
                     <div class="mt-4 flex flex-wrap gap-3">
                         <button type="button" onclick="startSelectedFunnel()" class="rounded-full bg-indigo-600 px-5 py-2 text-sm font-semibold text-white hover:bg-indigo-700">Start Funnel</button>
                         <button type="button" onclick="refreshActiveRun()" class="rounded-full border border-slate-300 px-5 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Refresh Run</button>
                     </div>
                     <div id="runStatusPanel" class="mt-5 hidden rounded-xl border border-slate-200 bg-white p-4">
                         <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                            <div>
+                            <div class="min-w-0 break-words">
                                 <div id="runTitle" class="text-sm font-semibold text-slate-800">Run</div>
                                 <div id="runMeta" class="text-xs text-slate-500"></div>
                             </div>
                             <div class="flex flex-wrap gap-2">
                                 <button id="confirmExportBtn" type="button" onclick="confirmExport()" class="hidden rounded-full bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700">Confirm Export</button>
+                                <button id="resumeProcessingBtn" type="button" onclick="resumeProcessing()" class="hidden rounded-full bg-sky-600 px-4 py-2 text-xs font-semibold text-white hover:bg-sky-700 disabled:opacity-50">Resume Processing</button>
                                 <button id="cancelRunBtn" type="button" onclick="cancelRun()" class="rounded-full border border-red-200 bg-red-50 px-4 py-2 text-xs font-semibold text-red-700 hover:bg-red-100">Cancel</button>
                             </div>
                         </div>
+                        <div id="runStreamSummary" class="mt-3 hidden flex flex-wrap gap-x-4 gap-y-1 text-xs font-semibold text-slate-700" role="status" aria-live="polite"></div>
+                        <div id="runLatestError" class="mt-3 hidden break-words rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800" role="status"></div>
+                        <div id="runUncertainExports" class="mt-2 hidden text-sm text-amber-800" role="status"></div>
+                        <button id="reviewDeliveriesBtn" type="button" onclick="openDeliveryReview()" class="mt-2 hidden rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800 hover:bg-amber-100">Review Deliveries</button>
                         <div id="runSteps" class="mt-4 space-y-2"></div>
                         <div class="mt-4">
                             <div class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Logs</div>
@@ -224,6 +271,33 @@
         </div>
     </div>
 
+    <dialog id="deliveryReviewDialog" aria-labelledby="deliveryReviewTitle" class="m-auto max-h-[90vh] w-11/12 max-w-5xl rounded-lg border border-slate-200 bg-white p-4 shadow-xl backdrop:bg-slate-950/40 sm:p-5">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+            <div class="min-w-0">
+                <h2 id="deliveryReviewTitle" class="text-lg font-semibold text-slate-900">Uncertain Deliveries</h2>
+                <p id="deliveryReviewCount" class="mt-1 text-xs text-slate-500" role="status"></p>
+            </div>
+            <div class="flex flex-wrap gap-2">
+                <button id="refreshDeliveriesBtn" type="button" onclick="loadUncertainDeliveries()" class="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">Refresh</button>
+                <button id="closeDeliveryReviewBtn" type="button" onclick="closeDeliveryReview()" class="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50">Close</button>
+            </div>
+        </div>
+        <div id="deliveryReviewError" class="mt-3 hidden break-words text-sm text-red-700" role="alert"></div>
+        <div class="mt-4 max-h-[60vh] overflow-auto">
+            <table class="w-full table-fixed text-left text-xs text-slate-700">
+                <thead class="hidden sm:table-header-group">
+                    <tr class="border-b border-slate-200 text-slate-500">
+                        <th scope="col" class="px-2 py-2 font-semibold">Contact</th>
+                        <th scope="col" class="px-2 py-2 font-semibold">Destination</th>
+                        <th scope="col" class="px-2 py-2 font-semibold">Error / Receipt</th>
+                        <th scope="col" class="px-2 py-2 font-semibold">Resolution</th>
+                    </tr>
+                </thead>
+                <tbody id="uncertainDeliveryRows" class="block sm:table-row-group"></tbody>
+            </table>
+        </div>
+    </dialog>
+
     <script>
         let funnelTemplates = [];
         let exportTemplates = [];
@@ -231,6 +305,8 @@
         let verificationTemplates = [];
         let campaigns = [];
         let activeRunId = null;
+        let activeRun = null;
+        let deliveryReview = null;
         let runPollTimer = null;
         let exportFieldMappings = {};
         const CONTACT_FIELD_OPTIONS = [
@@ -432,6 +508,9 @@
         }
 
         function populateSelects() {
+            const campaignId = document.getElementById('runCampaignSelect').value;
+            const funnelId = document.getElementById('runFunnelSelect').value;
+            const exportId = document.getElementById('runExportTemplateSelect').value;
             document.getElementById('enrichmentTemplateSelect').innerHTML = selectOptions(enrichmentTemplates, 'Choose enrichment template');
             document.getElementById('dnsTemplateSelect').innerHTML = selectOptions(
                 verificationTemplates,
@@ -446,17 +525,43 @@
                 item => item.service !== 'dns_ssl_checker'
             );
             document.getElementById('exportTemplateSelect').innerHTML = selectOptions(exportTemplates, 'Choose export template');
-            document.getElementById('runCampaignSelect').innerHTML = selectOptions(campaigns, 'Choose campaign');
+            document.getElementById('runExportTemplateSelect').innerHTML = selectOptions(exportTemplates, 'Funnel default', exportId);
+            document.getElementById('runCampaignSelect').innerHTML = selectOptions(campaigns, 'Choose campaign', campaignId);
             document.getElementById('runFunnelSelect').innerHTML = selectOptions(
                 funnelTemplates.filter(item => item.enabled !== false),
-                'Choose funnel'
+                'Choose funnel',
+                funnelId
             );
+            updateRunOptions(document.getElementById('runFunnelSelect').value !== funnelId);
+        }
+
+        function updateRunOptions(resetOverrides = false) {
+            const funnel = funnelTemplates.find(item => String(item.id) === document.getElementById('runFunnelSelect').value);
+            if (resetOverrides || !funnel) {
+                document.querySelector('input[name="run_execution_mode"][value=""]').checked = true;
+                document.getElementById('runExportTemplateSelect').value = '';
+                document.getElementById('runSendreadAbListId').value = '';
+            }
+            document.getElementById('runOptions').disabled = !funnel;
+            const mode = funnel?.execution_mode === 'streaming' ? 'Streaming' : 'Batch';
+            document.getElementById('runExecutionModeDefault').textContent = `Default (${mode})`;
+            const exportStep = (funnel?.steps || []).find(step => step.type === 'export' && step.enabled !== false);
+            const select = document.getElementById('runExportTemplateSelect');
+            select.disabled = !exportStep;
+            if (!exportStep) select.value = '';
+            const defaultTemplate = exportTemplates.find(item => String(item.id) === String(exportStep?.config?.template_id));
+            select.options[0].textContent = !exportStep ? 'No export step' : defaultTemplate ? `Funnel default: ${defaultTemplate.name}` : 'Funnel default';
+            const templateId = select.value || exportStep?.config?.template_id;
+            const template = exportTemplates.find(item => String(item.id) === String(templateId));
+            const input = document.getElementById('runSendreadAbListId');
+            input.disabled = !exportStep || !['sendread_campaign', 'sendread_list'].includes(template?.service);
+            if (input.disabled) input.value = '';
         }
 
         function stepBadgeClass(status) {
             if (status === 'completed') return 'bg-green-100 text-green-700';
             if (status === 'running' || status === 'queued') return 'bg-blue-100 text-blue-700';
-            if (status === 'waiting_confirmation') return 'bg-amber-100 text-amber-700';
+            if (['waiting_confirmation', 'retrying', 'retry', 'blocked', 'uncertain'].includes(status)) return 'bg-amber-100 text-amber-700';
             if (status === 'failed' || status === 'cancelled') return 'bg-red-100 text-red-700';
             return 'bg-slate-100 text-slate-600';
         }
@@ -569,6 +674,7 @@
             document.getElementById('funnelName').value = funnel.name || '';
             document.getElementById('funnelDescription').value = funnel.description || '';
             document.getElementById('funnelRetryCount').value = funnel.default_retry_count ?? 2;
+            document.querySelector(`input[name="funnel_execution_mode"][value="${funnel.execution_mode === 'streaming' ? 'streaming' : 'batch'}"]`).checked = true;
             setChecked('funnelEnabled', funnel.enabled !== false);
             setChecked('stepPipelineEnabled', false);
             (funnel.steps || []).forEach(step => {
@@ -633,6 +739,7 @@
                         name: `${funnel.name || 'Funnel'} Copy`,
                         description: funnel.description || '',
                         default_retry_count: funnel.default_retry_count ?? 2,
+                        execution_mode: funnel.execution_mode === 'streaming' ? 'streaming' : 'batch',
                         enabled: funnel.enabled !== false,
                         steps: JSON.parse(JSON.stringify(funnel.steps || []))
                     })
@@ -663,6 +770,7 @@
                             <div>
                                 <div class="font-semibold text-slate-900">${escapeHtml(funnel.name)}</div>
                                 <div class="mt-1 text-xs text-slate-500">${escapeHtml(steps)}</div>
+                                <div class="mt-1 text-xs font-semibold text-slate-600">${funnel.execution_mode === 'streaming' ? 'Streaming' : 'Batch'}</div>
                             </div>
                             <span class="rounded-full px-2 py-1 text-xs font-semibold ${funnel.enabled === false ? 'bg-slate-100 text-slate-600' : 'bg-emerald-100 text-emerald-700'}">${funnel.enabled === false ? 'Disabled' : 'Enabled'}</span>
                         </div>
@@ -684,6 +792,7 @@
                     name: document.getElementById('funnelName').value.trim(),
                     description: document.getElementById('funnelDescription').value.trim(),
                     default_retry_count: intValue('funnelRetryCount', 2),
+                    execution_mode: document.querySelector('input[name="funnel_execution_mode"]:checked').value,
                     enabled: checked('funnelEnabled'),
                     steps: collectSteps()
                 };
@@ -710,10 +819,17 @@
                 alert('Choose a campaign and funnel.');
                 return;
             }
+            const payload = { template_id: Number(templateId) };
+            const mode = document.querySelector('input[name="run_execution_mode"]:checked').value;
+            const exportSelect = document.getElementById('runExportTemplateSelect');
+            const abListInput = document.getElementById('runSendreadAbListId');
+            if (mode) payload.execution_mode = mode;
+            if (!exportSelect.disabled && exportSelect.value) payload.export_template_id = Number(exportSelect.value);
+            if (!abListInput.disabled && abListInput.value.trim()) payload.sendread_ab_list_id = abListInput.value.trim();
             const response = await fetch(`/api/campaign/${campaignId}/funnels/start`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ template_id: Number(templateId) })
+                body: JSON.stringify(payload)
             });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) {
@@ -724,21 +840,97 @@
             startRunPolling();
         }
 
+        function streamCount(progress, key) {
+            const count = Number(progress?.[key] ?? 0);
+            return Number.isFinite(count) ? Math.max(0, Math.trunc(count)) : 0;
+        }
+
+        function uncertainExportCount(run) {
+            return (Array.isArray(run?.stream_progress) ? run.stream_progress : [])
+                .filter(progress => progress.step_type === 'export')
+                .reduce((total, progress) => total + streamCount(progress, 'uncertain'), 0);
+        }
+
+        function exportedCount(progress) {
+            return streamCount(progress, progress?.exported !== undefined ? 'exported' : 'completed');
+        }
+
+        function renderStreamCounts(progress) {
+            if (!progress) return '<div class="mt-2 text-xs text-slate-500">Waiting for lead counts.</div>';
+            const counters = [
+                ['pending', 'Queued'], ['running', 'Running'], ['retry', 'Retrying'],
+                ['completed', 'Completed'],
+                ['failed', 'Failed'], ['skipped', 'Skipped'], ['uncertain', 'Uncertain']
+            ];
+            if (progress.step_type === 'export') counters.push(['exported', 'Exported']);
+            return `<dl class="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs sm:grid-cols-4">${counters.map(([key, label]) => `
+                <div class="min-w-0">
+                    <dt class="text-slate-500">${label}</dt>
+                    <dd class="break-words font-semibold tabular-nums ${['failed', 'uncertain'].includes(key) && streamCount(progress, key) ? 'text-amber-700' : 'text-slate-800'}">${(key === 'exported' ? exportedCount(progress) : streamCount(progress, key)).toLocaleString()}</dd>
+                </div>
+            `).join('')}</dl>`;
+        }
+
+        function runIsFinished(run) {
+            return run && ['completed', 'failed', 'cancelled'].includes(run.status)
+                && run.stream_open !== true && run.stream_blocked !== true
+                && !(Array.isArray(run.stream_progress) ? run.stream_progress : []).some(progress => streamCount(progress, 'running') > 0);
+        }
+
+        function exportNeedsConfirmation(run) {
+            if (!run || ['completed', 'failed', 'cancelled'].includes(run.status)) return false;
+            return (run?.steps || []).some(step => step.step_type === 'export'
+                && step.status === 'waiting_confirmation'
+                && step.config?.require_confirmation && !step.config?.confirmed);
+        }
+
+        function canResumeProcessing(run) {
+            return run?.execution_mode === 'streaming' && run.status === 'waiting_confirmation'
+                && uncertainExportCount(run) === 0 && (run.stream_blocked === true || !exportNeedsConfirmation(run));
+        }
+
         function renderRun(run) {
             if (!run) return;
+            activeRun = run;
             activeRunId = run.id;
+            const streaming = run.execution_mode === 'streaming';
+            const progress = Array.isArray(run.stream_progress) ? run.stream_progress : [];
+            const uncertainExports = uncertainExportCount(run);
+            const blocked = run.stream_blocked === true;
             document.getElementById('runStatusPanel').classList.remove('hidden');
             document.getElementById('runTitle').textContent = `Run #${run.id}: ${run.status}`;
-            document.getElementById('runMeta').textContent = `Campaign #${run.campaign_id} | Template #${run.template_id} | Step ${run.current_step_order || '-'}`;
-            document.getElementById('confirmExportBtn').classList.toggle('hidden', run.status !== 'waiting_confirmation');
+            document.getElementById('runMeta').textContent = `Campaign #${run.campaign_id} | Template #${run.template_id} | ${streaming ? 'Streaming' : `Batch | Step ${run.current_step_order || '-'}`}`;
+            document.getElementById('confirmExportBtn').classList.toggle('hidden', !exportNeedsConfirmation(run) || blocked || uncertainExports > 0);
+            document.getElementById('resumeProcessingBtn').classList.toggle('hidden', !canResumeProcessing(run));
             document.getElementById('cancelRunBtn').disabled = ['completed', 'failed', 'cancelled'].includes(run.status);
-            document.getElementById('runSteps').innerHTML = (run.steps || []).map(step => `
+            const summary = document.getElementById('runStreamSummary');
+            summary.classList.toggle('hidden', !streaming);
+            const exported = progress.filter(item => item.step_type === 'export').reduce((total, item) => total + exportedCount(item), 0);
+            const uncertain = progress.reduce((total, item) => total + streamCount(item, 'uncertain'), 0);
+            const streamState = run.stream_open === true ? 'Stream open' : run.stream_open === false ? 'Stream closed' : 'Stream status pending';
+            summary.textContent = `${blocked ? 'Processing blocked | ' : ''}${streamState} | Exported: ${exported.toLocaleString()} | Uncertain: ${uncertain.toLocaleString()}`;
+            const latestError = document.getElementById('runLatestError');
+            latestError.textContent = run.latest_error || (blocked ? 'Processing blocked.' : '');
+            latestError.classList.toggle('hidden', !latestError.textContent);
+            const review = document.getElementById('runUncertainExports');
+            review.textContent = uncertainExports > 0 ? `Uncertain exports: ${uncertainExports.toLocaleString()}. ${run.status === 'cancelled' ? 'Manual delivery review required.' : 'Resolve each delivery before resuming.'}` : '';
+            review.classList.toggle('hidden', uncertainExports === 0);
+            document.getElementById('reviewDeliveriesBtn').classList.toggle('hidden', uncertainExports === 0);
+            const steps = [...(run.steps || [])];
+            if (streaming) {
+                progress.forEach(item => {
+                    if (!steps.some(step => step.step_type === item.step_type)) {
+                        steps.push({ step_type: item.step_type });
+                    }
+                });
+            }
+            document.getElementById('runSteps').innerHTML = steps.map(step => `
                 <div class="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
                     <div class="flex flex-wrap items-center justify-between gap-2">
-                        <div class="text-sm font-semibold text-slate-800">${Number(step.step_order)}. ${escapeHtml(step.step_type)}</div>
-                        <span class="rounded-full px-2 py-1 text-xs font-semibold ${stepBadgeClass(step.status)}">${escapeHtml(step.status)}</span>
+                        <div class="min-w-0 break-words text-sm font-semibold text-slate-800">${step.step_order ? `${Number(step.step_order)}. ` : ''}${escapeHtml(step.step_type)}</div>
+                        ${step.status ? `<span class="rounded-full px-2 py-1 text-xs font-semibold ${stepBadgeClass(step.status)}">${escapeHtml(step.status)}</span>` : ''}
                     </div>
-                    <div class="mt-1 text-xs text-slate-500">Attempts: ${Number(step.attempts || 0)} / ${Number(step.max_retries || 0) + 1}${step.external_run_id ? ` | External: ${escapeHtml(step.external_run_id)}` : ''}</div>
+                    ${streaming ? renderStreamCounts(progress.find(item => item.step_type === step.step_type)) : `<div class="mt-1 text-xs text-slate-500">Attempts: ${Number(step.attempts || 0)} / ${Number(step.max_retries || 0) + 1}${step.external_run_id ? ` | External: ${escapeHtml(step.external_run_id)}` : ''}</div>`}
                     ${step.error_message ? `<div class="mt-2 rounded border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700">${escapeHtml(step.error_message)}</div>` : ''}
                 </div>
             `).join('');
@@ -746,7 +938,7 @@
             document.getElementById('runLogs').innerHTML = logs.length
                 ? logs.map(log => `<div>[${escapeHtml(log.level || 'info')}] ${escapeHtml(log.message || '')}</div>`).join('')
                 : '<div>No logs yet.</div>';
-            if (['completed', 'failed', 'cancelled'].includes(run.status) && runPollTimer) {
+            if (runIsFinished(run) && runPollTimer) {
                 clearInterval(runPollTimer);
                 runPollTimer = null;
             }
@@ -754,18 +946,172 @@
 
         async function refreshActiveRun() {
             if (!activeRunId) return;
-            const response = await fetch(`/api/funnel-runs/${activeRunId}`);
+            const runId = activeRunId;
+            const response = await fetch(`/api/funnel-runs/${runId}`);
             const data = await response.json().catch(() => ({}));
-            if (response.ok) renderRun(data.run);
+            if (response.ok && activeRunId === runId) renderRun(data.run);
         }
 
         function startRunPolling() {
             if (runPollTimer) clearInterval(runPollTimer);
+            runPollTimer = null;
+            if (!activeRun || runIsFinished(activeRun)) return;
             runPollTimer = setInterval(refreshActiveRun, 3000);
         }
 
-        async function confirmExport() {
+        function deliveryDetail(value) {
+            if (value == null || value === '') return 'Not available';
+            if (typeof value === 'string') {
+                try { value = JSON.parse(value); } catch (error) { return value; }
+            }
+            return typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
+        }
+
+        function updateDeliveryReviewControls() {
+            const busy = Boolean(deliveryReview?.loading || deliveryReview?.resolving);
+            document.getElementById('refreshDeliveriesBtn').disabled = busy;
+            document.getElementById('closeDeliveryReviewBtn').disabled = Boolean(deliveryReview?.resolving);
+            document.querySelectorAll('#uncertainDeliveryRows button[data-resolution]').forEach(button => { button.disabled = busy; });
+        }
+
+        function renderUncertainDeliveries() {
+            if (!deliveryReview) return;
+            const deliveries = deliveryReview.deliveries;
+            document.getElementById('deliveryReviewCount').textContent = deliveryReview.loading
+                ? 'Loading deliveries...'
+                : document.getElementById('deliveryReviewError').textContent && !deliveries.length
+                    ? 'Delivery count unavailable (limit 500).'
+                    : `Showing ${deliveries.length === 500 ? 'the first ' : ''}${deliveries.length} unresolved deliveries (limit 500).`;
+            document.getElementById('uncertainDeliveryRows').innerHTML = deliveries.length ? deliveries.map(delivery => `
+                <tr class="block border-b border-slate-200 py-3 align-top sm:table-row sm:py-0">
+                    <td class="block break-words px-2 py-2 sm:table-cell">
+                        <div class="font-semibold text-slate-900">${escapeHtml(delivery.business_name || `Contact #${delivery.contact_id}`)}</div>
+                        <div>${escapeHtml(delivery.email || 'No email')}</div>
+                        <div class="mt-1 text-slate-500">Contact #${escapeHtml(delivery.contact_id)} | Task #${escapeHtml(delivery.task_id)}</div>
+                    </td>
+                    <td class="block px-2 py-2 sm:table-cell">
+                        <div class="mb-1 font-semibold text-slate-500 sm:hidden">Destination</div>
+                        <pre class="whitespace-pre-wrap break-words font-sans">${escapeHtml(deliveryDetail(delivery.destination))}</pre>
+                    </td>
+                    <td class="block px-2 py-2 sm:table-cell">
+                        <div class="mb-1 font-semibold text-slate-500 sm:hidden">Error / Receipt</div>
+                        <div class="whitespace-pre-wrap break-words text-amber-800">${escapeHtml(deliveryDetail(delivery.error))}</div>
+                        <details class="mt-2">
+                            <summary class="cursor-pointer font-semibold text-slate-600">Receipt</summary>
+                            <pre class="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words font-sans">${escapeHtml(deliveryDetail(delivery.receipt))}</pre>
+                        </details>
+                    </td>
+                    <td class="block px-2 py-2 sm:table-cell">
+                        <div class="flex flex-wrap gap-2">
+                            <button type="button" data-task-id="${escapeHtml(delivery.task_id)}" data-resolution="delivered" class="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50">Delivered</button>
+                            <button type="button" data-task-id="${escapeHtml(delivery.task_id)}" data-resolution="not_delivered" class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 font-semibold text-amber-800 hover:bg-amber-100 disabled:opacity-50">Not Delivered</button>
+                        </div>
+                    </td>
+                </tr>
+            `).join('') : `<tr class="block sm:table-row"><td colspan="4" class="block px-2 py-4 text-slate-500 sm:table-cell">${deliveryReview.loading ? 'Loading deliveries...' : document.getElementById('deliveryReviewError').textContent ? 'Deliveries unavailable.' : 'No uncertain deliveries.'}</td></tr>`;
+            updateDeliveryReviewControls();
+        }
+
+        async function openDeliveryReview() {
             if (!activeRunId) return;
+            deliveryReview = { runId: activeRunId, deliveries: [], loading: false, resolving: false };
+            document.getElementById('deliveryReviewTitle').textContent = `Uncertain Deliveries - Run #${activeRunId}`;
+            document.getElementById('deliveryReviewDialog').showModal();
+            await loadUncertainDeliveries();
+        }
+
+        function closeDeliveryReview() {
+            if (deliveryReview?.resolving) return;
+            deliveryReview = null;
+            document.getElementById('deliveryReviewDialog').close();
+        }
+
+        async function loadUncertainDeliveries() {
+            const review = deliveryReview;
+            if (!review || review.loading || review.resolving) return;
+            const errorBox = document.getElementById('deliveryReviewError');
+            errorBox.textContent = '';
+            errorBox.classList.add('hidden');
+            review.loading = true;
+            renderUncertainDeliveries();
+            try {
+                const response = await fetch(`/api/funnel-runs/${review.runId}/deliveries/uncertain`);
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Could not load uncertain deliveries');
+                if (!Array.isArray(data.deliveries)) throw new Error('Could not read uncertain deliveries');
+                if (deliveryReview === review) review.deliveries = data.deliveries.slice(0, 500);
+            } catch (error) {
+                if (deliveryReview === review) {
+                    errorBox.textContent = error.message;
+                    errorBox.classList.remove('hidden');
+                }
+            } finally {
+                review.loading = false;
+                if (deliveryReview === review) renderUncertainDeliveries();
+            }
+        }
+
+        async function resolveUncertainDelivery(taskId, resolution) {
+            const review = deliveryReview;
+            if (!review || review.loading || review.resolving || !['delivered', 'not_delivered'].includes(resolution)) return;
+            const delivery = review.deliveries.find(item => String(item.task_id) === String(taskId));
+            if (!delivery) return;
+            const outcome = resolution === 'delivered' ? 'DELIVERED. This delivery will be marked complete.'
+                : activeRun?.id === review.runId && activeRun.status === 'cancelled'
+                    ? 'NOT DELIVERED. The run will remain cancelled.'
+                    : 'NOT DELIVERED. This lead will be eligible for export when processing resumes.';
+            if (!confirm(`After checking this destination, confirm that ${delivery.email || `contact #${delivery.contact_id}`} was ${outcome}\n\nDestination:\n${deliveryDetail(delivery.destination)}\n\nRecord this resolution?`)) return;
+            review.resolving = true;
+            updateDeliveryReviewControls();
+            const errorBox = document.getElementById('deliveryReviewError');
+            errorBox.textContent = '';
+            errorBox.classList.add('hidden');
+            try {
+                const response = await fetch(`/api/funnel-runs/${review.runId}/deliveries/${encodeURIComponent(delivery.task_id)}/resolve`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ resolution, confirmed: true })
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Could not resolve delivery');
+                review.deliveries = review.deliveries.filter(item => String(item.task_id) !== String(taskId));
+                review.resolving = false;
+                if (deliveryReview === review) await loadUncertainDeliveries();
+                if (activeRunId === review.runId) {
+                    await refreshActiveRun();
+                    startRunPolling();
+                }
+            } catch (error) {
+                if (deliveryReview === review) {
+                    errorBox.textContent = error.message;
+                    errorBox.classList.remove('hidden');
+                }
+            } finally {
+                review.resolving = false;
+                if (deliveryReview === review) updateDeliveryReviewControls();
+            }
+        }
+
+        async function resumeProcessing() {
+            if (!activeRunId || !canResumeProcessing(activeRun)) return;
+            const button = document.getElementById('resumeProcessingBtn');
+            if (button.disabled) return;
+            button.disabled = true;
+            try {
+                const response = await fetch(`/api/funnel-runs/${activeRunId}/resume`, { method: 'POST' });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Could not resume processing');
+                await refreshActiveRun();
+                startRunPolling();
+            } catch (error) {
+                alert(error.message);
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        async function confirmExport() {
+            if (!activeRunId || !exportNeedsConfirmation(activeRun) || activeRun?.stream_blocked === true || uncertainExportCount(activeRun) > 0) return;
             const response = await fetch(`/api/funnel-runs/${activeRunId}/confirm-export`, { method: 'POST' });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) {
@@ -818,6 +1164,18 @@
         });
         document.getElementById('funnelForm').addEventListener('submit', saveFunnel);
         document.getElementById('enrichmentTemplateSelect').addEventListener('change', updateEnrichmentMode);
+        document.getElementById('runFunnelSelect').addEventListener('change', () => updateRunOptions(true));
+        document.getElementById('runExportTemplateSelect').addEventListener('change', () => updateRunOptions());
+        document.getElementById('uncertainDeliveryRows').addEventListener('click', event => {
+            const button = event.target.closest('button[data-resolution]');
+            if (button) resolveUncertainDelivery(button.dataset.taskId, button.dataset.resolution);
+        });
+        document.getElementById('deliveryReviewDialog').addEventListener('cancel', event => {
+            if (deliveryReview?.resolving) event.preventDefault();
+        });
+        document.getElementById('deliveryReviewDialog').addEventListener('close', () => {
+            if (!document.getElementById('deliveryReviewDialog').open) deliveryReview = null;
+        });
         document.addEventListener('DOMContentLoaded', async () => {
             await loadAll();
             resetFunnelForm();

@@ -90,6 +90,37 @@
                     </select>
                     <p class="mt-1 text-xs text-slate-500">When selected, the funnel starts now after the campaign is created.</p>
                 </div>
+                <fieldset id="campaignFunnelOptions" disabled class="hidden min-w-0 space-y-4">
+                    <fieldset class="min-w-0">
+                        <legend class="mb-1 text-sm font-semibold text-gray-700">Execution Mode</legend>
+                        <div class="grid max-w-xl grid-cols-1 gap-1 rounded-lg border border-gray-300 bg-white p-1 sm:grid-cols-3">
+                            <label class="min-w-0 cursor-pointer">
+                                <input type="radio" name="execution_mode" value="" checked class="peer sr-only">
+                                <span id="campaignExecutionModeDefault" class="flex h-full items-center justify-center rounded px-2 py-2 text-center text-sm text-slate-700 peer-checked:bg-sky-100 peer-checked:text-sky-800 peer-focus-visible:ring-2 peer-focus-visible:ring-sky-500">Default (Batch)</span>
+                            </label>
+                            <label class="min-w-0 cursor-pointer">
+                                <input type="radio" name="execution_mode" value="batch" class="peer sr-only">
+                                <span class="flex h-full items-center justify-center rounded px-2 py-2 text-center text-sm text-slate-700 peer-checked:bg-sky-100 peer-checked:text-sky-800 peer-focus-visible:ring-2 peer-focus-visible:ring-sky-500">Batch</span>
+                            </label>
+                            <label class="min-w-0 cursor-pointer">
+                                <input type="radio" name="execution_mode" value="streaming" class="peer sr-only">
+                                <span class="flex h-full items-center justify-center rounded px-2 py-2 text-center text-sm text-slate-700 peer-checked:bg-sky-100 peer-checked:text-sky-800 peer-focus-visible:ring-2 peer-focus-visible:ring-sky-500">Streaming</span>
+                            </label>
+                        </div>
+                    </fieldset>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <label class="block min-w-0">
+                            <span class="block text-sm font-semibold text-gray-700 mb-1">Export Template (This Run)</span>
+                            <select id="campaignExportTemplateSelect" name="export_template_id" class="w-full min-w-0 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all disabled:opacity-50">
+                                <option value="">Funnel default</option>
+                            </select>
+                        </label>
+                        <label class="block min-w-0">
+                            <span class="block text-sm font-semibold text-gray-700 mb-1">SendRead AB List ID (This Run)</span>
+                            <input id="campaignSendreadAbListId" name="sendread_ab_list_id" type="text" autocomplete="off" placeholder="Template default" disabled class="w-full min-w-0 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all disabled:opacity-50">
+                        </label>
+                    </div>
+                </fieldset>
                 <div id="csvImportPanel" class="hidden rounded-lg border border-sky-200 bg-sky-50/50 p-4">
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div>
@@ -730,6 +761,8 @@
         let campaignSearchTerm = {{ (search_term or '')|tojson }};
         let campaignSearchTimer = null;
         let csvImportPreview = null;
+        let campaignFunnelTemplates = [];
+        let campaignExportTemplates = [];
         const campaignDetailsCache = new Map();
         const campaignDetailsLoading = new Set();
         const CSV_UPLOAD_SOURCE_VALUE = '__csv_upload__';
@@ -1738,6 +1771,14 @@
             const form = event.target;
             const csvMode = isCsvUploadSelected();
             const formData = new FormData(form);
+            ['execution_mode', 'export_template_id', 'sendread_ab_list_id'].forEach(field => {
+                const value = String(formData.get(field) || '').trim();
+                if (formData.get('funnel_template_id') && value) {
+                    formData.set(field, value);
+                } else {
+                    formData.delete(field);
+                }
+            });
 
             if (csvMode) {
                 const fileInput = document.getElementById('csvImportFile');
@@ -1780,6 +1821,7 @@
                     throw new Error(data.detail || `HTTP ${response.status}`);
                 }
                 form.reset();
+                updateCampaignFunnelOptions(true);
                 csvImportPreview = null;
                 updateLeadSourceMode();
                 await loadSourceTemplateOptions();
@@ -2334,6 +2376,53 @@
             }
         }
 
+        function updateCampaignFunnelOptions(resetOverrides = false) {
+            const funnel = campaignFunnelTemplates.find(item => String(item.id) === document.getElementById('funnelTemplateSelect').value);
+            const options = document.getElementById('campaignFunnelOptions');
+            options.disabled = !funnel;
+            options.classList.toggle('hidden', !funnel);
+            const select = document.getElementById('campaignExportTemplateSelect');
+            const input = document.getElementById('campaignSendreadAbListId');
+            if (resetOverrides || !funnel) {
+                document.querySelector('input[name="execution_mode"][value=""]').checked = true;
+                select.value = '';
+                input.value = '';
+            }
+            const mode = funnel?.execution_mode === 'streaming' ? 'Streaming' : 'Batch';
+            document.getElementById('campaignExecutionModeDefault').textContent = `Default (${mode})`;
+            const exportStep = (funnel?.steps || []).find(step => step.type === 'export' && step.enabled !== false);
+            select.disabled = !exportStep;
+            if (!exportStep) select.value = '';
+            const defaultTemplate = campaignExportTemplates.find(item => String(item.id) === String(exportStep?.config?.template_id));
+            select.options[0].textContent = !exportStep ? 'No export step' : defaultTemplate ? `Funnel default: ${defaultTemplate.name}` : 'Funnel default';
+            const templateId = select.value || exportStep?.config?.template_id;
+            const template = campaignExportTemplates.find(item => String(item.id) === String(templateId));
+            input.disabled = !exportStep || !['sendread_campaign', 'sendread_list'].includes(template?.service);
+            if (input.disabled) input.value = '';
+        }
+
+        async function loadCampaignExportTemplateOptions() {
+            const select = document.getElementById('campaignExportTemplateSelect');
+            const currentValue = select.value;
+            try {
+                const response = await fetch('/api/templates');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                campaignExportTemplates = data.templates || [];
+                select.innerHTML = '<option value="">Funnel default</option>';
+                campaignExportTemplates.forEach(template => {
+                    const option = document.createElement('option');
+                    option.value = template.id;
+                    option.textContent = `${template.name}${template.service ? ` (${template.service})` : ''}`;
+                    select.appendChild(option);
+                });
+                select.value = currentValue || '';
+            } catch (error) {
+                console.warn('Could not load campaign export templates:', error);
+            }
+            updateCampaignFunnelOptions();
+        }
+
         async function loadFunnelTemplateOptions() {
             const select = document.getElementById('funnelTemplateSelect');
             if (!select) return;
@@ -2345,7 +2434,8 @@
                     throw new Error(`HTTP ${response.status}`);
                 }
                 const data = await response.json();
-                (data.funnels || [])
+                campaignFunnelTemplates = data.funnels || [];
+                campaignFunnelTemplates
                     .filter(funnel => funnel.enabled !== false)
                     .forEach(funnel => {
                         const option = document.createElement('option');
@@ -2357,12 +2447,16 @@
             } catch (error) {
                 console.warn('Could not load funnel templates:', error);
             }
+            updateCampaignFunnelOptions(select.value !== currentValue);
         }
 
         document.addEventListener('DOMContentLoaded', () => {
             updateSearchPhraseCount();
             loadSourceTemplateOptions();
             loadFunnelTemplateOptions();
+            loadCampaignExportTemplateOptions();
+            document.getElementById('funnelTemplateSelect')?.addEventListener('change', () => updateCampaignFunnelOptions(true));
+            document.getElementById('campaignExportTemplateSelect')?.addEventListener('change', () => updateCampaignFunnelOptions());
             document.getElementById('sourceTemplateSelect')?.addEventListener('change', updateLeadSourceMode);
             document.getElementById('csvImportFile')?.addEventListener('change', () => {
                 csvImportPreview = null;
