@@ -93,9 +93,6 @@
             <div class="mt-6 flex flex-wrap gap-3">
                 <button id="testEnrichmentBtn" class="bg-sky-100 text-sky-700 px-4 py-2 rounded-lg hover:bg-sky-200">Test Enrichment (1 random lead)</button>
                 <button id="startEnrichmentBtn" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">Start Enrichment</button>
-                <button id="pauseEnrichmentBtn" class="bg-amber-100 text-amber-700 px-4 py-2 rounded-lg hover:bg-amber-200" disabled>Pause</button>
-                <button id="resumeEnrichmentBtn" class="bg-emerald-100 text-emerald-700 px-4 py-2 rounded-lg hover:bg-emerald-200" disabled>Resume</button>
-                <button id="cancelEnrichmentBtn" class="bg-red-100 text-red-700 px-4 py-2 rounded-lg hover:bg-red-200" disabled>Cancel</button>
             </div>
             <div id="testResultBox" class="mt-4 hidden rounded-lg border border-slate-200 bg-slate-50 p-3">
                 <div class="text-sm font-semibold text-slate-700 mb-2">Test Enrichment Result</div>
@@ -107,6 +104,11 @@
             <div class="flex items-start justify-between gap-3 mb-3">
                 <h2 class="text-xl font-semibold">Run Progress</h2>
                 <span id="runStatusBadge" class="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">idle</span>
+            </div>
+            <div class="flex flex-wrap gap-2 mb-4" role="group" aria-label="Enrichment run actions">
+                <button id="pauseEnrichmentBtn" type="button" class="bg-amber-100 text-amber-700 px-4 py-2 rounded-lg hover:bg-amber-200 disabled:opacity-50 disabled:cursor-not-allowed" disabled>Pause</button>
+                <button id="resumeEnrichmentBtn" type="button" class="hidden bg-emerald-100 text-emerald-700 px-4 py-2 rounded-lg hover:bg-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed" disabled>Resume</button>
+                <button id="cancelEnrichmentBtn" type="button" class="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed" disabled>Stop</button>
             </div>
             <div class="text-sm text-slate-700 mb-2">
                 <span id="runProgressSummary">0 / 0</span>
@@ -213,6 +215,8 @@
         let selectedCampaign = null;
         let selectedTemplate = null;
         let activeRunId = null;
+        let displayedRun = null;
+        let pendingRunAction = null;
         let pollTimer = null;
         let templateSchema = null;
         let editingTemplateId = null;
@@ -888,10 +892,11 @@
 
         async function loadActiveRunForCampaign() {
             if (!selectedCampaign) return;
+            const campaignId = selectedCampaign;
             try {
-                const response = await fetch(`/api/campaign/${selectedCampaign}/enrichment-run/active`);
+                const response = await fetch(`/api/campaign/${campaignId}/enrichment-run/active`);
                 const data = await response.json();
-                if (!response.ok) return;
+                if (!response.ok || selectedCampaign !== campaignId) return;
 
                 if (data.run) {
                     activeRunId = data.run.run_id;
@@ -900,6 +905,8 @@
                     startPolling();
                 } else {
                     activeRunId = null;
+                    displayedRun = null;
+                    document.getElementById('progressSection').classList.add('hidden');
                     stopPolling();
                 }
             } catch (error) {
@@ -909,9 +916,11 @@
 
         async function pollRunStatus() {
             if (!activeRunId) return;
+            const runId = activeRunId;
             try {
-                const response = await fetch(`/api/enrichment/runs/${activeRunId}?log_limit=300`);
+                const response = await fetch(`/api/enrichment/runs/${runId}?log_limit=300`);
                 const data = await response.json();
+                if (activeRunId !== runId) return;
                 if (!response.ok) {
                     throw new Error(data.detail || `HTTP ${response.status}`);
                 }
@@ -923,12 +932,13 @@
                 }
             } catch (error) {
                 console.error('Error polling run status:', error);
-                stopPolling();
+                if (activeRunId === runId) stopPolling();
             }
         }
 
         function renderRunStatus(run, logs) {
             if (!run) return;
+            displayedRun = run;
             showProgressSection();
 
             const status = run.status || 'idle';
@@ -941,7 +951,7 @@
 
             const badge = document.getElementById('runStatusBadge');
             badge.className = `inline-flex items-center rounded-full px-3 py-1 text-xs font-medium ${statusBadgeClass(status)}`;
-            badge.textContent = status;
+            badge.textContent = run.cancel_requested && ['queued', 'running', 'paused'].includes(status) ? 'stopping' : status;
 
             document.getElementById('runProgressSummary').textContent = `${processed} / ${total}`;
             document.getElementById('runProgressBar').style.width = `${percent}%`;
@@ -988,10 +998,25 @@
             logsBox.scrollTop = logsBox.scrollHeight;
 
             const isActive = ['queued', 'running', 'paused'].includes(status);
-            document.getElementById('pauseEnrichmentBtn').disabled = !isActive || status === 'paused';
-            document.getElementById('resumeEnrichmentBtn').disabled = !isActive || status === 'running';
-            document.getElementById('cancelEnrichmentBtn').disabled = !isActive;
-            document.getElementById('startEnrichmentBtn').disabled = status === 'running' || status === 'queued';
+            updateRunActionButtons();
+            document.getElementById('startEnrichmentBtn').disabled = isActive;
+        }
+
+        function updateRunActionButtons() {
+            const run = displayedRun || {};
+            const isActive = ['queued', 'running', 'paused'].includes(run.status);
+            const stopping = isActive && !!run.cancel_requested;
+            const busy = pendingRunAction?.runId === activeRunId;
+            const pause = document.getElementById('pauseEnrichmentBtn');
+            const resume = document.getElementById('resumeEnrichmentBtn');
+            const stop = document.getElementById('cancelEnrichmentBtn');
+            pause.classList.toggle('hidden', run.status === 'paused');
+            resume.classList.toggle('hidden', run.status !== 'paused');
+            pause.disabled = !isActive || busy || stopping || !!run.pause_requested;
+            resume.disabled = !isActive || busy || stopping || run.status !== 'paused';
+            stop.disabled = !isActive || busy || stopping;
+            pause.textContent = run.pause_requested && run.status !== 'paused' ? 'Pausing...' : 'Pause';
+            stop.textContent = stopping || (busy && pendingRunAction.action === 'cancel') ? 'Stopping...' : 'Stop';
         }
 
         function startPolling() {
@@ -1009,22 +1034,30 @@
         }
 
         async function runAction(action) {
-            if (!activeRunId) return;
+            if (!activeRunId || pendingRunAction?.runId === activeRunId) return;
+            const runId = activeRunId;
+            const actionState = { runId, action };
+            pendingRunAction = actionState;
+            updateRunActionButtons();
             try {
-                const response = await fetch(`/api/enrichment/runs/${activeRunId}/${action}`, { method: 'POST' });
+                const response = await fetch(`/api/enrichment/runs/${runId}/${action}`, { method: 'POST' });
                 const data = await response.json();
+                if (activeRunId !== runId) return;
                 if (!response.ok) {
                     throw new Error(data.detail || `HTTP ${response.status}`);
                 }
                 renderRunStatus(data.run || {}, data.logs || []);
-                if (action === 'resume') {
+                if (['queued', 'running', 'paused'].includes(data.run?.status)) {
                     startPolling();
-                }
-                if (action === 'cancel' && ['cancelled', 'completed'].includes(data.run?.status || '')) {
+                } else {
                     stopPolling();
+                    await loadRunHistory();
                 }
             } catch (error) {
-                alert(`${action} failed: ${error.message}`);
+                if (activeRunId === runId) alert(`${action === 'cancel' ? 'Stop' : action} failed: ${error.message}`);
+            } finally {
+                if (pendingRunAction === actionState) pendingRunAction = null;
+                updateRunActionButtons();
             }
         }
 
@@ -1140,6 +1173,8 @@
                 selectedCampaign = event.target.value || null;
                 saveCampaignId(selectedCampaign);
                 activeRunId = null;
+                displayedRun = null;
+                document.getElementById('progressSection').classList.add('hidden');
                 stopPolling();
                 if (selectedCampaign) {
                     maybeShowSections();
