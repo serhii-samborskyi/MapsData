@@ -470,6 +470,8 @@ def init_db():
         """)
         import streaming
         streaming.init_schema(cursor)
+        from mcp_connections import init_schema as init_mcp_connection_schema
+        init_mcp_connection_schema(cursor)
         from remote_mcp import init_schema as init_mcp_schema
         init_mcp_schema(cursor)
         conn.commit()

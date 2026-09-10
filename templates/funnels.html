@@ -7,6 +7,8 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/styles.css">
+    <script id="mcpConnectionIcons" async src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" integrity="sha256-NBFpKCDLjUdUP2lJaqJf1gOjWPRJgEb0HFCKWjNCIQ4=" crossorigin="anonymous"></script>
+    <script defer src="/static/mcp-connection.js"></script>
 </head>
 <body class="app-shell">
     <div class="app-container">
@@ -27,6 +29,7 @@
                 <a href="/enrichment" class="app-chip hover:text-slate-900">Enrichment Manager</a>
                 <a href="/verify" class="app-chip hover:text-slate-900">Email Verification</a>
                 <a href="/export" class="app-chip hover:text-slate-900">Export Manager</a>
+                <button id="mcpConnectionOpen" type="button" aria-haspopup="dialog" aria-controls="mcpConnectionDialog" class="app-chip hover:text-slate-900">MCP Connection</button>
                 <form method="post" action="/auth/logout" class="inline">
                     <button type="submit" class="app-chip hover:text-slate-900">Logout</button>
                 </form>
@@ -295,6 +298,49 @@
                 </thead>
                 <tbody id="uncertainDeliveryRows" class="block sm:table-row-group"></tbody>
             </table>
+        </div>
+    </dialog>
+
+    <dialog id="mcpConnectionDialog" aria-labelledby="mcpConnectionTitle" class="m-auto max-h-[90vh] w-11/12 max-w-3xl rounded-lg border border-slate-200 bg-white p-4 shadow-xl backdrop:bg-slate-950/40 sm:p-6">
+        <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+                <h2 id="mcpConnectionTitle" class="text-lg font-semibold text-slate-900">MCP Connection</h2>
+                <p id="mcpConnectionStatus" class="mt-1 text-sm text-slate-500" role="status" aria-live="polite"></p>
+            </div>
+            <button id="mcpConnectionClose" type="button" autofocus aria-label="Close MCP Connection" title="Close MCP Connection" class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-slate-300 text-xs text-slate-700 hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-sky-500">
+                <i data-lucide="x" class="hidden h-4 w-4" aria-hidden="true"></i>
+                <span data-icon-fallback>Close</span>
+            </button>
+        </div>
+        <div id="mcpConnectionError" hidden class="mt-3 break-words rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert"></div>
+        <button id="mcpConnectionRetry" type="button" hidden class="mt-2 rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Retry</button>
+        <form id="mcpConnectionForm" class="mt-4 space-y-3">
+            <label class="block">
+                <span class="mb-1 block text-sm font-semibold text-slate-700">Public MCP URL</span>
+                <input id="mcpConnectionUrl" type="url" required autocomplete="off" spellcheck="false" disabled class="w-full min-w-0 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200 disabled:opacity-50 read-only:bg-slate-50">
+            </label>
+            <div class="flex flex-wrap gap-2">
+                <button id="mcpConnectionGenerate" type="submit" disabled class="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-700 disabled:opacity-50">Generate Token</button>
+                <button id="mcpConnectionRevoke" type="button" hidden disabled class="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50">Revoke Token</button>
+            </div>
+        </form>
+        <div class="mt-5 min-w-0 border-t border-slate-200 pt-4">
+            <div role="tablist" aria-label="Connection format" class="grid grid-cols-3 gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
+                <button id="mcpConnectionTabAssistant" type="button" role="tab" aria-selected="true" aria-controls="mcpConnectionPanelAssistant" data-mcp-tab="assistant" class="min-h-10 min-w-0 rounded px-1 py-2 text-xs font-semibold text-slate-700 focus-visible:ring-2 focus-visible:ring-sky-500 aria-selected:bg-white aria-selected:text-sky-700 sm:text-sm">For Codex</button>
+                <button id="mcpConnectionTabCodex" type="button" role="tab" aria-selected="false" aria-controls="mcpConnectionPanelCodex" tabindex="-1" data-mcp-tab="codex" class="min-h-10 min-w-0 rounded px-1 py-2 text-xs font-semibold text-slate-700 focus-visible:ring-2 focus-visible:ring-sky-500 aria-selected:bg-white aria-selected:text-sky-700 sm:text-sm">Codex Config</button>
+                <button id="mcpConnectionTabClaude" type="button" role="tab" aria-selected="false" aria-controls="mcpConnectionPanelClaude" tabindex="-1" data-mcp-tab="claude_code" class="min-h-10 min-w-0 rounded px-1 py-2 text-xs font-semibold text-slate-700 focus-visible:ring-2 focus-visible:ring-sky-500 aria-selected:bg-white aria-selected:text-sky-700 sm:text-sm">Claude Code</button>
+            </div>
+            <p id="mcpConnectionSecretWarning" hidden class="mt-3 text-xs font-semibold text-amber-800"></p>
+            <div class="my-2 flex min-h-10 items-center justify-between gap-2">
+                <p id="mcpConnectionCopyStatus" class="min-w-0 text-xs text-slate-500" role="status" aria-live="polite">No connection details.</p>
+                <button id="mcpConnectionCopy" type="button" disabled aria-label="Copy connection details" title="Copy connection details" class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-slate-300 text-xs text-slate-700 hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-sky-500 disabled:opacity-50">
+                    <i data-lucide="copy" class="hidden h-4 w-4" aria-hidden="true"></i>
+                    <span data-icon-fallback>Copy</span>
+                </button>
+            </div>
+            <pre id="mcpConnectionPanelAssistant" role="tabpanel" aria-labelledby="mcpConnectionTabAssistant" tabindex="0" class="max-h-64 min-h-16 overflow-auto whitespace-pre-wrap rounded-lg border border-slate-200 bg-slate-50 p-3 font-mono text-xs leading-5 text-slate-800 [overflow-wrap:anywhere]"></pre>
+            <pre id="mcpConnectionPanelCodex" role="tabpanel" aria-labelledby="mcpConnectionTabCodex" tabindex="0" hidden class="max-h-64 min-h-16 overflow-auto whitespace-pre-wrap rounded-lg border border-slate-200 bg-slate-50 p-3 font-mono text-xs leading-5 text-slate-800 [overflow-wrap:anywhere]"></pre>
+            <pre id="mcpConnectionPanelClaude" role="tabpanel" aria-labelledby="mcpConnectionTabClaude" tabindex="0" hidden class="max-h-64 min-h-16 overflow-auto whitespace-pre-wrap rounded-lg border border-slate-200 bg-slate-50 p-3 font-mono text-xs leading-5 text-slate-800 [overflow-wrap:anywhere]"></pre>
         </div>
     </dialog>
 

@@ -9,11 +9,35 @@ The isolated MCP package does not import `main`.
 
 ## Deploy the wired host
 
-No further mount or startup changes are needed. Set `MAPSDATA_MCP_TOKEN` and
-`MAPSDATA_MCP_PUBLIC_URL` in the host environment, then restart the app. Without
-a token, the host leaves MCP unmounted. With a token, the endpoint is `/mcp/`;
-the existing default-template startup handler still runs. Drafts share the app's
-PostgreSQL database and survive application restarts.
+No further mount or startup changes are needed. Deploy the updated app, enable
+its existing login with `LOGIN` and `PASSWORD`, then open **Funnel Manager > MCP
+Connection**. Check the public HTTPS URL and generate a token. The **For Codex**
+block includes the exact URL, authorization header and configuration instructions;
+copy it into your Codex conversation. Separate Codex TOML and Claude Code JSON
+blocks are also available. No local scripts or environment variables are required
+for this connection method.
+
+The generated credential is shown only once and only its SHA-256 hash is stored
+in PostgreSQL. Closing the dialog clears the displayed secret. Generate a
+replacement if it is lost; replacement and revocation require confirmation and
+take effect on subsequent MCP requests across web workers without restarting.
+Do not publish the copied block or commit a client config containing it. The
+generated block uses Codex's supported static `http_headers` setting, as described
+in the [official MCP configuration documentation](https://developers.openai.com/codex/mcp/).
+
+Token management requires an authenticated, same-origin HTTPS browser request
+(HTTP is permitted for a loopback development browser). Configure your reverse
+proxy to preserve the public Host header. The endpoint stays inaccessible until
+a token is configured; the app does not silently create credentials on page load.
+When app login is disabled, database-managed MCP is not mounted and token
+management is locked. Existing environment-managed MCP remains available.
+
+The optional `MAPSDATA_MCP_TOKEN` and `MAPSDATA_MCP_PUBLIC_URL` environment values
+still take precedence. If configured, the dialog can reveal their connection
+block to a signed-in user but cannot replace or revoke the environment token.
+Rotate that token in your hosting settings and restart. The MCP endpoint is
+`/mcp/`; the existing default-template startup handler still runs. Drafts and
+database-managed credentials survive application restarts.
 
 The lock is generated with Poetry 1.7.1 in lock format 2.0, matching the existing
 Python 3.11 Dockerfile. Keep the production install command
@@ -21,9 +45,9 @@ Python 3.11 Dockerfile. Keep the production install command
 The mount/lifespan example later in this document describes the installed
 integration contract; do not add a second mount or lifespan wrapper.
 
-## Connect a client
+## Environment-based setup (optional)
 
-After the integration below is deployed:
+As an alternative to generating a token in the app:
 
 1. Generate a random token with your password manager (at least 32 characters),
    or run `openssl rand -hex 32` once.
@@ -133,8 +157,12 @@ operate campaigns in this app. There is no tenant isolation or per-user scope
 model. Invalid/missing tokens receive HTTP 401, including GET and DELETE. Tokens
 in query parameters or cookies cannot authenticate. This is a pre-shared-token
 deployment with manual header configuration, not an OAuth authorization server.
-Rotating the environment token and restarting invalidates the old token while
-preserving all drafts and launched campaign IDs.
+Rotating an environment token and restarting invalidates the old token while
+preserving all drafts and launched campaign IDs. Database-managed tokens use
+per-request configuration and authentication; the official SDK's Host/Origin
+checks remain enabled for the configured public URL. The browser setup API never
+returns a saved generated token or token hash from its status endpoint, requires
+app login and same-origin mutations, and sends `Cache-Control: no-store`.
 
 ## Hook contract
 
@@ -280,6 +308,13 @@ database such as `mapsdata_mcp_test`. The tests refuse the `postgres` database
 because an independently running app scheduler could claim queued test runs.
 They create unique schemas, import the real host, exercise its lifespan, and
 intercept worker startup and external HTTP. Run host imports serially.
+
+Connection setup tests live in `tests/test_mcp_connections.py` and require a
+dedicated database named `mapsdata_mcp_test`. They cover one-time disclosure,
+hash-only persistence, URL/configuration parsing, UI authentication, same-origin
+checks, concurrent generation, rotation and revocation. The host suite also
+tests signing in, generating a token, connecting with the SDK and revoking it
+without a restart or any campaign launch.
 
 ## Geographic scope
 

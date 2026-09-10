@@ -152,12 +152,24 @@ def hooks(host):
 
 
 def install(host):
-    if not os.environ.get("MAPSDATA_MCP_TOKEN"):
+    from mcp_connections import ConnectionStore, router
+
+    settings = None
+    if os.environ.get("MAPSDATA_MCP_TOKEN"):
+        from remote_mcp import MCPSettings
+
+        settings = MCPSettings.from_env()
+    store = ConnectionStore(host.get_db, settings)
+    host.app.include_router(router(host, store))
+    if settings is None and not host.UI_AUTH_ENABLED:
         return
-    from remote_mcp import CampaignService, MCPSettings, create_mcp_server
+
+    from remote_mcp import CampaignService, create_mcp_server
 
     remote = create_mcp_server(
-        CampaignService(host.get_db, hooks(host)), MCPSettings.from_env()
+        CampaignService(host.get_db, hooks(host)),
+        settings,
+        configuration_loader=store.active_configuration,
     )
     previous = host.app.router.lifespan_context
 

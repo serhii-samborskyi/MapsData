@@ -5,6 +5,7 @@ are touched, and worker startup plus outbound HTTP are intercepted.
 """
 
 import asyncio
+import hashlib
 import importlib.util
 import json
 import os
@@ -36,7 +37,7 @@ def anyio_backend():
 
 
 @pytest.fixture
-def host(monkeypatch):
+def host(monkeypatch, request):
     dsn = os.environ.get("MAPSDATA_MCP_TEST_DSN")
     if not dsn:
         pytest.skip(
@@ -65,8 +66,12 @@ def host(monkeypatch):
     monkeypatch.setenv(
         "DATABASE_URL", make_dsn(dsn, options=f"-c search_path={schema}")
     )
-    monkeypatch.setenv("MAPSDATA_MCP_TOKEN", TOKEN)
-    monkeypatch.setenv("MAPSDATA_MCP_PUBLIC_URL", BASE_URL + "/mcp/")
+    if getattr(request, "param", "environment") == "managed":
+        monkeypatch.delenv("MAPSDATA_MCP_TOKEN", raising=False)
+        monkeypatch.delenv("MAPSDATA_MCP_PUBLIC_URL", raising=False)
+    else:
+        monkeypatch.setenv("MAPSDATA_MCP_TOKEN", TOKEN)
+        monkeypatch.setenv("MAPSDATA_MCP_PUBLIC_URL", BASE_URL + "/mcp/")
     monkeypatch.setenv("LOGIN", "test-ui-user")
     monkeypatch.setenv("PASSWORD", "test-ui-password")
     monkeypatch.chdir(ROOT)
@@ -321,6 +326,89 @@ async def test_host_lifespan_initializes_defaults_and_authenticates_mount(
                 assert response.status_code == 401
                 assert response.headers["www-authenticate"].startswith("Bearer")
     host.wake.assert_not_called()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("host", ["managed"], indirect=True)
+async def test_login_generate_connect_rotate_and_revoke_on_real_host(host):
+    path = "/api/mcp/connection"
+    headers = {"Origin": BASE_URL, "X-Requested-With": "XMLHttpRequest"}
+    async with (
+        host.app.router.lifespan_context(host.app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=host.app), base_url=BASE_URL
+        ) as admin,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=host.app), base_url=BASE_URL
+        ) as remote,
+    ):
+        assert (await admin.get(path)).status_code == 401
+        assert (await remote.post("/mcp/", json={})).status_code == 503
+        login = await admin.post(
+            "/auth/login",
+            data={"username": "test-ui-user", "password": "test-ui-password"},
+        )
+        assert login.status_code == 303
+        metadata = (await admin.get(path)).json()
+        assert metadata["can_manage"] is True
+        assert metadata["enabled"] is False
+        assert metadata["public_url"] == BASE_URL + "/mcp/"
+        response = await admin.post(
+            path + "/token",
+            json={"public_url": metadata["public_url"]},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
+        token = response.json()["token"]
+        rows = host.execute("SELECT * FROM mcp_connections", fetch=True)
+        assert rows[0]["token_digest"] == hashlib.sha256(token.encode()).hexdigest()
+        assert token not in str(rows)
+        assert token not in (await admin.get(path)).text
+        # A UI session is not an MCP bearer credential, and vice versa.
+        assert (await admin.post("/mcp/", json={})).status_code == 401
+        remote.headers["Authorization"] = f"Bearer {token}"
+        assert (await remote.get(path)).status_code == 401
+        async with (
+            streamable_http_client(BASE_URL + "/mcp/", http_client=remote) as (
+                read,
+                write,
+                _,
+            ),
+            ClientSession(read, write) as client,
+        ):
+            await client.initialize()
+            assert len((await client.list_tools()).tools) == 8
+            sources = await call(client, "list_templates", {"kind": "source"})
+            assert sources["templates"][0]["source_type"] == "builtin_google_maps"
+        replacement = await admin.post(
+            path + "/token",
+            json={"public_url": metadata["public_url"], "replace_confirmed": True},
+            headers=headers,
+        )
+        assert replacement.status_code == 200
+        next_token = replacement.json()["token"]
+        assert next_token != token
+        assert (await remote.post("/mcp/", json={})).status_code == 401
+        remote.headers["Authorization"] = f"Bearer {next_token}"
+        async with (
+            streamable_http_client(BASE_URL + "/mcp/", http_client=remote) as (
+                read,
+                write,
+                _,
+            ),
+            ClientSession(read, write) as client,
+        ):
+            await client.initialize()
+            assert len((await client.list_tools()).tools) == 8
+        revoked = await admin.post(
+            path + "/revoke", json={"confirmed": True}, headers=headers
+        )
+        assert revoked.status_code == 200
+        assert revoked.json()["enabled"] is False
+        assert (await remote.post("/mcp/", json={})).status_code == 503
+    host.wake.assert_not_called()
+    assert count(host, "search_campaigns") == 0
 
 
 @pytest.mark.anyio

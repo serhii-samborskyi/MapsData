@@ -3,11 +3,12 @@
 import hashlib
 import hmac
 import os
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from typing import Annotated, Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
 
 import anyio
@@ -18,7 +19,10 @@ from mcp.server.auth.middleware.bearer_auth import (
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
-from mcp.server.transport_security import TransportSecuritySettings
+from mcp.server.transport_security import (
+    TransportSecurityMiddleware,
+    TransportSecuritySettings,
+)
 from mcp.types import ToolAnnotations
 from pydantic import (
     BaseModel,
@@ -31,13 +35,16 @@ from pydantic import (
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.authentication import AuthenticationMiddleware
+from starlette.requests import HTTPConnection
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .contracts import CampaignInput, DraftError, PositiveID, TemplateKind
 from .drafts import CampaignService
 
 
 class MCPSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     token: SecretStr
     public_url: str
@@ -56,6 +63,12 @@ class MCPSettings(BaseModel):
     @classmethod
     def validate_url(cls, value: str) -> str:
         parsed = urlsplit(value)
+        # urlsplit validates port syntax lazily; wildcard ports must not become
+        # wildcard Host/Origin allowlists in the SDK's security middleware.
+        try:
+            port = parsed.port
+        except ValueError:
+            raise ValueError("MCP public URL must have a valid port") from None
         if (
             parsed.scheme != "https"
             or not parsed.hostname
@@ -64,12 +77,20 @@ class MCPSettings(BaseModel):
             or parsed.query
             or parsed.fragment
             or not parsed.path.endswith("/")
+            or "*" in parsed.netloc
+            or "\\" in parsed.netloc
+            or not value.isascii()
+            or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value)
         ):
             raise ValueError(
                 "MCP public URL must be HTTPS, end in /, "
                 "and have no credentials, query or fragment"
             )
-        return value
+        hostname = parsed.hostname.lower()
+        authority = f"[{hostname}]" if ":" in hostname else hostname
+        if port is not None and port != 443:
+            authority += f":{port}"
+        return urlunsplit(("https", authority, parsed.path, "", ""))
 
     @classmethod
     def from_env(cls):
@@ -79,12 +100,10 @@ class MCPSettings(BaseModel):
         )
 
 
-class _StaticTokenVerifier(TokenVerifier):
-    def __init__(self, settings: MCPSettings):
-        self._digest = hashlib.sha256(
-            settings.token.get_secret_value().encode()
-        ).digest()
-        self._resource = settings.public_url
+class _DigestTokenVerifier(TokenVerifier):
+    def __init__(self, digest: bytes, resource: str):
+        self._digest = digest
+        self._resource = resource
 
     async def verify_token(self, token: str) -> AccessToken | None:
         actual = hashlib.sha256(token.encode()).digest()
@@ -96,6 +115,74 @@ class _StaticTokenVerifier(TokenVerifier):
             scopes=["campaigns"],
             resource=self._resource,
         )
+
+
+class _ActiveConfiguration(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    public_url: str
+    token_digest: str = Field(
+        pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64, repr=False
+    )
+
+    @field_validator("public_url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        return MCPSettings.validate_url(value)
+
+
+ConfigurationLoader = Callable[[], dict[str, str] | None]
+
+
+def _transport_settings(public_url: str) -> TransportSecuritySettings:
+    parsed = urlsplit(public_url)
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[parsed.netloc],
+        allowed_origins=[f"{parsed.scheme}://{parsed.netloc}"],
+    )
+
+
+class _ManagedConfigurationMiddleware:
+    def __init__(self, app: ASGIApp, configuration_loader: ConfigurationLoader):
+        self.app = app
+        self.configuration_loader = configuration_loader
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        try:
+            configuration = await anyio.to_thread.run_sync(self.configuration_loader)
+            snapshot = _ActiveConfiguration.model_validate(configuration)
+        except Exception:
+            # Never retain stale credentials or expose DB/validation exceptions.
+            response = JSONResponse(
+                {"error": "MCP connection is unavailable"}, status_code=503
+            )
+            await response(scope, receive, send)
+            return
+
+        security = TransportSecurityMiddleware(_transport_settings(snapshot.public_url))
+        # Host/Origin protection precedes authentication. The SDK still checks
+        # POST Content-Type and body limits after auth, as in the static setup.
+        rejection = await security.validate_request(HTTPConnection(scope))
+        if rejection is not None:
+            await rejection(scope, receive, send)
+            return
+
+        # The verifier belongs only to this request: URL and token cannot come
+        # from different rotations, even while another worker updates the store.
+        authenticated = AuthenticationMiddleware(
+            self.app,
+            backend=BearerAuthBackend(
+                _DigestTokenVerifier(
+                    bytes.fromhex(snapshot.token_digest), snapshot.public_url
+                )
+            ),
+        )
+        await authenticated(scope, receive, send)
 
 
 @dataclass
@@ -110,8 +197,21 @@ class RemoteMCP:
             yield
 
 
-def create_mcp_server(service: CampaignService, settings: MCPSettings) -> RemoteMCP:
-    parsed = urlsplit(settings.public_url)
+def create_mcp_server(
+    service: CampaignService,
+    settings: MCPSettings | None = None,
+    *,
+    configuration_loader: ConfigurationLoader | None = None,
+) -> RemoteMCP:
+    if settings is None and configuration_loader is None:
+        raise ValueError("MCP settings or a configuration loader are required")
+    if configuration_loader is not None:
+        # Every HTTP request passes the equivalent official dynamic check below.
+        transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        )
+    else:
+        transport_security = _transport_settings(settings.public_url)
     sdk = FastMCP(
         "MapsData",
         stateless_http=True,
@@ -124,11 +224,7 @@ def create_mcp_server(service: CampaignService, settings: MCPSettings) -> Remote
             "after confirmation. Prepared searches do not guarantee exhaustive "
             "business or advertising coverage."
         ),
-        transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=True,
-            allowed_hosts=[parsed.netloc],
-            allowed_origins=[f"{parsed.scheme}://{parsed.netloc}"],
-        ),
+        transport_security=transport_security,
     )
 
     async def invoke(method, *args):
@@ -249,11 +345,22 @@ def create_mcp_server(service: CampaignService, settings: MCPSettings) -> Remote
     app = sdk.streamable_http_app()
     # The SDK owns authentication parsing, MCP routing, negotiation and messages.
     # This is a pre-shared-token deployment, with no OAuth discovery/login server.
-    app.user_middleware = [
-        Middleware(
+    if configuration_loader is not None:
+        authentication = Middleware(
+            _ManagedConfigurationMiddleware, configuration_loader=configuration_loader
+        )
+    else:
+        authentication = Middleware(
             AuthenticationMiddleware,
-            backend=BearerAuthBackend(_StaticTokenVerifier(settings)),
-        ),
+            backend=BearerAuthBackend(
+                _DigestTokenVerifier(
+                    hashlib.sha256(settings.token.get_secret_value().encode()).digest(),
+                    settings.public_url,
+                )
+            ),
+        )
+    app.user_middleware = [
+        authentication,
         *app.user_middleware,
     ]
     for route in app.routes:

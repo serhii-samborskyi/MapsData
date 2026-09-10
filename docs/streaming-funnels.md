@@ -13,7 +13,8 @@ already exist; an assistant can create it through the cold-email app's own MCP
 before preparing the MapsData campaign.
 
 For remote campaign planning and client configuration, see
-[Remote MCP](remote-mcp.md). MCP is disabled until its environment token is set.
+[Remote MCP](remote-mcp.md). Generate a token in Funnel Manager's MCP Connection
+dialog, or use the existing environment-token configuration.
 
 ## Processing
 
