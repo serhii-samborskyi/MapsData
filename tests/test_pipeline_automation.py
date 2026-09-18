@@ -342,6 +342,48 @@ class PipelineEndpointTests(unittest.TestCase):
         self.main.get_db = lambda: FakeDBContext(conn)
         return cursor, conn
 
+    def test_cpu_safety_policy_stops_running_and_paused_machines(self):
+        now = datetime.utcnow()
+
+        class SafetyCursor:
+            def __init__(self):
+                self.last_query = ""
+                self.updated = []
+
+            def execute(self, query, params=None):
+                self.last_query = " ".join(query.lower().split())
+                if "update daemon_machines" in self.last_query:
+                    self.updated.append(params[-1])
+
+            def fetchall(self):
+                return [
+                    {
+                        "machine_id": "machine-hot",
+                        "average_cpu_percent": 72.5,
+                        "sample_count": 8,
+                        "oldest_sample_at": now - timedelta(minutes=1),
+                    },
+                    {
+                        "machine_id": "machine-new",
+                        "average_cpu_percent": 99,
+                        "sample_count": 2,
+                        "oldest_sample_at": now,
+                    },
+                ]
+
+            def fetchone(self):
+                return {"machine_id": self.updated[-1]} if self.updated else None
+
+        cursor = SafetyCursor()
+        self.main._daemon_safety_settings = lambda _cursor: {
+            "enabled": True,
+            "max_average_cpu_percent": 70,
+            "average_window_minutes": 5,
+            "updated_at": now,
+        }
+        self.assertEqual(self.main._evaluate_daemon_safety_policy(cursor, now), {"machine-hot"})
+        self.assertEqual(cursor.updated, ["machine-hot"])
+
     def test_start_is_idempotent_when_active_run_exists(self):
         cursor, _ = self._patch_db([
             {"match": "select id from search_campaigns", "fetchone": {"id": 1}},

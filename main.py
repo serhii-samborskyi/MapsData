@@ -81,6 +81,8 @@ PIPELINE_RECLAIM_HEARTBEAT_GRACE_SECONDS = 75
 PIPELINE_ALLOWED_CLAIM_ACTORS = {"daemon", "dashboard", "system", "worker"}
 DAEMON_DESIRED_STATES = {"running", "paused", "stopped"}
 DAEMON_WORKER_STALE_SECONDS = 75
+DAEMON_SAFETY_MIN_HISTORY_SECONDS = 60
+DAEMON_METRIC_RETENTION_HOURS = 2
 MAPS_SCRAPE_MODES = {"fast", "slow"}
 PIPELINE_EMAIL_STAGES = {"email_fast", "email_fallback"}
 ENRICHMENT_RUN_STATUSES = {"queued", "running", "paused", "completed", "failed", "cancelled"}
@@ -1503,6 +1505,82 @@ def _daemon_int(value: Any) -> Optional[int]:
     return value if value >= 0 else None
 
 
+def _daemon_safety_settings(cursor) -> dict:
+    cursor.execute(
+        """
+        SELECT enabled, max_average_cpu_percent, average_window_minutes, updated_at
+        FROM daemon_safety_settings
+        WHERE id = 1
+        """
+    )
+    row = cursor.fetchone()
+    if not row:
+        cursor.execute("INSERT INTO daemon_safety_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
+        cursor.execute(
+            """
+            SELECT enabled, max_average_cpu_percent, average_window_minutes, updated_at
+            FROM daemon_safety_settings
+            WHERE id = 1
+            """
+        )
+        row = cursor.fetchone() or {}
+    return {
+        "enabled": bool(row.get("enabled", True)),
+        "max_average_cpu_percent": float(row.get("max_average_cpu_percent") or 70),
+        "average_window_minutes": int(row.get("average_window_minutes") or 5),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _evaluate_daemon_safety_policy(cursor, now: Optional[datetime] = None) -> set[str]:
+    """Stop active machines whose rolling host CPU average is unsafe."""
+    now = now or _now_utc()
+    settings = _daemon_safety_settings(cursor)
+    if not settings["enabled"]:
+        return set()
+    window_minutes = settings["average_window_minutes"]
+    cursor.execute(
+        """
+        SELECT machine_id, AVG(host_cpu_percent) AS average_cpu_percent,
+               COUNT(*) AS sample_count, MIN(sampled_at) AS oldest_sample_at
+        FROM daemon_metric_samples
+        WHERE sampled_at >= CURRENT_TIMESTAMP - %s * INTERVAL '1 minute'
+        GROUP BY machine_id
+        """,
+        (window_minutes,),
+    )
+    auto_stopped = set()
+    minimum_history = timedelta(seconds=min(DAEMON_SAFETY_MIN_HISTORY_SECONDS, window_minutes * 60))
+    for row in cursor.fetchall():
+        average = float(row.get("average_cpu_percent") or 0)
+        oldest_sample_at = row.get("oldest_sample_at")
+        if (
+            int(row.get("sample_count") or 0) < 3
+            or not isinstance(oldest_sample_at, datetime)
+            or oldest_sample_at > now - minimum_history
+            or average < settings["max_average_cpu_percent"]
+        ):
+            continue
+        reason = (
+            f"Automatic safety stop: average host CPU {average:.1f}% over the last "
+            f"{window_minutes} minute(s) reached the {settings['max_average_cpu_percent']:.1f}% limit"
+        )
+        cursor.execute(
+            """
+            UPDATE daemon_machines
+            SET desired_state = 'stopped', state_changed_at = %s, auto_stop_reason = %s,
+                auto_stopped_at = %s, updated_at = %s
+            WHERE machine_id = %s AND desired_state IN ('running', 'paused')
+            RETURNING machine_id
+            """,
+            (now, reason, now, now, row["machine_id"]),
+        )
+        stopped = cursor.fetchone()
+        if stopped:
+            auto_stopped.add(str(stopped["machine_id"]))
+    return auto_stopped
+
+
 def _record_daemon_worker(
     cursor,
     machine_id: str,
@@ -1581,6 +1659,21 @@ def _record_daemon_worker(
         "UPDATE daemon_machines SET updated_at = CURRENT_TIMESTAMP WHERE machine_id = %s",
         (machine_id,),
     )
+    if host_cpu_percent is not None:
+        cursor.execute(
+            """
+            INSERT INTO daemon_metric_samples (
+                machine_id, worker_id, host_cpu_percent, process_cpu_percent, load_1
+            ) VALUES (%s, %s, %s, %s, %s)
+            """,
+            (machine_id, worker_id, host_cpu_percent, process_cpu_percent, load_1),
+        )
+        cursor.execute(
+            "DELETE FROM daemon_metric_samples WHERE sampled_at < CURRENT_TIMESTAMP - %s * INTERVAL '1 hour'",
+            (DAEMON_METRIC_RETENTION_HOURS,),
+        )
+        if machine_id in _evaluate_daemon_safety_policy(cursor):
+            desired_state = "stopped"
     return desired_state
 
 
@@ -4769,10 +4862,12 @@ async def list_daemon_machines(request: Request):
     stale_before = now - timedelta(seconds=DAEMON_WORKER_STALE_SECONDS)
     with get_db() as conn:
         cursor = conn.cursor()
+        safety_settings = _daemon_safety_settings(cursor)
         cursor.execute(
             """
             SELECT
-                m.machine_id, m.desired_state, m.state_changed_at, m.created_at, m.updated_at,
+                m.machine_id, m.desired_state, m.state_changed_at, m.auto_stop_reason,
+                m.auto_stopped_at, m.created_at, m.updated_at,
                 w.worker_id, w.worker_kind, w.actor, w.hostname, w.pid,
                 w.host_cpu_percent, w.process_cpu_percent, w.load_1, w.cpu_count,
                 w.current_run_id, w.current_stage, w.last_seen_at
@@ -4782,6 +4877,23 @@ async def list_daemon_machines(request: Request):
             """
         )
         rows = [dict(row) for row in cursor.fetchall()]
+        cursor.execute(
+            """
+            SELECT machine_id, AVG(host_cpu_percent) AS average_cpu_percent,
+                   COUNT(*) AS sample_count
+            FROM daemon_metric_samples
+            WHERE sampled_at >= CURRENT_TIMESTAMP - %s * INTERVAL '1 minute'
+            GROUP BY machine_id
+            """,
+            (safety_settings["average_window_minutes"],),
+        )
+        rolling_averages = {
+            row["machine_id"]: {
+                "average_cpu_percent": round(float(row.get("average_cpu_percent") or 0), 1),
+                "sample_count": int(row.get("sample_count") or 0),
+            }
+            for row in cursor.fetchall()
+        }
 
     machines: Dict[str, dict] = {}
     for row in rows:
@@ -4791,6 +4903,8 @@ async def list_daemon_machines(request: Request):
                 "machine_id": row["machine_id"],
                 "desired_state": row["desired_state"],
                 "state_changed_at": _iso(row.get("state_changed_at")),
+                "auto_stop_reason": row.get("auto_stop_reason"),
+                "auto_stopped_at": _iso(row.get("auto_stopped_at")),
                 "created_at": _iso(row.get("created_at")),
                 "updated_at": _iso(row.get("updated_at")),
                 "online": False,
@@ -4798,6 +4912,8 @@ async def list_daemon_machines(request: Request):
                 "load_1": None,
                 "cpu_count": None,
                 "workers": [],
+                "average_cpu_percent": None,
+                "average_sample_count": 0,
             },
         )
         if not row.get("worker_id"):
@@ -4829,9 +4945,19 @@ async def list_daemon_machines(request: Request):
         if machine["cpu_count"] is None and row.get("cpu_count") is not None:
             machine["cpu_count"] = row["cpu_count"]
 
+    for machine in machines.values():
+        average = rolling_averages.get(machine["machine_id"])
+        if average:
+            machine["average_cpu_percent"] = average["average_cpu_percent"]
+            machine["average_sample_count"] = average["sample_count"]
+
     return {
         "timestamp": _iso(now),
         "stale_after_seconds": DAEMON_WORKER_STALE_SECONDS,
+        "safety_settings": {
+            **{key: value for key, value in safety_settings.items() if key != "updated_at"},
+            "updated_at": _iso(safety_settings["updated_at"]),
+        },
         "machines": list(machines.values()),
     }
 
@@ -4851,7 +4977,8 @@ async def set_daemon_machine_state(machine_id: str, request: Request):
         cursor.execute(
             """
             UPDATE daemon_machines
-            SET desired_state = %s, state_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+            SET desired_state = %s, state_changed_at = CURRENT_TIMESTAMP,
+                auto_stop_reason = NULL, auto_stopped_at = NULL, updated_at = CURRENT_TIMESTAMP
             WHERE machine_id = %s
             RETURNING machine_id, desired_state, state_changed_at
             """,
@@ -4865,6 +4992,47 @@ async def set_daemon_machine_state(machine_id: str, request: Request):
         "machine_id": row["machine_id"],
         "desired_state": row["desired_state"],
         "state_changed_at": _iso(row["state_changed_at"]),
+    }
+
+
+@app.post("/api/daemon-safety-settings")
+async def save_daemon_safety_settings(request: Request):
+    _require_daemon_manager_control(request)
+    data = await _read_json_body(request)
+    enabled = _coerce_bool_flag(data.get("enabled"), True)
+    try:
+        threshold = float(data.get("max_average_cpu_percent"))
+        window_minutes = int(data.get("average_window_minutes"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="CPU threshold and averaging window are required")
+    if not 1 <= threshold <= 100:
+        raise HTTPException(status_code=400, detail="CPU threshold must be from 1 to 100")
+    if not 1 <= window_minutes <= 60:
+        raise HTTPException(status_code=400, detail="Averaging window must be from 1 to 60 minutes")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE daemon_safety_settings
+            SET enabled = %s, max_average_cpu_percent = %s,
+                average_window_minutes = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE id = 1
+            RETURNING enabled, max_average_cpu_percent, average_window_minutes, updated_at
+            """,
+            (enabled, threshold, window_minutes),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=500, detail="Daemon safety settings are unavailable")
+        auto_stopped = sorted(_evaluate_daemon_safety_policy(cursor))
+        conn.commit()
+    return {
+        "enabled": bool(row["enabled"]),
+        "max_average_cpu_percent": float(row["max_average_cpu_percent"]),
+        "average_window_minutes": int(row["average_window_minutes"]),
+        "updated_at": _iso(row["updated_at"]),
+        "auto_stopped_machines": auto_stopped,
     }
 
 

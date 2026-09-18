@@ -341,6 +341,40 @@ def init_db():
         ''')
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_daemon_workers_last_seen ON daemon_workers(last_seen_at DESC)")
         cursor.execute('''
+            ALTER TABLE daemon_machines
+            ADD COLUMN IF NOT EXISTS auto_stop_reason TEXT,
+            ADD COLUMN IF NOT EXISTS auto_stopped_at TIMESTAMP
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS daemon_safety_settings (
+                id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+                enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                max_average_cpu_percent DOUBLE PRECISION NOT NULL DEFAULT 70
+                    CHECK (max_average_cpu_percent > 0 AND max_average_cpu_percent <= 100),
+                average_window_minutes INTEGER NOT NULL DEFAULT 5
+                    CHECK (average_window_minutes >= 1 AND average_window_minutes <= 60),
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('''
+            INSERT INTO daemon_safety_settings (id)
+            VALUES (1)
+            ON CONFLICT (id) DO NOTHING
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS daemon_metric_samples (
+                id BIGSERIAL PRIMARY KEY,
+                machine_id TEXT NOT NULL REFERENCES daemon_machines(machine_id) ON DELETE CASCADE,
+                worker_id TEXT NOT NULL,
+                host_cpu_percent DOUBLE PRECISION NOT NULL
+                    CHECK (host_cpu_percent >= 0 AND host_cpu_percent <= 100),
+                process_cpu_percent DOUBLE PRECISION,
+                load_1 DOUBLE PRECISION,
+                sampled_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_daemon_metric_samples_window ON daemon_metric_samples(machine_id, sampled_at DESC)")
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS automation_funnel_templates (
                 id BIGSERIAL PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
