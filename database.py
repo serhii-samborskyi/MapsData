@@ -310,6 +310,37 @@ def init_db():
             )
         ''')
         cursor.execute('''
+            CREATE TABLE IF NOT EXISTS daemon_machines (
+                machine_id TEXT PRIMARY KEY,
+                desired_state TEXT NOT NULL DEFAULT 'running'
+                    CHECK (desired_state IN ('running', 'paused', 'stopped')),
+                state_changed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS daemon_workers (
+                machine_id TEXT NOT NULL REFERENCES daemon_machines(machine_id) ON DELETE CASCADE,
+                worker_id TEXT NOT NULL,
+                worker_kind TEXT NOT NULL DEFAULT 'worker',
+                actor TEXT,
+                hostname TEXT,
+                pid INTEGER,
+                host_cpu_percent DOUBLE PRECISION,
+                process_cpu_percent DOUBLE PRECISION,
+                load_1 DOUBLE PRECISION,
+                cpu_count INTEGER,
+                current_run_id BIGINT,
+                current_stage TEXT,
+                last_seen_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (machine_id, worker_id)
+            )
+        ''')
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_daemon_workers_last_seen ON daemon_workers(last_seen_at DESC)")
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS automation_funnel_templates (
                 id BIGSERIAL PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,

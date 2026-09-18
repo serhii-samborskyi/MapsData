@@ -79,6 +79,8 @@ PIPELINE_MIN_LEASE_SECONDS = 30
 PIPELINE_MAX_LEASE_SECONDS = 900
 PIPELINE_RECLAIM_HEARTBEAT_GRACE_SECONDS = 75
 PIPELINE_ALLOWED_CLAIM_ACTORS = {"daemon", "dashboard", "system", "worker"}
+DAEMON_DESIRED_STATES = {"running", "paused", "stopped"}
+DAEMON_WORKER_STALE_SECONDS = 75
 MAPS_SCRAPE_MODES = {"fast", "slow"}
 PIPELINE_EMAIL_STAGES = {"email_fast", "email_fallback"}
 ENRICHMENT_RUN_STATUSES = {"queued", "running", "paused", "completed", "failed", "cancelled"}
@@ -1478,6 +1480,115 @@ def _resolve_claim_machine_id(payload: dict) -> str:
     if machine_id:
         return machine_id
     return str(payload.get("worker_id") or "").strip()
+
+
+def _daemon_scalar(value: Any, max_length: int = 160) -> Optional[str]:
+    value = str(value or "").strip()
+    return value[:max_length] if value else None
+
+
+def _daemon_number(value: Any) -> Optional[float]:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _daemon_int(value: Any) -> Optional[int]:
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
+
+def _record_daemon_worker(
+    cursor,
+    machine_id: str,
+    worker_id: str,
+    actor: str,
+    worker_metadata: Any,
+    current_run_id: Optional[int] = None,
+    current_stage: Optional[str] = None,
+) -> str:
+    """Refresh daemon visibility and return its central desired state."""
+    machine_id = _daemon_scalar(machine_id)
+    worker_id = _daemon_scalar(worker_id)
+    if not machine_id or not worker_id:
+        return "running"
+
+    cursor.execute(
+        "INSERT INTO daemon_machines (machine_id) VALUES (%s) ON CONFLICT (machine_id) DO NOTHING",
+        (machine_id,),
+    )
+    cursor.execute(
+        "SELECT desired_state FROM daemon_machines WHERE machine_id = %s FOR UPDATE",
+        (machine_id,),
+    )
+    machine = cursor.fetchone() or {}
+    desired_state = str(machine.get("desired_state") or "running").strip().lower()
+    if desired_state not in DAEMON_DESIRED_STATES:
+        desired_state = "running"
+
+    metadata = worker_metadata if isinstance(worker_metadata, dict) else {}
+    daemon = metadata.get("daemon") if isinstance(metadata.get("daemon"), dict) else {}
+    worker_kind = _daemon_scalar(daemon.get("role"), 64) or "worker"
+    hostname = _daemon_scalar(daemon.get("hostname"), 255)
+    pid = _daemon_int(daemon.get("pid"))
+    host_cpu_percent = _daemon_number(daemon.get("host_cpu_percent"))
+    process_cpu_percent = _daemon_number(daemon.get("process_cpu_percent"))
+    load_1 = _daemon_number(daemon.get("load_1"))
+    cpu_count = _daemon_int(daemon.get("cpu_count"))
+
+    cursor.execute(
+        """
+        INSERT INTO daemon_workers (
+            machine_id, worker_id, worker_kind, actor, hostname, pid,
+            host_cpu_percent, process_cpu_percent, load_1, cpu_count,
+            current_run_id, current_stage
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (machine_id, worker_id) DO UPDATE SET
+            worker_kind = EXCLUDED.worker_kind,
+            actor = EXCLUDED.actor,
+            hostname = COALESCE(EXCLUDED.hostname, daemon_workers.hostname),
+            pid = COALESCE(EXCLUDED.pid, daemon_workers.pid),
+            host_cpu_percent = COALESCE(EXCLUDED.host_cpu_percent, daemon_workers.host_cpu_percent),
+            process_cpu_percent = COALESCE(EXCLUDED.process_cpu_percent, daemon_workers.process_cpu_percent),
+            load_1 = COALESCE(EXCLUDED.load_1, daemon_workers.load_1),
+            cpu_count = COALESCE(EXCLUDED.cpu_count, daemon_workers.cpu_count),
+            current_run_id = EXCLUDED.current_run_id,
+            current_stage = EXCLUDED.current_stage,
+            last_seen_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            machine_id,
+            worker_id,
+            worker_kind,
+            _daemon_scalar(actor, 64),
+            hostname,
+            pid,
+            host_cpu_percent,
+            process_cpu_percent,
+            load_1,
+            cpu_count,
+            current_run_id,
+            _daemon_scalar(current_stage, 64),
+        ),
+    )
+    cursor.execute(
+        "UPDATE daemon_machines SET updated_at = CURRENT_TIMESTAMP WHERE machine_id = %s",
+        (machine_id,),
+    )
+    return desired_state
+
+
+def _require_daemon_manager_control(request: Request) -> None:
+    if UI_AUTH_ENABLED and not _is_ui_authenticated(request):
+        raise HTTPException(status_code=401, detail="Sign in to manage daemons")
+    if request.headers.get("x-requested-with") != "XMLHttpRequest":
+        raise HTTPException(status_code=403, detail="Daemon controls require an in-app request")
 
 
 def _is_scrape_maps_only_campaign(cursor, campaign_id: int) -> bool:
@@ -4642,6 +4753,121 @@ async def get_sources_page(request: Request):
     })
 
 
+@app.get("/daemons", response_class=HTMLResponse)
+async def get_daemons_page(request: Request):
+    auth_redirect = _require_ui_auth(request)
+    if auth_redirect:
+        return auth_redirect
+    return templates.TemplateResponse("daemons.html", {"request": request})
+
+
+@app.get("/api/daemon-machines")
+async def list_daemon_machines(request: Request):
+    if UI_AUTH_ENABLED and not _is_ui_authenticated(request):
+        raise HTTPException(status_code=401, detail="Sign in to view daemons")
+    now = _now_utc()
+    stale_before = now - timedelta(seconds=DAEMON_WORKER_STALE_SECONDS)
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT
+                m.machine_id, m.desired_state, m.state_changed_at, m.created_at, m.updated_at,
+                w.worker_id, w.worker_kind, w.actor, w.hostname, w.pid,
+                w.host_cpu_percent, w.process_cpu_percent, w.load_1, w.cpu_count,
+                w.current_run_id, w.current_stage, w.last_seen_at
+            FROM daemon_machines m
+            LEFT JOIN daemon_workers w ON w.machine_id = m.machine_id
+            ORDER BY m.updated_at DESC, m.machine_id ASC, w.worker_kind ASC, w.worker_id ASC
+            """
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+
+    machines: Dict[str, dict] = {}
+    for row in rows:
+        machine = machines.setdefault(
+            row["machine_id"],
+            {
+                "machine_id": row["machine_id"],
+                "desired_state": row["desired_state"],
+                "state_changed_at": _iso(row.get("state_changed_at")),
+                "created_at": _iso(row.get("created_at")),
+                "updated_at": _iso(row.get("updated_at")),
+                "online": False,
+                "host_cpu_percent": None,
+                "load_1": None,
+                "cpu_count": None,
+                "workers": [],
+            },
+        )
+        if not row.get("worker_id"):
+            continue
+        last_seen_at = row.get("last_seen_at")
+        online = bool(isinstance(last_seen_at, datetime) and last_seen_at >= stale_before)
+        worker = {
+            "worker_id": row["worker_id"],
+            "worker_kind": row.get("worker_kind") or "worker",
+            "actor": row.get("actor"),
+            "hostname": row.get("hostname"),
+            "pid": row.get("pid"),
+            "host_cpu_percent": row.get("host_cpu_percent"),
+            "process_cpu_percent": row.get("process_cpu_percent"),
+            "load_1": row.get("load_1"),
+            "cpu_count": row.get("cpu_count"),
+            "current_run_id": row.get("current_run_id"),
+            "current_stage": row.get("current_stage"),
+            "last_seen_at": _iso(last_seen_at),
+            "online": online,
+        }
+        machine["workers"].append(worker)
+        if online:
+            machine["online"] = True
+        if machine["host_cpu_percent"] is None and row.get("host_cpu_percent") is not None:
+            machine["host_cpu_percent"] = row["host_cpu_percent"]
+        if machine["load_1"] is None and row.get("load_1") is not None:
+            machine["load_1"] = row["load_1"]
+        if machine["cpu_count"] is None and row.get("cpu_count") is not None:
+            machine["cpu_count"] = row["cpu_count"]
+
+    return {
+        "timestamp": _iso(now),
+        "stale_after_seconds": DAEMON_WORKER_STALE_SECONDS,
+        "machines": list(machines.values()),
+    }
+
+
+@app.post("/api/daemon-machines/{machine_id}/state")
+async def set_daemon_machine_state(machine_id: str, request: Request):
+    _require_daemon_manager_control(request)
+    data = await _read_json_body(request)
+    desired_state = str(data.get("state") or "").strip().lower()
+    normalized_machine_id = _daemon_scalar(machine_id)
+    if not normalized_machine_id:
+        raise HTTPException(status_code=400, detail="Invalid daemon machine")
+    if desired_state not in DAEMON_DESIRED_STATES:
+        raise HTTPException(status_code=400, detail="state must be running, paused, or stopped")
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE daemon_machines
+            SET desired_state = %s, state_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+            WHERE machine_id = %s
+            RETURNING machine_id, desired_state, state_changed_at
+            """,
+            (desired_state, normalized_machine_id),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Daemon machine not found")
+        conn.commit()
+    return {
+        "machine_id": row["machine_id"],
+        "desired_state": row["desired_state"],
+        "state_changed_at": _iso(row["state_changed_at"]),
+    }
+
+
 @app.get("/auth/login", response_class=HTMLResponse)
 async def get_login_page(request: Request, next: str = "/"):
     next_path = _sanitize_next_path(next)
@@ -6571,6 +6797,25 @@ async def claim_pipeline_stage(request: Request):
 
     with get_db() as conn:
         cursor = conn.cursor()
+        daemon_state = "running"
+        if isinstance(worker_metadata, dict) and isinstance(worker_metadata.get("daemon"), dict):
+            daemon_state = _record_daemon_worker(
+                cursor,
+                machine_id,
+                requested_worker_id or machine_id,
+                actor,
+                worker_metadata,
+            )
+        if daemon_state != "running":
+            conn.commit()
+            return {
+                "claimed": False,
+                "reason": f"daemon_{daemon_state}",
+                "run_id": None,
+                "campaign_id": None,
+                "stage": None,
+                "daemon_state": daemon_state,
+            }
         # Serialize claims per machine so two daemon processes on the same machine
         # cannot race and claim two different runs at the same time.
         cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (machine_id,))
@@ -6621,6 +6866,7 @@ async def claim_pipeline_stage(request: Request):
                 "run_id": None,
                 "campaign_id": None,
                 "stage": None,
+                "daemon_state": daemon_state,
             }
 
         saw_all_leased = False
@@ -6725,6 +6971,7 @@ async def claim_pipeline_stage(request: Request):
                 "source_type": run.get("source_type") or "builtin_google_maps",
                 "scrape_maps_only": bool(run.get("scrape_maps_only")),
                 "execution_mode": run.get("execution_mode") or "batch",
+                "daemon_state": daemon_state,
             }
 
         for run in candidate_runs:
@@ -6808,6 +7055,7 @@ async def claim_pipeline_stage(request: Request):
             "run_id": None,
             "campaign_id": None,
             "stage": None,
+            "daemon_state": daemon_state,
         }
 
 
@@ -6955,6 +7203,28 @@ async def pipeline_heartbeat(run_id: int, request: Request):
         if not machine_id:
             machine_id = f"machine-{uuid4()}"
 
+        daemon_state = "running"
+        if isinstance(worker_metadata, dict) and isinstance(worker_metadata.get("daemon"), dict):
+            daemon_state = _record_daemon_worker(
+                cursor,
+                machine_id,
+                requested_worker_id or machine_id,
+                "daemon",
+                worker_metadata,
+                current_run_id=run_id,
+                current_stage=claimed_stage,
+            )
+        if daemon_state == "stopped":
+            conn.commit()
+            return {
+                "status": "stopping",
+                "run_id": run_id,
+                "stage": claimed_stage,
+                "worker_id": machine_id,
+                "machine_id": machine_id,
+                "daemon_state": daemon_state,
+            }
+
         lock_metadata = {}
         if isinstance(worker_metadata, dict):
             lock_metadata.update(worker_metadata)
@@ -7016,7 +7286,62 @@ async def pipeline_heartbeat(run_id: int, request: Request):
             "lease_expires_at": _iso(lease_expires_at),
             "worker_id": machine_id,
             "machine_id": machine_id,
+            "daemon_state": daemon_state,
         }
+
+
+@app.post("/api/pipeline/{run_id}/release")
+async def release_pipeline_stage(run_id: int, request: Request):
+    """Return a stopped daemon's active stage to the queue without failing it."""
+    payload = await _read_json_body(request)
+    machine_id = _resolve_claim_machine_id(payload)
+    stage = str(payload.get("stage") or "").strip()
+    now = _now_utc()
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        run = _load_pipeline_run(cursor, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Pipeline run not found")
+        if run["status"] in PIPELINE_TERMINAL_STATUSES:
+            raise HTTPException(status_code=409, detail=f"Run already {run['status']}")
+        if not stage or stage != run.get("current_stage") or stage not in PIPELINE_STAGE_INDEX:
+            raise HTTPException(status_code=409, detail="Pipeline stage is no longer active")
+
+        cursor.execute("SELECT * FROM pipeline_run_locks WHERE run_id = %s FOR UPDATE", (run_id,))
+        lock_raw = cursor.fetchone()
+        lock_row = dict(lock_raw) if lock_raw else None
+        owner_machine_id = str(lock_row.get("worker_id") if lock_row else run.get("worker_id") or "").strip()
+        if not machine_id or machine_id != owner_machine_id:
+            raise HTTPException(status_code=409, detail="Pipeline lease belongs to another daemon")
+
+        current_stage = _current_stage_row(cursor, run_id, stage)
+        if not current_stage or current_stage.get("status") != "running":
+            raise HTTPException(status_code=409, detail="Pipeline stage is no longer running")
+
+        cursor.execute(
+            """
+            UPDATE pipeline_run_stages
+            SET status = 'pending', worker_id = NULL, actor = NULL, worker_metadata = NULL,
+                last_heartbeat_at = NULL, error_message = NULL, error_payload = NULL,
+                failed_at = NULL, updated_at = %s
+            WHERE run_id = %s AND stage = %s
+            """,
+            (now, run_id, stage),
+        )
+        cursor.execute(
+            """
+            UPDATE pipeline_runs
+            SET status = 'pending', worker_id = NULL, actor = NULL, worker_metadata = NULL,
+                lease_expires_at = NULL, last_heartbeat_at = NULL,
+                latest_error = NULL, error_payload = NULL, updated_at = %s
+            WHERE id = %s
+            """,
+            (now, run_id),
+        )
+        cursor.execute("DELETE FROM pipeline_run_locks WHERE run_id = %s", (run_id,))
+        conn.commit()
+    return {"status": "released", "run_id": run_id, "stage": stage, "daemon_state": "stopped"}
 
 
 @app.post("/api/pipeline/{run_id}/stage-complete")

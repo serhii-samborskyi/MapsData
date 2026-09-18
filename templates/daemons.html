@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ScrapIQ - Daemon Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="app-shell">
+    <div class="app-container">
+        <header class="mb-8 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <a href="/" class="flex items-center gap-4">
+                <div class="rounded-2xl border border-white/60 bg-white/80 p-3 shadow-sm">
+                    <svg class="h-8 w-8 text-sky-600" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true"><path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"></path></svg>
+                </div>
+                <div>
+                    <p class="app-chip">ScrapIQ</p>
+                    <h1 class="section-title text-2xl font-semibold text-slate-900 md:text-3xl">Daemon Manager</h1>
+                    <p class="text-sm text-slate-600">Monitor worker hosts and control new pipeline work.</p>
+                </div>
+            </a>
+            <div class="flex flex-wrap items-center gap-2">
+                <a href="/" class="app-chip hover:text-slate-900">Dashboard</a>
+                <a href="/funnels" class="app-chip hover:text-slate-900">Funnel Manager</a>
+                <a href="/sources" class="app-chip hover:text-slate-900">Sources Manager</a>
+                <button id="refreshButton" type="button" class="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Refresh</button>
+            </div>
+        </header>
+
+        <section class="app-card p-6">
+            <div class="mb-5 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                    <h2 class="text-xl font-semibold text-slate-900">Registered Daemons</h2>
+                    <p class="text-sm text-slate-500">Pause blocks new claims. Stop work returns an active stage to the queue once the daemon receives the command.</p>
+                </div>
+                <p id="updatedAt" class="text-sm text-slate-500"></p>
+            </div>
+            <div id="managerNotice" class="mb-4 hidden rounded-lg border px-4 py-3 text-sm"></div>
+            <div id="daemonList" class="space-y-4" aria-live="polite">
+                <p class="text-sm text-slate-500">Loading daemon status...</p>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        const daemonList = document.getElementById('daemonList');
+        const updatedAt = document.getElementById('updatedAt');
+        const managerNotice = document.getElementById('managerNotice');
+        let refreshTimer;
+
+        function esc(value) {
+            return String(value ?? '').replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+        }
+
+        function number(value, suffix = '') {
+            return value === null || value === undefined ? 'Unavailable' : `${Number(value).toFixed(1)}${suffix}`;
+        }
+
+        function stateClass(state) {
+            return state === 'running' ? 'bg-emerald-100 text-emerald-800' : state === 'paused' ? 'bg-amber-100 text-amber-800' : 'bg-rose-100 text-rose-800';
+        }
+
+        function workersHtml(workers) {
+            if (!workers.length) return '<p class="text-sm text-slate-500">No heartbeat received yet.</p>';
+            return workers.map(worker => {
+                const activity = worker.current_run_id ? `Run #${esc(worker.current_run_id)}: ${esc(worker.current_stage || 'working')}` : 'Idle';
+                return `<div class="grid gap-2 border-t border-slate-100 pt-3 text-sm sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
+                    <div class="min-w-0"><strong class="text-slate-800">${esc(worker.worker_kind)}</strong><span class="ml-2 text-slate-500">${esc(worker.worker_id)}</span></div>
+                    <span class="text-slate-600">Process CPU: ${number(worker.process_cpu_percent, '%')}</span>
+                    <span class="font-medium ${worker.online ? 'text-emerald-700' : 'text-slate-500'}">${esc(activity)}</span>
+                </div>`;
+            }).join('');
+        }
+
+        function renderMachine(machine) {
+            const cpu = Number(machine.host_cpu_percent || 0);
+            const cpuColor = cpu >= 90 ? 'bg-rose-500' : cpu >= 70 ? 'bg-amber-500' : 'bg-emerald-500';
+            const onlineText = machine.online ? 'Online' : 'Offline';
+            const controls = machine.desired_state === 'running'
+                ? `<button data-machine="${esc(machine.machine_id)}" data-state="paused" class="daemon-action rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 hover:bg-amber-100">Pause</button><button data-machine="${esc(machine.machine_id)}" data-state="stopped" class="daemon-action rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 hover:bg-rose-100">Stop work</button>`
+                : machine.desired_state === 'paused'
+                    ? `<button data-machine="${esc(machine.machine_id)}" data-state="running" class="daemon-action rounded-lg bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-700">Resume</button><button data-machine="${esc(machine.machine_id)}" data-state="stopped" class="daemon-action rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-800 hover:bg-rose-100">Stop work</button>`
+                    : `<button data-machine="${esc(machine.machine_id)}" data-state="running" class="daemon-action rounded-lg bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-700">Resume</button>`;
+            return `<article class="rounded-lg border border-slate-200 bg-white p-5">
+                <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div class="min-w-0">
+                        <div class="flex flex-wrap items-center gap-2"><h3 class="break-all text-lg font-semibold text-slate-900">${esc(machine.machine_id)}</h3><span class="rounded-full px-3 py-1 text-xs font-semibold ${machine.online ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'}">${onlineText}</span><span class="rounded-full px-3 py-1 text-xs font-semibold ${stateClass(machine.desired_state)}">${esc(machine.desired_state)}</span></div>
+                        <p class="mt-2 text-sm text-slate-500">Host CPU ${number(machine.host_cpu_percent, '%')} | Load 1 ${number(machine.load_1)} | ${machine.cpu_count ?? 'Unknown'} CPU cores</p>
+                    </div>
+                    <div class="flex shrink-0 flex-wrap gap-2">${controls}</div>
+                </div>
+                <div class="mt-4 h-2 overflow-hidden rounded bg-slate-100"><div class="h-full ${cpuColor}" style="width:${Math.min(100, Math.max(0, cpu))}%"></div></div>
+                <div class="mt-4 space-y-2">${workersHtml(machine.workers)}</div>
+            </article>`;
+        }
+
+        function notice(message, error = false) {
+            managerNotice.textContent = message;
+            managerNotice.className = `mb-4 rounded-lg border px-4 py-3 text-sm ${error ? 'border-rose-200 bg-rose-50 text-rose-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`;
+        }
+
+        async function loadDaemons() {
+            try {
+                const response = await fetch('/api/daemon-machines', {credentials: 'same-origin'});
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || 'Could not load daemon status');
+                daemonList.innerHTML = data.machines.length ? data.machines.map(renderMachine).join('') : '<p class="text-sm text-slate-500">No daemon has reported in yet. Deploy the updated daemon and it will appear after its next poll.</p>';
+                updatedAt.textContent = `Updated ${new Date(data.timestamp).toLocaleTimeString()}`;
+            } catch (error) {
+                daemonList.innerHTML = `<p class="text-sm text-rose-700">${esc(error.message)}</p>`;
+            }
+        }
+
+        async function setMachineState(machineId, state) {
+            if (state === 'stopped' && !window.confirm('Stop active work on this daemon? Its current stage will be returned to the queue.')) return;
+            try {
+                const response = await fetch(`/api/daemon-machines/${encodeURIComponent(machineId)}/state`, {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: {'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest'},
+                    body: JSON.stringify({state})
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail || 'Could not update daemon state');
+                notice(`Daemon ${machineId} is now ${data.desired_state}.`);
+                await loadDaemons();
+            } catch (error) {
+                notice(error.message, true);
+            }
+        }
+
+        daemonList.addEventListener('click', event => {
+            const button = event.target.closest('.daemon-action');
+            if (button) setMachineState(button.dataset.machine, button.dataset.state);
+        });
+        document.getElementById('refreshButton').addEventListener('click', loadDaemons);
+        loadDaemons();
+        refreshTimer = window.setInterval(loadDaemons, 5000);
+        window.addEventListener('beforeunload', () => window.clearInterval(refreshTimer));
+    </script>
+</body>
+</html>

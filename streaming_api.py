@@ -152,6 +152,20 @@ def router(app):
         tasks = []
         with app.get_db() as conn:
             cursor = conn.cursor()
+            machine_id = app._resolve_claim_machine_id(data)
+            daemon_state = "running"
+            if machine_id:
+                daemon_state = app._record_daemon_worker(
+                    cursor,
+                    machine_id,
+                    str(data.get("worker_id") or machine_id),
+                    "daemon",
+                    data.get("worker_metadata"),
+                    current_stage="source_email",
+                )
+            if daemon_state != "running":
+                conn.commit()
+                return {"tasks": [], "daemon_state": daemon_state}
             cursor.execute(
                 """
                 SELECT s.* FROM automation_run_steps s JOIN automation_runs r ON r.id = s.run_id
@@ -177,6 +191,7 @@ def router(app):
                     break
             conn.commit()
         return {
+            "daemon_state": daemon_state,
             "tasks": [
                 {
                     "id": t["id"],
@@ -193,6 +208,20 @@ def router(app):
         data = await request.json()
         with app.get_db() as conn:
             cursor = conn.cursor()
+            machine_id = app._resolve_claim_machine_id(data)
+            daemon_state = "running"
+            if machine_id:
+                daemon_state = app._record_daemon_worker(
+                    cursor,
+                    machine_id,
+                    str(data.get("worker_id") or machine_id),
+                    "daemon",
+                    data.get("worker_metadata"),
+                    current_stage="source_email",
+                )
+            if daemon_state == "stopped":
+                conn.commit()
+                return {"active": False, "daemon_state": daemon_state}
             cursor.execute(
                 """
                 UPDATE automation_stream_tasks t SET lease_until = CURRENT_TIMESTAMP + INTERVAL '180 seconds'
@@ -206,7 +235,34 @@ def router(app):
             )
             active = bool(cursor.fetchone())
             conn.commit()
-        return {"active": active}
+        return {"active": active, "daemon_state": daemon_state}
+
+    @routes.post("/api/streaming/source-tasks/{task_id}/release")
+    async def release_source(task_id: int, request: Request):
+        data = await request.json()
+        token = str(data.get("lease_token") or "")
+        with app.get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM automation_stream_tasks WHERE id = %s AND step_type = 'source_email' FOR UPDATE",
+                (task_id,),
+            )
+            task = cursor.fetchone()
+            if not task or task["status"] != "running" or task["lease_token"] != token:
+                raise HTTPException(409, "Source task lease lost")
+            ok = streaming.finish(
+                cursor,
+                dict(task),
+                {
+                    "status": "retry",
+                    "error": "Daemon stop requested",
+                    "count_attempt": False,
+                },
+            )
+            conn.commit()
+        if not ok:
+            raise HTTPException(409, "Source task no longer running")
+        return {"status": "released"}
 
     @routes.post("/api/streaming/source-tasks/{task_id}/complete")
     async def complete_source(task_id: int, request: Request):

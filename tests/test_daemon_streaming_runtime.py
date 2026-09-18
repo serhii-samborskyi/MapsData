@@ -7,7 +7,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from Daemon import pipeline_runtime as pipeline
 from Daemon import streaming_runtime as streaming
@@ -330,6 +330,13 @@ class LeaseAndWorkerTests(unittest.TestCase):
 
 
 class PipelineIntegrationTests(unittest.TestCase):
+    def test_metric_sampler_reports_daemon_metadata(self):
+        sampler = pipeline.DaemonMetricSampler("maps")
+        metadata = sampler.snapshot()["daemon"]
+        self.assertEqual(metadata["role"], "maps")
+        self.assertIsInstance(metadata["pid"], int)
+        self.assertIn("cpu_count", metadata)
+
     def run_stage(self, stage, mode=None):
         stopped = threading.Event()
         api = Mock()
@@ -360,6 +367,24 @@ class PipelineIntegrationTests(unittest.TestCase):
             with self.subTest(mode=mode):
                 _, _, maps = self.run_stage("maps_scrape", mode)
                 self.assertEqual(maps.call_args.args[3].maps_cfg["batch_size"], batch_size)
+
+    def test_manager_stop_releases_active_stage_without_marking_it_failed(self):
+        stopped = threading.Event()
+        api = Mock()
+        api.claim.return_value = {
+            "claimed": True,
+            "run_id": 2,
+            "campaign_id": 7,
+            "stage": "maps_scrape",
+        }
+        api.heartbeat.return_value = {"_ok": True, "daemon_state": "stopped"}
+        api.release.side_effect = lambda *_args, **_kwargs: (stopped.set() or {"status": "released"})
+        with patch.object(pipeline, "PipelineApiClient", return_value=api), \
+             patch.object(pipeline, "_run_maps_stage"):
+            pipeline._run_pipeline_worker(LOGGER, context(), "worker", "daemon", 1, 180, 30, stopped.is_set)
+        api.release.assert_called_once_with("2", "worker", ANY, "maps_scrape")
+        api.stage_complete.assert_not_called()
+        api.fail.assert_not_called()
 
     def test_background_worker_spans_maps_and_idle_and_is_joined(self):
         api = FakeApi([task(1)])
