@@ -201,9 +201,12 @@
                 </div>
 
                 <div class="app-card p-6">
-                    <div class="mb-5">
-                        <h2 class="text-xl font-semibold text-slate-900">Run Funnel</h2>
-                        <p class="text-sm text-slate-500">Start a saved funnel now for an existing campaign.</p>
+                    <div class="mb-5 flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                            <h2 class="text-xl font-semibold text-slate-900">Run Funnel</h2>
+                            <p class="text-sm text-slate-500">Start a saved funnel now for an existing campaign.</p>
+                        </div>
+                        <button id="recoverInterruptedRunsBtn" type="button" onclick="recoverInterruptedRuns()" class="rounded-full border border-sky-300 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-800 hover:bg-sky-100">Resume Interrupted</button>
                     </div>
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <label class="block">
@@ -1150,6 +1153,28 @@
                 if (!response.ok) throw new Error(data.detail || 'Could not resume processing');
                 await refreshActiveRun();
                 startRunPolling();
+            } catch (error) {
+                alert(error.message);
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        async function recoverInterruptedRuns() {
+            const button = document.getElementById('recoverInterruptedRunsBtn');
+            if (button.disabled) return;
+            button.disabled = true;
+            try {
+                const response = await fetch('/api/funnel-runs/recover-interrupted', { method: 'POST' });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Could not resume interrupted funnels');
+                const recovered = Array.isArray(data.recovered_run_ids) ? data.recovered_run_ids.length : 0;
+                const active = Array.isArray(data.active_run_ids) ? data.active_run_ids.length : 0;
+                alert(recovered ? `Resumed ${recovered} interrupted funnel${recovered === 1 ? '' : 's'}.` : `${active} active streaming funnel${active === 1 ? '' : 's'} checked.`);
+                if (activeRunId && Array.isArray(data.active_run_ids) && data.active_run_ids.includes(Number(activeRunId))) {
+                    await refreshActiveRun();
+                    startRunPolling();
+                }
             } catch (error) {
                 alert(error.message);
             } finally {

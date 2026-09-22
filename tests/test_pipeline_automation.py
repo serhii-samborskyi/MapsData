@@ -246,6 +246,10 @@ def _install_stub_modules():
     requests_module.request = _dummy_request
     sys.modules["requests"] = requests_module
 
+    mcp_integration = types.ModuleType("mcp_integration")
+    mcp_integration.install = lambda *_args, **_kwargs: None
+    sys.modules["mcp_integration"] = mcp_integration
+
 
 def load_main_module():
     for module_name in [
@@ -259,6 +263,7 @@ def load_main_module():
         "database",
         "templates",
         "email_verification",
+        "mcp_integration",
     ]:
         sys.modules.pop(module_name, None)
     _install_stub_modules()
@@ -384,6 +389,23 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(self.main._evaluate_daemon_safety_policy(cursor, now), {"machine-hot"})
         self.assertEqual(cursor.updated, ["machine-hot"])
 
+    def test_interrupted_streaming_coordinator_is_requeued_without_touching_exports(self):
+        recovered_runs = []
+        self.main.streaming.recover_stopped = lambda _cursor: None
+        self.main.streaming.recover = lambda _cursor, run_id: recovered_runs.append(run_id)
+        cursor = ScriptedCursor([
+            {"match": "from automation_runs", "fetchall": [{"id": 10}]},
+            {"match": "from automation_runs ar", "fetchall": [{"id": 11, "campaign_id": 7}]},
+            {"match": "update automation_runs", "rowcount": 1},
+            {"match": "insert into automation_run_logs", "rowcount": 1},
+        ])
+
+        result = self.main._recover_interrupted_streaming_runs(cursor, resume_coordinators=True)
+
+        self.assertEqual(recovered_runs, [10])
+        self.assertEqual(result, [11])
+        self.assertEqual(cursor.index, len(cursor.steps))
+
     def test_start_is_idempotent_when_active_run_exists(self):
         cursor, _ = self._patch_db([
             {"match": "select id from search_campaigns", "fetchone": {"id": 1}},
@@ -481,9 +503,10 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertFalse(response["claimed"])
         self.assertEqual(response["reason"], "run_not_started")
 
-    def test_claim_fairness_blocks_second_distinct_run_when_other_worker_active(self):
+    def test_claim_capacity_allows_second_distinct_run_up_to_machine_limit(self):
         now = datetime.utcnow()
-        self._patch_db([
+        self.main._cache_daemon_capacity_settings({"max_parallel_pipeline_runs": 2})
+        cursor, _ = self._patch_db([
             {"match": "pg_advisory_xact_lock"},
             {
                 "match": "from pipeline_run_locks prl",
@@ -504,12 +527,15 @@ class PipelineEndpointTests(unittest.TestCase):
                 "match": "from pipeline_run_locks where run_id",
                 "fetchone": None,
             },
+            {"match": "insert into pipeline_run_locks", "rowcount": 1},
+            {"match": "update pipeline_runs", "rowcount": 1},
+            {"match": "update pipeline_run_stages", "rowcount": 1},
         ])
 
         response = asyncio.run(self.main.claim_pipeline_stage(FakeRequest({"worker_id": "daemon-a"})))
-        self.assertFalse(response["claimed"])
-        self.assertEqual(response["reason"], "all_leased")
-        self.assertIsNone(response["run_id"])
+        self.assertTrue(response["claimed"])
+        self.assertEqual(response["run_id"], 99)
+        self.assertEqual(cursor.index, len(cursor.steps))
 
     def test_source_template_config_accepts_xpath_regex_dynamic_fields(self):
         config = self.main._normalize_source_template_config({
@@ -903,6 +929,7 @@ class PipelineEndpointTests(unittest.TestCase):
 
     def test_claim_free_machine_policy_blocks_second_run_even_without_other_workers(self):
         now = datetime.utcnow()
+        self.main._cache_daemon_capacity_settings({"max_parallel_pipeline_runs": 1})
         self._patch_db([
             {"match": "pg_advisory_xact_lock"},
             {

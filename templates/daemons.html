@@ -34,7 +34,7 @@
                 <h2 class="text-xl font-semibold text-slate-900">CPU Safety Gate</h2>
                 <p class="text-sm text-slate-500">Automatically stops new and active daemon work when a host's rolling CPU average crosses the limit.</p>
             </div>
-            <form id="safetyForm" class="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_190px_190px_auto] md:items-end">
+            <form id="safetyForm" class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_150px_170px_190px_190px_auto] xl:items-end">
                 <label class="flex min-h-12 items-center gap-3 rounded-lg border border-slate-300 px-4 py-3 text-sm font-semibold text-slate-800">
                     <input id="safetyEnabled" type="checkbox" class="h-5 w-5 rounded border-slate-300 text-sky-600 focus:ring-sky-500">
                     Enable automatic stop
@@ -46,6 +46,14 @@
                 <label class="block">
                     <span class="mb-1 block text-sm font-semibold text-slate-700">Average window (min)</span>
                     <input id="safetyWindow" type="number" min="1" max="60" step="1" required class="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200">
+                </label>
+                <label class="block">
+                    <span class="mb-1 block text-sm font-semibold text-slate-700">Pipeline runs / daemon</span>
+                    <input id="pipelineRunLimit" type="number" min="1" max="10" step="1" required class="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200">
+                </label>
+                <label class="block">
+                    <span class="mb-1 block text-sm font-semibold text-slate-700">Shared API tasks</span>
+                    <input id="streamTaskLimit" type="number" min="1" max="256" step="1" required class="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-200">
                 </label>
                 <button type="submit" class="rounded-lg bg-sky-600 px-4 py-3 text-sm font-semibold text-white hover:bg-sky-700">Save safety gate</button>
             </form>
@@ -75,6 +83,8 @@
         const safetyEnabled = document.getElementById('safetyEnabled');
         const safetyThreshold = document.getElementById('safetyThreshold');
         const safetyWindow = document.getElementById('safetyWindow');
+        const pipelineRunLimit = document.getElementById('pipelineRunLimit');
+        const streamTaskLimit = document.getElementById('streamTaskLimit');
         const safetySummary = document.getElementById('safetySummary');
         let refreshTimer;
         let safetyDirty = false;
@@ -141,10 +151,12 @@
                 safetyEnabled.checked = settings.enabled === true;
                 safetyThreshold.value = settings.max_average_cpu_percent;
                 safetyWindow.value = settings.average_window_minutes;
+                pipelineRunLimit.value = settings.max_parallel_pipeline_runs;
+                streamTaskLimit.value = settings.max_parallel_stream_tasks;
             }
             safetySummary.textContent = settings.enabled
-                ? `Stops daemon work after at least one minute of samples when average CPU over the selected window reaches ${Number(settings.max_average_cpu_percent).toFixed(0)}%.`
-                : 'Automatic CPU stopping is disabled.';
+                ? `Stops daemon work after at least one minute of samples when average CPU over the selected window reaches ${Number(settings.max_average_cpu_percent).toFixed(0)}%. Up to ${Number(settings.max_parallel_pipeline_runs)} pipeline runs per daemon and ${Number(settings.max_parallel_stream_tasks)} shared API tasks may run at once.`
+                : `Automatic CPU stopping is disabled. Capacity remains ${Number(settings.max_parallel_pipeline_runs)} pipeline runs per daemon and ${Number(settings.max_parallel_stream_tasks)} shared API tasks.`;
         }
 
         async function loadDaemons() {
@@ -181,7 +193,7 @@
             const button = event.target.closest('.daemon-action');
             if (button) setMachineState(button.dataset.machine, button.dataset.state);
         });
-        [safetyEnabled, safetyThreshold, safetyWindow].forEach(input => input.addEventListener('input', () => { safetyDirty = true; }));
+        [safetyEnabled, safetyThreshold, safetyWindow, pipelineRunLimit, streamTaskLimit].forEach(input => input.addEventListener('input', () => { safetyDirty = true; }));
         safetyForm.addEventListener('submit', async event => {
             event.preventDefault();
             try {
@@ -191,7 +203,9 @@
                     body: JSON.stringify({
                         enabled: safetyEnabled.checked,
                         max_average_cpu_percent: safetyThreshold.value,
-                        average_window_minutes: safetyWindow.value
+                        average_window_minutes: safetyWindow.value,
+                        max_parallel_pipeline_runs: pipelineRunLimit.value,
+                        max_parallel_stream_tasks: streamTaskLimit.value
                     })
                 });
                 const data = await response.json();

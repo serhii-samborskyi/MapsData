@@ -353,8 +353,19 @@ def init_db():
                     CHECK (max_average_cpu_percent > 0 AND max_average_cpu_percent <= 100),
                 average_window_minutes INTEGER NOT NULL DEFAULT 5
                     CHECK (average_window_minutes >= 1 AND average_window_minutes <= 60),
+                max_parallel_pipeline_runs INTEGER NOT NULL DEFAULT 2
+                    CHECK (max_parallel_pipeline_runs >= 1 AND max_parallel_pipeline_runs <= 10),
+                max_parallel_stream_tasks INTEGER NOT NULL DEFAULT 32
+                    CHECK (max_parallel_stream_tasks >= 1 AND max_parallel_stream_tasks <= 256),
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
+        ''')
+        cursor.execute('''
+            ALTER TABLE daemon_safety_settings
+            ADD COLUMN IF NOT EXISTS max_parallel_pipeline_runs INTEGER NOT NULL DEFAULT 2
+                CHECK (max_parallel_pipeline_runs >= 1 AND max_parallel_pipeline_runs <= 10),
+            ADD COLUMN IF NOT EXISTS max_parallel_stream_tasks INTEGER NOT NULL DEFAULT 32
+                CHECK (max_parallel_stream_tasks >= 1 AND max_parallel_stream_tasks <= 256)
         ''')
         cursor.execute('''
             INSERT INTO daemon_safety_settings (id)

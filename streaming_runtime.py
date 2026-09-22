@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -13,6 +14,44 @@ import streaming_export
 import streaming_services
 
 log = logging.getLogger(__name__)
+
+
+class _SharedWorkCapacity:
+    """App-wide cap so many streaming funnels cannot each create 64 workers."""
+
+    def __init__(self, limit=32):
+        self._limit = limit
+        self._in_use = 0
+        self._lock = threading.Lock()
+
+    def configure(self, limit):
+        with self._lock:
+            self._limit = max(1, min(256, int(limit or 32)))
+
+    def try_acquire(self):
+        with self._lock:
+            if self._in_use >= self._limit:
+                return False
+            self._in_use += 1
+            return True
+
+    def release(self):
+        with self._lock:
+            self._in_use = max(0, self._in_use - 1)
+
+
+_shared_capacity = _SharedWorkCapacity()
+_shared_executor = ThreadPoolExecutor(max_workers=256, thread_name_prefix="stream-task")
+
+
+def _refresh_shared_capacity(app):
+    getter = getattr(app, "_daemon_capacity_settings_snapshot", None)
+    if not callable(getter):
+        return
+    try:
+        _shared_capacity.configure(getter().get("max_parallel_stream_tasks", 32))
+    except Exception:
+        log.warning("Could not refresh shared streaming capacity", exc_info=True)
 
 
 def export_config(config):
@@ -529,8 +568,9 @@ def source_state(cursor, app, run, steps):
 
 def run(app, run_id):
     inflight = {}
-    executor = ThreadPoolExecutor(max_workers=64, thread_name_prefix=f"stream-{run_id}")
+    next_capacity_refresh = 0.0
     try:
+        _refresh_shared_capacity(app)
         # Session lock keeps two web processes from starting this coordinator together.
         with app.get_db() as leader:
             leader.autocommit = True
@@ -564,6 +604,9 @@ def run(app, run_id):
                 conn.commit()
             start_source(app, current, steps)
             while True:
+                if time.monotonic() >= next_capacity_refresh:
+                    _refresh_shared_capacity(app)
+                    next_capacity_refresh = time.monotonic() + 10.0
                 for future in list(inflight):
                     if not future.done():
                         continue
@@ -651,12 +694,21 @@ def run(app, run_id):
                             conn.commit()
                         continue
                     key, concurrency, interval, lease, limit = scheduling(step)
+                    if not _shared_capacity.try_acquire():
+                        # Preserve capacity for all funnels. The next scheduler
+                        # pass will retry this durable task without consuming an
+                        # API request slot.
+                        break
                     with app.get_db() as conn:
                         tasks = streaming.claim(
                             conn.cursor(),
                             run_id,
                             step,
-                            min(limit, 64 - len(inflight)),
+                            (
+                                min(limit, 64 - len(inflight))
+                                if step["step_type"] == "export"
+                                else 1
+                            ),
                             key,
                             concurrency,
                             interval,
@@ -664,14 +716,20 @@ def run(app, run_id):
                         )
                         conn.commit()
                     if not tasks:
+                        _shared_capacity.release()
                         continue
-                    if step["step_type"] == "export":
-                        future = executor.submit(_export_work, app, step, tasks)
-                        inflight[future] = (tasks, step)
-                    else:
-                        for task in tasks:
-                            future = executor.submit(_contact_work, app, step, task)
+                    try:
+                        if step["step_type"] == "export":
+                            future = _shared_executor.submit(_export_work, app, step, tasks)
+                            inflight[future] = (tasks, step)
+                        else:
+                            task = tasks[0]
+                            future = _shared_executor.submit(_contact_work, app, step, task)
                             inflight[future] = ([task], step)
+                        future.add_done_callback(lambda _future: _shared_capacity.release())
+                    except Exception:
+                        _shared_capacity.release()
+                        raise
                 time.sleep(0.5)
     except Exception as exc:
         log.exception("Streaming funnel %s paused", run_id)
@@ -682,4 +740,7 @@ def run(app, run_id):
             )
             conn.commit()
     finally:
-        executor.shutdown(wait=True)
+        # Shared workers finish their leased task and release capacity through
+        # their completion callbacks. Durable lease recovery handles a process
+        # interruption before a result can be written.
+        pass

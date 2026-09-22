@@ -83,6 +83,8 @@ DAEMON_DESIRED_STATES = {"running", "paused", "stopped"}
 DAEMON_WORKER_STALE_SECONDS = 75
 DAEMON_SAFETY_MIN_HISTORY_SECONDS = 60
 DAEMON_METRIC_RETENTION_HOURS = 2
+DAEMON_DEFAULT_MAX_PIPELINE_RUNS = 2
+DAEMON_DEFAULT_MAX_STREAM_TASKS = 32
 MAPS_SCRAPE_MODES = {"fast", "slow"}
 PIPELINE_EMAIL_STAGES = {"email_fast", "email_fallback"}
 ENRICHMENT_RUN_STATUSES = {"queued", "running", "paused", "completed", "failed", "cancelled"}
@@ -107,6 +109,33 @@ SOURCE_HTTP_MAX_TIMEOUT_SECONDS = 600
 SOURCE_HTTP_DEFAULT_CONCURRENCY = 10
 SOURCE_HTTP_MAX_CONCURRENCY = 100
 SOURCE_HTTP_MAX_STORED_RESPONSE_CHARS = 50000
+
+# Claims need this value on every poll, so retain the persisted setting in
+# process memory and refresh it whenever the Daemon Manager reads or saves it.
+_daemon_capacity_lock = threading.Lock()
+_daemon_capacity_settings = {
+    "max_parallel_pipeline_runs": DAEMON_DEFAULT_MAX_PIPELINE_RUNS,
+    "max_parallel_stream_tasks": DAEMON_DEFAULT_MAX_STREAM_TASKS,
+}
+
+
+def _cache_daemon_capacity_settings(settings: dict) -> None:
+    with _daemon_capacity_lock:
+        _daemon_capacity_settings["max_parallel_pipeline_runs"] = max(
+            1,
+            min(10, int(settings.get("max_parallel_pipeline_runs") or DAEMON_DEFAULT_MAX_PIPELINE_RUNS)),
+        )
+        _daemon_capacity_settings["max_parallel_stream_tasks"] = max(
+            1,
+            min(256, int(settings.get("max_parallel_stream_tasks") or DAEMON_DEFAULT_MAX_STREAM_TASKS)),
+        )
+
+
+def _daemon_capacity_settings_snapshot() -> dict:
+    with _daemon_capacity_lock:
+        return dict(_daemon_capacity_settings)
+
+
 SOURCE_CORE_FIELDS = [
     "business_name",
     "address",
@@ -1508,7 +1537,8 @@ def _daemon_int(value: Any) -> Optional[int]:
 def _daemon_safety_settings(cursor) -> dict:
     cursor.execute(
         """
-        SELECT enabled, max_average_cpu_percent, average_window_minutes, updated_at
+        SELECT enabled, max_average_cpu_percent, average_window_minutes,
+               max_parallel_pipeline_runs, max_parallel_stream_tasks, updated_at
         FROM daemon_safety_settings
         WHERE id = 1
         """
@@ -1518,18 +1548,29 @@ def _daemon_safety_settings(cursor) -> dict:
         cursor.execute("INSERT INTO daemon_safety_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
         cursor.execute(
             """
-            SELECT enabled, max_average_cpu_percent, average_window_minutes, updated_at
+            SELECT enabled, max_average_cpu_percent, average_window_minutes,
+                   max_parallel_pipeline_runs, max_parallel_stream_tasks, updated_at
             FROM daemon_safety_settings
             WHERE id = 1
             """
         )
         row = cursor.fetchone() or {}
-    return {
+    settings = {
         "enabled": bool(row.get("enabled", True)),
         "max_average_cpu_percent": float(row.get("max_average_cpu_percent") or 70),
         "average_window_minutes": int(row.get("average_window_minutes") or 5),
+        "max_parallel_pipeline_runs": max(
+            1,
+            min(10, int(row.get("max_parallel_pipeline_runs") or DAEMON_DEFAULT_MAX_PIPELINE_RUNS)),
+        ),
+        "max_parallel_stream_tasks": max(
+            1,
+            min(256, int(row.get("max_parallel_stream_tasks") or DAEMON_DEFAULT_MAX_STREAM_TASKS)),
+        ),
         "updated_at": row.get("updated_at"),
     }
+    _cache_daemon_capacity_settings(settings)
+    return settings
 
 
 def _evaluate_daemon_safety_policy(cursor, now: Optional[datetime] = None) -> set[str]:
@@ -4763,12 +4804,81 @@ def _ensure_automation_run_worker(run_id: int):
     thread.start()
 
 
+def _recover_interrupted_streaming_runs(cursor, resume_coordinators: bool = False) -> list[int]:
+    """Return interrupted streaming coordinators to the normal scheduler.
+
+    Per-contact work is durable and `streaming.recover` retains unknown export
+    deliveries for review. Only coordinators that stopped locally are requeued;
+    user confirmation and provider blocks remain paused.
+    """
+    streaming.recover_stopped(cursor)
+    if not resume_coordinators:
+        return []
+
+    cursor.execute(
+        """
+        SELECT id
+        FROM automation_runs
+        WHERE execution_mode = 'streaming' AND status IN ('queued', 'running')
+        ORDER BY id
+        """
+    )
+    for row in cursor.fetchall():
+        streaming.recover(cursor, int(row["id"]))
+
+    cursor.execute(
+        """
+        SELECT ar.id, ar.campaign_id
+        FROM automation_runs ar
+        WHERE ar.execution_mode = 'streaming'
+          AND ar.status = 'waiting_confirmation'
+          AND ar.latest_error LIKE 'Streaming worker stopped:%'
+          AND NOT EXISTS (
+              SELECT 1 FROM automation_stream_tasks t
+              WHERE t.run_id = ar.id AND t.status = 'uncertain'
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM automation_run_steps s
+              WHERE s.run_id = ar.id
+                AND s.step_type = 'export'
+                AND s.status = 'waiting_confirmation'
+                AND COALESCE((s.config->>'require_confirmation')::boolean, FALSE)
+                AND NOT COALESCE((s.config->>'confirmed')::boolean, FALSE)
+          )
+        ORDER BY ar.id
+        FOR UPDATE
+        """
+    )
+    recovered = []
+    for row in cursor.fetchall():
+        run_id = int(row["id"])
+        cursor.execute(
+            """
+            UPDATE automation_runs
+            SET status = 'queued', latest_error = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND status = 'waiting_confirmation'
+            """,
+            (run_id,),
+        )
+        if cursor.rowcount:
+            _append_automation_log(
+                cursor,
+                run_id,
+                int(row["campaign_id"]),
+                "Recovered after an interrupted streaming coordinator",
+                "warning",
+            )
+            recovered.append(run_id)
+    return recovered
+
+
 def _automation_scheduler_loop():
+    resume_interrupted_coordinators = True
     while True:
         try:
             with get_db() as conn:
                 cursor = conn.cursor()
-                streaming.recover_stopped(cursor)
+                _recover_interrupted_streaming_runs(cursor, resume_interrupted_coordinators)
                 cursor.execute(
                     """
                     SELECT id
@@ -4780,6 +4890,7 @@ def _automation_scheduler_loop():
                 )
                 run_ids = [int(row["id"]) for row in cursor.fetchall()]
                 conn.commit()
+            resume_interrupted_coordinators = False
             for run_id in run_ids:
                 _ensure_automation_run_worker(run_id)
         except Exception:
@@ -5012,25 +5123,40 @@ async def save_daemon_safety_settings(request: Request):
 
     with get_db() as conn:
         cursor = conn.cursor()
+        current = _daemon_safety_settings(cursor)
+        try:
+            pipeline_limit = int(data.get("max_parallel_pipeline_runs", current["max_parallel_pipeline_runs"]))
+            stream_limit = int(data.get("max_parallel_stream_tasks", current["max_parallel_stream_tasks"]))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Pipeline and streaming capacity limits must be whole numbers")
+        if not 1 <= pipeline_limit <= 10:
+            raise HTTPException(status_code=400, detail="Pipeline runs per daemon must be from 1 to 10")
+        if not 1 <= stream_limit <= 256:
+            raise HTTPException(status_code=400, detail="Shared streaming tasks must be from 1 to 256")
         cursor.execute(
             """
             UPDATE daemon_safety_settings
             SET enabled = %s, max_average_cpu_percent = %s,
-                average_window_minutes = %s, updated_at = CURRENT_TIMESTAMP
+                average_window_minutes = %s, max_parallel_pipeline_runs = %s,
+                max_parallel_stream_tasks = %s, updated_at = CURRENT_TIMESTAMP
             WHERE id = 1
-            RETURNING enabled, max_average_cpu_percent, average_window_minutes, updated_at
+            RETURNING enabled, max_average_cpu_percent, average_window_minutes,
+                      max_parallel_pipeline_runs, max_parallel_stream_tasks, updated_at
             """,
-            (enabled, threshold, window_minutes),
+            (enabled, threshold, window_minutes, pipeline_limit, stream_limit),
         )
         row = cursor.fetchone()
         if not row:
             raise HTTPException(status_code=500, detail="Daemon safety settings are unavailable")
+        _cache_daemon_capacity_settings(dict(row))
         auto_stopped = sorted(_evaluate_daemon_safety_policy(cursor))
         conn.commit()
     return {
         "enabled": bool(row["enabled"]),
         "max_average_cpu_percent": float(row["max_average_cpu_percent"]),
         "average_window_minutes": int(row["average_window_minutes"]),
+        "max_parallel_pipeline_runs": int(row["max_parallel_pipeline_runs"]),
+        "max_parallel_stream_tasks": int(row["max_parallel_stream_tasks"]),
         "updated_at": _iso(row["updated_at"]),
         "auto_stopped_machines": auto_stopped,
     }
@@ -7001,6 +7127,7 @@ async def claim_pipeline_stage(request: Request):
             for row in active_lock_rows
             if str(row.get("worker_id") or "").strip() == machine_id
         }
+        machine_run_limit = _daemon_capacity_settings_snapshot()["max_parallel_pipeline_runs"]
 
         cursor.execute("""
             SELECT
@@ -7206,8 +7333,13 @@ async def claim_pipeline_stage(request: Request):
                 saw_all_leased = True
                 continue
 
-            # A machine may own at most one active run at a time.
-            if current_machine_active_run_ids and run_id not in current_machine_active_run_ids:
+            # Each daemon machine receives a bounded number of active runs.
+            # Existing ownership is always retained so a worker can finish or
+            # advance its current run even after the operator lowers the cap.
+            if (
+                run_id not in current_machine_active_run_ids
+                and len(current_machine_active_run_ids) >= machine_run_limit
+            ):
                 saw_all_leased = True
                 continue
 
@@ -9010,6 +9142,34 @@ async def stop_campaign_funnel(campaign_id: int):
         "status": "Funnel stopped",
         "run_id": int(run["id"]),
         "child_jobs": child_messages,
+    }
+
+
+@app.post("/api/funnel-runs/recover-interrupted")
+async def recover_interrupted_funnel_runs(request: Request):
+    auth_redirect = _require_ui_auth(request)
+    if auth_redirect:
+        raise HTTPException(status_code=401, detail="Sign in to resume funnels")
+    with get_db() as conn:
+        cursor = conn.cursor()
+        recovered = _recover_interrupted_streaming_runs(cursor, resume_coordinators=True)
+        cursor.execute(
+            """
+            SELECT id
+            FROM automation_runs
+            WHERE execution_mode = 'streaming' AND status IN ('queued', 'running')
+            ORDER BY id
+            LIMIT 100
+            """
+        )
+        active = [int(row["id"]) for row in cursor.fetchall()]
+        conn.commit()
+    for run_id in active:
+        _ensure_automation_run_worker(run_id)
+    return {
+        "status": "Recovery scheduled",
+        "recovered_run_ids": recovered,
+        "active_run_ids": active,
     }
 
 
@@ -11316,6 +11476,11 @@ async def create_default_templates():
                 },
             )
 
+        conn.commit()
+
+    # Populate the in-process capacity cache before daemons begin claiming work.
+    with get_db() as conn:
+        _daemon_safety_settings(conn.cursor())
         conn.commit()
 
     _ensure_automation_scheduler()
