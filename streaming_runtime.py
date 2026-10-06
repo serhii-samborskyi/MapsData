@@ -215,12 +215,50 @@ def _contact_work(app, step, task):
             context["verification_fingerprints"] = {
                 step["step_type"]: previous["result"].get("input_fingerprint")
             }
+        if step["step_type"] == "email_verification":
+            email = str(contact.get("email") or "").strip().lower()
+            if email:
+                cursor.execute(
+                    """
+                    SELECT t.id, t.result
+                    FROM automation_stream_tasks t
+                    JOIN contacts c ON c.id = t.contact_id
+                    WHERE t.run_id = %s
+                      AND t.step_type = 'email_verification'
+                      AND t.status = 'completed'
+                      AND t.contact_id <> %s
+                      AND lower(btrim(c.email)) = %s
+                    ORDER BY t.updated_at DESC, t.id DESC
+                    LIMIT 1
+                    """,
+                    (task["run_id"], task["contact_id"], email),
+                )
+                reused = cursor.fetchone()
+                if reused:
+                    diagnostics = (reused["result"] or {}).get("diagnostics") or {}
+                    mapped_status = diagnostics.get("mapped_status")
+                    if mapped_status:
+                        result = {
+                            **dict(reused["result"] or {}),
+                            "reason": "reused_by_normalized_email",
+                            "source_task_id": reused["id"],
+                        }
+                        return {
+                            "status": "completed",
+                            "updates": {"email_status": mapped_status},
+                            "result": result,
+                        }
     return streaming_services.execute(step["step_type"], config, contact, context)
 
 
 def _export_work(app, step, tasks):
     config = export_config(step["config"])
     destination = streaming_export.destination_key(config)
+    destination_meta = json.loads(destination)
+    skip_existing_email = (
+        destination_meta.get("provider") == "sendread"
+        and destination_meta.get("target_type") == "ab_test_list"
+    )
     ready = []
     results = {}
     with app.get_db() as conn:
@@ -301,6 +339,70 @@ def _export_work(app, step, tasks):
                     "result": {"reason": "Export filters did not match"},
                 }
                 continue
+            normalized_email = str(latest.get("email") or "").strip().lower()
+            if skip_existing_email and normalized_email:
+                cursor.execute(
+                    """
+                    INSERT INTO automation_export_email_deliveries(
+                        task_id, contact_id, destination, normalized_email, status, attempt_token
+                    )
+                    VALUES (%s, %s, %s, %s, 'reserved', %s)
+                    ON CONFLICT (destination, normalized_email) DO NOTHING
+                    """,
+                    (
+                        task["id"],
+                        task["contact_id"],
+                        destination,
+                        normalized_email,
+                        task["lease_token"],
+                    ),
+                )
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM automation_export_email_deliveries
+                    WHERE destination = %s AND normalized_email = %s
+                    FOR UPDATE
+                    """,
+                    (destination, normalized_email),
+                )
+                email_receipt = cursor.fetchone()
+                if email_receipt["status"] == "exported":
+                    results[task["id"]] = {
+                        "status": "skipped",
+                        "result": {
+                            "reason": "Email already exists in destination AB list",
+                            "email_delivery_id": email_receipt["id"],
+                        },
+                    }
+                    continue
+                if email_receipt["status"] in ("uncertain", "sending"):
+                    results[task["id"]] = {
+                        "status": "uncertain",
+                        "error": "Another delivery for this email needs review",
+                        "result": {"email_delivery_id": email_receipt["id"]},
+                    }
+                    continue
+                if email_receipt["status"] == "reserved" and email_receipt["task_id"] != task["id"]:
+                    results[task["id"]] = {
+                        "status": "retry",
+                        "error": "Another worker is preparing this email delivery",
+                    }
+                    continue
+                cursor.execute(
+                    """
+                    UPDATE automation_export_email_deliveries
+                    SET status = 'reserved', task_id = %s, contact_id = %s, attempt_token = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    """,
+                    (
+                        task["id"],
+                        task["contact_id"],
+                        task["lease_token"],
+                        email_receipt["id"],
+                    ),
+                )
+                task["email_delivery_id"] = email_receipt["id"]
             cursor.execute(
                 """
                 INSERT INTO automation_export_deliveries(task_id, contact_id, destination, status, attempt_token)
@@ -352,6 +454,17 @@ def _export_work(app, step, tasks):
         )
     bucket, _, interval, _, _ = scheduling(step)
     if not _wait_for_dispatch(app, ready, bucket, interval):
+        with app.get_db() as conn:
+            cursor = conn.cursor()
+            for task in ready:
+                if task.get("email_delivery_id"):
+                    cursor.execute(
+                        """UPDATE automation_export_email_deliveries
+                        SET status = 'failed', attempt_token = NULL, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = %s AND attempt_token = %s AND status = 'reserved'""",
+                        (task["email_delivery_id"], task["lease_token"]),
+                    )
+            conn.commit()
         for task in ready:
             results[task["id"]] = {
                 "status": "retry",
@@ -381,6 +494,12 @@ def _export_work(app, step, tasks):
                     WHERE id = %s AND attempt_token = %s AND status = 'reserved'""",
                     (task["delivery_id"], task["lease_token"]),
                 )
+                if task.get("email_delivery_id"):
+                    cursor.execute(
+                        """UPDATE automation_export_email_deliveries SET status = 'failed', attempt_token = NULL, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = %s AND attempt_token = %s AND status = 'reserved'""",
+                        (task["email_delivery_id"], task["lease_token"]),
+                    )
                 results[task["id"]] = {
                     "status": "retry",
                     "error": "Export deferred before dispatch",
@@ -398,6 +517,12 @@ def _export_work(app, step, tasks):
                     "error": "Export reservation changed before dispatch",
                 }
                 continue
+            if task.get("email_delivery_id"):
+                cursor.execute(
+                    """UPDATE automation_export_email_deliveries SET status = 'sending'
+                    WHERE id = %s AND attempt_token = %s AND status = 'reserved'""",
+                    (task["email_delivery_id"], task["lease_token"]),
+                )
             cursor.execute(
                 "UPDATE automation_stream_tasks SET dispatched = TRUE WHERE id = %s AND lease_token = %s AND status = 'running'",
                 (task["id"], task["lease_token"]),
@@ -473,6 +598,24 @@ def _export_work(app, step, tasks):
                     task["lease_token"],
                 ),
             )
+            if task.get("email_delivery_id"):
+                cursor.execute(
+                    """
+                    UPDATE automation_export_email_deliveries
+                    SET status = %s,
+                        receipt = %s,
+                        updated_at = CURRENT_TIMESTAMP,
+                        attempt_token = CASE WHEN %s THEN NULL ELSE attempt_token END
+                    WHERE id = %s AND attempt_token = %s
+                    """,
+                    (
+                        "uncertain" if state == "unknown" else state,
+                        Json(streaming.clean_json(receipt)),
+                        state != "unknown",
+                        task["email_delivery_id"],
+                        task["lease_token"],
+                    ),
+                )
             results[task["id"]] = {
                 "status": status,
                 "result": {**receipt, "delivery_id": task["delivery_id"]},
@@ -563,7 +706,20 @@ def source_state(cursor, app, run, steps):
         and not campaign["daemon_ignore"]
     )
     has_pipeline = any(step["step_type"] == "pipeline" for step in steps)
-    return not pending, needs_email and has_pipeline
+    closed = not pending
+    if closed and not run.get("stream_source_closed"):
+        cleanup = app._dedupe_campaign_contacts(
+            cursor, run["campaign_id"], flag_invalid_domains=False
+        )
+        if cleanup.get("duplicates_removed"):
+            app._append_automation_log(
+                cursor,
+                run["id"],
+                run["campaign_id"],
+                f"Removed {cleanup['duplicates_removed']} duplicate contact(s) after scraping completed",
+                "info",
+            )
+    return closed, needs_email and has_pipeline
 
 
 def run(app, run_id):

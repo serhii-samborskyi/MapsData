@@ -6,7 +6,7 @@ from database import init_db, get_db
 from templates import TemplateManager, ManyReachIntegration, SmartLeadIntegration, SendReadIntegration, extract_city_from_address
 from email_verification import EmailVerificationManager, EmailVerificationService, MyEmailVerifierIntegration
 from typing import List, Union, Any, Optional, Dict
-from psycopg2 import DataError, IntegrityError
+from psycopg2 import DataError, IntegrityError, sql
 from psycopg2.extras import Json
 import requests
 import prompt_enrichment
@@ -270,21 +270,21 @@ def _is_valid_domain(domain: str) -> bool:
 
 
 def _normalized_contact_key(contact: dict) -> str:
-    email = str(contact.get("email") or "").strip().lower()
-    if email:
-        return f"email:{email}"
+    place_id = str(contact.get("place_id") or "").strip().lower()
+    if place_id:
+        return f"place:{place_id}"
 
     normalized_domain = _normalize_domain(contact.get("domain"))
     if _is_valid_domain(normalized_domain):
         return f"domain:{normalized_domain}"
 
+    email = str(contact.get("email") or "").strip().lower()
+    if email:
+        return f"email:{email}"
+
     phone = re.sub(r"\D+", "", str(contact.get("phone") or ""))
     if phone:
         return f"phone:{phone}"
-
-    place_id = str(contact.get("place_id") or "").strip().lower()
-    if place_id:
-        return f"place:{place_id}"
 
     business_name = str(contact.get("business_name") or "").strip().lower()
     if business_name:
@@ -327,6 +327,94 @@ def _compute_campaign_stats_from_contacts(contacts: List[dict], last_updated_at:
         "duplicates_removed": duplicates_removed,
         "last_updated_at": last_updated_at,
     }
+
+
+def _dedupe_campaign_contacts(cursor, campaign_id: int, *, flag_invalid_domains: bool = False) -> dict:
+    company_cleanup = streaming.dedupe_campaign_contacts_by_normalized_business_name(cursor, campaign_id)
+    cursor.execute("""
+        SELECT id, domain, email, phone, place_id, business_name, status
+        FROM contacts
+        WHERE campaign_id = %s
+        ORDER BY id ASC
+    """, (campaign_id,))
+    contacts = [dict(row) for row in cursor.fetchall()]
+    before_count = len(contacts)
+
+    seen_keys = set()
+    duplicate_ids: List[int] = []
+    invalid_domain_ids: List[int] = []
+
+    for contact in contacts:
+        normalized_domain = _normalize_domain(contact.get("domain"))
+        if flag_invalid_domains and not _is_valid_domain(normalized_domain):
+            invalid_domain_ids.append(contact["id"])
+
+        key = _normalized_contact_key(contact)
+        if key in seen_keys:
+            duplicate_ids.append(contact["id"])
+        else:
+            seen_keys.add(key)
+
+    if invalid_domain_ids:
+        cursor.execute("""
+            UPDATE contacts
+            SET status = 'invalid_domain'
+            WHERE campaign_id = %s
+              AND id = ANY(%s)
+        """, (campaign_id, invalid_domain_ids))
+
+    if duplicate_ids:
+        cursor.execute("""
+            DELETE FROM contacts
+            WHERE campaign_id = %s
+              AND id = ANY(%s)
+        """, (campaign_id, duplicate_ids))
+
+    after_count = before_count - len(duplicate_ids)
+    return {
+        "campaign_id": campaign_id,
+        "before_count": before_count,
+        "after_count": after_count,
+        "duplicates_removed": len(duplicate_ids) + int(company_cleanup.get("duplicates_removed") or 0),
+        "company_duplicates_removed": int(company_cleanup.get("duplicates_removed") or 0),
+        "flagged_invalid_domain_count": len(invalid_domain_ids),
+    }
+
+
+def _is_missing_contact_value(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and value.strip() == "")
+
+
+def _merge_missing_contact_fields(cursor, campaign_id: int, contact_id: int, values: dict) -> List[str]:
+    cursor.execute(
+        "SELECT * FROM contacts WHERE id = %s AND campaign_id = %s FOR UPDATE",
+        (contact_id, campaign_id),
+    )
+    existing = dict(cursor.fetchone() or {})
+    if not existing:
+        return []
+    updates = {}
+    for field, value in values.items():
+        if field not in streaming.CONTACT_FIELDS or field == "normalized_business_name":
+            continue
+        if field == "source_data" and isinstance(existing.get(field), dict) and isinstance(value, dict):
+            merged = {**value, **existing[field]}
+            if merged != existing[field]:
+                updates[field] = merged
+            continue
+        if _is_missing_contact_value(existing.get(field)) and not _is_missing_contact_value(value):
+            updates[field] = value
+    if not updates:
+        return []
+    query = sql.SQL("UPDATE contacts SET {} WHERE id = %s AND campaign_id = %s").format(
+        sql.SQL(", ").join(sql.SQL("{} = %s").format(sql.Identifier(key)) for key in updates)
+    )
+    cursor.execute(
+        query,
+        tuple(Json(value) if field == "source_data" else value for field, value in updates.items())
+        + (contact_id, campaign_id),
+    )
+    return sorted(updates)
 
 
 def _longest_common_prefix(values: List[str]) -> str:
@@ -1140,6 +1228,35 @@ def _insert_http_source_contacts(cursor, campaign_id: int, request_id: int, sour
 
     for row in rows:
         contact = _http_source_contact_from_row(row, config["field_mapping"], source)
+        normalized_name = streaming.normalize_business_name(contact.get("business_name"))
+        if normalized_name:
+            cursor.execute(
+                """
+                SELECT id FROM contacts
+                WHERE campaign_id = %s AND normalized_business_name = %s
+                ORDER BY id ASC
+                LIMIT 1
+                FOR UPDATE
+                """,
+                (campaign_id, normalized_name),
+            )
+            existing = cursor.fetchone()
+            if existing:
+                merge_values = {field: contact.get(field) for field in SOURCE_CORE_FIELDS}
+                merge_values.update(
+                    request_id=request_id,
+                    source_data=contact["source_data"],
+                    email_status="unverified",
+                )
+                _merge_missing_contact_fields(cursor, campaign_id, int(existing["id"]), merge_values)
+                saved_contacts.append({
+                    "contact_id": int(existing["id"]),
+                    "business_name": contact.get("business_name"),
+                    "domain": contact.get("domain"),
+                    "email": contact.get("email"),
+                    "deduped": True,
+                })
+                continue
         values = [contact.get(field) for field in SOURCE_CORE_FIELDS]
         values.extend([campaign_id, request_id, "pending", Json(contact["source_data"]), "unverified"])
         cursor.execute(
@@ -7973,57 +8090,9 @@ async def cleanup_campaign_contacts(campaign_id: int):
     with get_db() as conn:
         cursor = conn.cursor()
         _ensure_campaign_exists(cursor, campaign_id)
-
-        cursor.execute("""
-            SELECT id, domain, email, phone, place_id, business_name, status
-            FROM contacts
-            WHERE campaign_id = %s
-            ORDER BY id ASC
-        """, (campaign_id,))
-        contacts = [dict(row) for row in cursor.fetchall()]
-        before_count = len(contacts)
-
-        seen_keys = set()
-        duplicate_ids: List[int] = []
-        invalid_domain_ids: List[int] = []
-
-        for contact in contacts:
-            normalized_domain = _normalize_domain(contact.get("domain"))
-            if not _is_valid_domain(normalized_domain):
-                invalid_domain_ids.append(contact["id"])
-
-            key = _normalized_contact_key(contact)
-            if key in seen_keys:
-                duplicate_ids.append(contact["id"])
-            else:
-                seen_keys.add(key)
-
-        if invalid_domain_ids:
-            cursor.execute("""
-                UPDATE contacts
-                SET status = 'invalid_domain'
-                WHERE campaign_id = %s
-                  AND id = ANY(%s)
-            """, (campaign_id, invalid_domain_ids))
-
-        if duplicate_ids:
-            cursor.execute("""
-                DELETE FROM contacts
-                WHERE campaign_id = %s
-                  AND id = ANY(%s)
-            """, (campaign_id, duplicate_ids))
-
-        cursor.execute("SELECT COUNT(*) AS count FROM contacts WHERE campaign_id = %s", (campaign_id,))
-        after_count = int(cursor.fetchone()["count"])
+        cleanup = _dedupe_campaign_contacts(cursor, campaign_id, flag_invalid_domains=True)
         conn.commit()
-
-        return {
-            "campaign_id": campaign_id,
-            "before_count": before_count,
-            "after_count": after_count,
-            "duplicates_removed": len(duplicate_ids),
-            "flagged_invalid_domain_count": len(invalid_domain_ids),
-        }
+        return cleanup
 
 
 @app.get("/api/campaign/{campaign_id}/stats")
@@ -8199,6 +8268,7 @@ async def save_contacts(request: Request):
         raise HTTPException(status_code=400, detail=f"Contact {contact_index}: invalid '{field}' value")
 
     saved_contacts = []
+    touched_campaign_ids = set()
     with get_db() as conn:
         cursor = conn.cursor()
         campaign_status_cache: dict[int, str] = {}
@@ -8310,6 +8380,71 @@ async def save_contacts(request: Request):
                 if not pipeline_is_active and not request_in_progress:
                     raise HTTPException(status_code=400, detail=f"Campaign {campaign_id} is not active")
 
+            merge_values = {
+                "address": contact.get("address"),
+                "business_name": business_name,
+                "category": contact.get("category"),
+                "domain": domain,
+                "email": contact.get("email"),
+                "facebook": contact.get("facebook"),
+                "instagram": contact.get("instagram"),
+                "phone": contact.get("phone"),
+                "place_id": place_id,
+                "rating": rating,
+                "request_id": request_id,
+                "review_count": review_count,
+                "twitter": contact.get("twitter"),
+                "yelp": contact.get("yelp"),
+                "full_name": contact.get("full_name", contact.get("fullName")),
+                "industry": contact.get("industry"),
+                "city": contact.get("city"),
+                "www": contact.get("www"),
+                "firstname": contact.get("firstname", contact.get("firstName")),
+                "lastname": contact.get("lastname", contact.get("lastName")),
+                "company": contact.get("company"),
+                "country": contact.get("country"),
+                "company_social": contact.get("company_social", contact.get("companySocial")),
+                "company_size": contact.get("company_size", contact.get("companySize")),
+                "personal_job_position": contact.get("personal_job_position", contact.get("personalJobPosition")),
+                "personal_prospect_location": contact.get("personal_prospect_location", contact.get("personalProspectLocation")),
+                "personal_user_social": contact.get("personal_user_social", contact.get("personalUserSocial")),
+                "screenshot": contact.get("screenshot"),
+                "logo": contact.get("logo"),
+                "state": contact.get("state"),
+                "icebreaker": contact.get("icebreaker"),
+                "time_zone_offset_min": time_zone_offset_min,
+                "notes": contact.get("notes"),
+                "tags_import": contact.get("tags_import", contact.get("tagsImport")),
+                "source_data": source_data,
+                "email_status": contact.get("email_status", contact.get("emailStatus", "unverified")),
+            }
+            for custom_index in range(1, 21):
+                merge_values[f"custom_{custom_index}"] = contact.get(f"custom_{custom_index}")
+
+            normalized_name = streaming.normalize_business_name(business_name)
+            if normalized_name:
+                cursor.execute(
+                    """
+                    SELECT id FROM contacts
+                    WHERE campaign_id = %s AND normalized_business_name = %s
+                    ORDER BY id ASC
+                    LIMIT 1
+                    FOR UPDATE
+                    """,
+                    (campaign_id, normalized_name),
+                )
+                existing = cursor.fetchone()
+                if existing:
+                    _merge_missing_contact_fields(cursor, campaign_id, int(existing["id"]), merge_values)
+                    saved_contacts.append({
+                        "contact_id": int(existing["id"]),
+                        "campaign_id": campaign_id,
+                        "request_id": request_id,
+                        "deduped": True,
+                    })
+                    touched_campaign_ids.add(campaign_id)
+                    continue
+
             try:
                 cursor.execute(
                     """INSERT INTO contacts 
@@ -8395,9 +8530,18 @@ async def save_contacts(request: Request):
                 "campaign_id": campaign_id,
                 "request_id": request_id
             })
+            touched_campaign_ids.add(campaign_id)
 
+        cleanup_results = [
+            _dedupe_campaign_contacts(cursor, campaign_id, flag_invalid_domains=False)
+            for campaign_id in sorted(touched_campaign_ids)
+        ]
         conn.commit()
-    return {"status": "Contacts saved successfully", "saved_contacts": saved_contacts}
+    return {
+        "status": "Contacts saved successfully",
+        "saved_contacts": saved_contacts,
+        "cleanup": cleanup_results,
+    }
 
 @app.post("/api/campaign/{campaign_id}/email_verify")
 async def update_email_verification_status(campaign_id: int, request: Request):
@@ -9143,6 +9287,65 @@ async def stop_campaign_funnel(campaign_id: int):
         "run_id": int(run["id"]),
         "child_jobs": child_messages,
     }
+
+
+@app.post("/api/campaign/{campaign_id}/funnels/resume")
+async def resume_campaign_funnel(campaign_id: int):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        _ensure_campaign_exists(cursor, campaign_id)
+        cursor.execute(
+            """
+            SELECT *
+            FROM automation_runs
+            WHERE campaign_id = %s
+              AND execution_mode = 'streaming'
+              AND status = 'waiting_confirmation'
+            ORDER BY created_at DESC
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (campaign_id,),
+        )
+        run = cursor.fetchone()
+        if not run:
+            raise HTTPException(status_code=404, detail="No paused streaming funnel found for this campaign")
+        run_id = int(run["id"])
+        cursor.execute(
+            "SELECT 1 FROM automation_stream_tasks WHERE run_id = %s AND status = 'uncertain' LIMIT 1",
+            (run_id,),
+        )
+        if cursor.fetchone():
+            raise HTTPException(status_code=409, detail="Resolve uncertain export deliveries before resuming")
+        cursor.execute(
+            """
+            UPDATE automation_stream_tasks
+            SET status = 'retry',
+                available_at = CURRENT_TIMESTAMP,
+                lease_until = NULL,
+                lease_token = NULL,
+                dispatched = FALSE,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE run_id = %s
+              AND status = 'blocked'
+            """,
+            (run_id,),
+        )
+        retried_tasks = cursor.rowcount
+        cursor.execute(
+            """
+            UPDATE automation_runs
+            SET status = 'queued',
+                latest_error = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (run_id,),
+        )
+        _append_automation_log(cursor, run_id, campaign_id, "Streaming funnel resumed from campaign", "info")
+        conn.commit()
+    _ensure_automation_run_worker(run_id)
+    return {"status": "Funnel resumed", "run_id": run_id, "retried_tasks": retried_tasks}
 
 
 @app.post("/api/funnel-runs/recover-interrupted")

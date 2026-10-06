@@ -174,6 +174,53 @@ class StreamingIntegrationTests(unittest.TestCase):
         send.assert_called_once()
         self.assertEqual(result["status"], "completed")
 
+    def test_enroll_deduplicates_normalized_company_names_before_tasks(self):
+        self.setup_run(("enrichment",), contacts=0)
+        self.execute("DROP INDEX IF EXISTS idx_contacts_campaign_normalized_business_name_unique")
+        first = self.execute(
+            "INSERT INTO contacts(campaign_id,business_name,status,email) VALUES (%s,'Acme, Inc.','new','owner@example.test') RETURNING id",
+            (self.run["campaign_id"],),
+            True,
+        )["id"]
+        self.execute(
+            "INSERT INTO contacts(campaign_id,business_name,status,phone) VALUES (%s,' ACME L.L.C. ','new','555-0100')",
+            (self.run["campaign_id"],),
+        )
+        self.enroll()
+        contacts = self.execute(
+            "SELECT id,email,phone,normalized_business_name FROM contacts WHERE campaign_id=%s",
+            (self.run["campaign_id"],),
+        )
+        tasks = self.execute(
+            "SELECT contact_id FROM automation_stream_tasks WHERE run_id=%s",
+            (self.run["id"],),
+        )
+        self.assertEqual(len(contacts), 1)
+        self.assertEqual(contacts[0]["id"], first)
+        self.assertEqual(contacts[0]["phone"], "555-0100")
+        self.assertEqual(contacts[0]["normalized_business_name"], "acme")
+        self.assertEqual([task["contact_id"] for task in tasks], [first])
+
+    def test_export_skips_email_already_recorded_for_destination_ab_list(self):
+        self.setup_run(("export",))
+        step = self.export_step()
+        task = self.claim(0, limit=1)[0]
+        destination = self.runtime.streaming_export.destination_key(
+            self.runtime.export_config(step["config"])
+        )
+        self.execute(
+            """
+            INSERT INTO automation_export_email_deliveries(destination, normalized_email, status)
+            VALUES (%s, %s, 'exported')
+            """,
+            (destination, "test@example.com"),
+        )
+        with patch.object(self.runtime.streaming_export, "send_batch") as send:
+            result = self.runtime._export_work(self.main, step, [task])[task["id"]]
+        send.assert_not_called()
+        self.assertEqual(result["status"], "skipped")
+        self.assertIn("already exists", result["result"]["reason"])
+
     def test_pause_defers_export_and_keeps_inflight_contact_work(self):
         self.setup_run(("export",))
         step = self.export_step()

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -53,7 +54,54 @@ CONTACT_FIELDS = {
     "domain_ssl_status",
     "domain_error",
     "domain_last_checked_at",
+    "normalized_business_name",
+    "source_data",
 } | {f"custom_{n}" for n in range(1, 21)}
+
+LEGAL_SUFFIXES = {
+    "llc", "l l c", "inc", "incorporated", "corp", "corporation",
+    "co", "company", "ltd", "limited", "pllc", "p llc", "llp", "l l p",
+    "lp", "l p", "pc", "p c",
+}
+
+
+def normalize_business_name(value):
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    while text:
+        matched = next(
+            (suffix for suffix in sorted(LEGAL_SUFFIXES, key=len, reverse=True)
+             if text == suffix or text.endswith(f" {suffix}")),
+            None,
+        )
+        if not matched:
+            break
+        text = text[: -len(matched)].strip()
+    return text
+
+
+def _has_contact_columns(cursor, columns):
+    cursor.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = 'contacts'
+          AND column_name = ANY(%s)
+        """,
+        (list(columns),),
+    )
+    return {row["column_name"] for row in cursor.fetchall()}
+
+
+def _missing(value):
+    return value is None or (isinstance(value, str) and value.strip() == "")
+
+
+def _contact_completeness(contact):
+    return sum(1 for key in CONTACT_FIELDS if not _missing(contact.get(key)))
 
 
 def init_schema(cursor):
@@ -103,7 +151,189 @@ def init_schema(cursor):
             UNIQUE(contact_id, destination)
         );
         ALTER TABLE automation_export_deliveries ADD COLUMN IF NOT EXISTS attempt_token TEXT;
+        CREATE TABLE IF NOT EXISTS automation_export_email_deliveries (
+            id BIGSERIAL PRIMARY KEY,
+            task_id BIGINT REFERENCES automation_stream_tasks(id) ON DELETE SET NULL,
+            contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+            destination TEXT NOT NULL,
+            normalized_email TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempt_token TEXT,
+            receipt JSONB NOT NULL DEFAULT '{}'::jsonb,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(destination, normalized_email)
+        );
+        CREATE TABLE IF NOT EXISTS contact_duplicate_archive (
+            id BIGSERIAL PRIMARY KEY,
+            campaign_id INTEGER,
+            canonical_contact_id INTEGER,
+            duplicate_contact_id INTEGER,
+            normalized_business_name TEXT,
+            reason TEXT NOT NULL,
+            contact_snapshot JSONB NOT NULL,
+            archived_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
     """)
+    columns = _has_contact_columns(cursor, {"campaign_id", "business_name"})
+    if {"campaign_id", "business_name"}.issubset(columns):
+        cursor.execute("""
+            ALTER TABLE contacts ADD COLUMN IF NOT EXISTS normalized_business_name TEXT;
+            CREATE OR REPLACE FUNCTION normalize_business_name_value(value TEXT)
+            RETURNS TEXT
+            LANGUAGE plpgsql
+            IMMUTABLE
+            AS $$
+            DECLARE
+                v TEXT;
+            BEGIN
+                v := lower(btrim(coalesce(value, '')));
+                IF v = '' THEN
+                    RETURN NULL;
+                END IF;
+                v := regexp_replace(v, '[^a-z0-9]+', ' ', 'g');
+                v := btrim(regexp_replace(v, '[[:space:]]+', ' ', 'g'));
+                LOOP
+                    EXIT WHEN v = '';
+                    EXIT WHEN v !~ '[[:space:]](llc|l l c|inc|incorporated|corp|corporation|co|company|ltd|limited|pllc|p llc|llp|l l p|lp|l p|pc|p c)$';
+                    v := btrim(regexp_replace(v, '[[:space:]](llc|l l c|inc|incorporated|corp|corporation|co|company|ltd|limited|pllc|p llc|llp|l l p|lp|l p|pc|p c)$', ''));
+                END LOOP;
+                RETURN NULLIF(v, '');
+            END
+            $$;
+            CREATE OR REPLACE FUNCTION set_contact_normalized_business_name()
+            RETURNS trigger
+            LANGUAGE plpgsql
+            AS $$
+            BEGIN
+                NEW.normalized_business_name := normalize_business_name_value(NEW.business_name);
+                RETURN NEW;
+            END
+            $$;
+            DROP TRIGGER IF EXISTS trg_contacts_normalized_business_name ON contacts;
+            CREATE TRIGGER trg_contacts_normalized_business_name
+            BEFORE INSERT OR UPDATE OF business_name ON contacts
+            FOR EACH ROW
+            EXECUTE FUNCTION set_contact_normalized_business_name();
+            UPDATE contacts
+            SET normalized_business_name = normalize_business_name_value(business_name)
+            WHERE normalized_business_name IS DISTINCT FROM normalize_business_name_value(business_name);
+        """)
+        dedupe_all_normalized_business_names(cursor)
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_campaign_normalized_business_name_unique
+            ON contacts(campaign_id, normalized_business_name)
+            WHERE normalized_business_name IS NOT NULL AND normalized_business_name <> '';
+        """)
+
+
+def dedupe_all_normalized_business_names(cursor):
+    columns = _has_contact_columns(cursor, {"campaign_id", "business_name", "normalized_business_name"})
+    if not {"campaign_id", "business_name", "normalized_business_name"}.issubset(columns):
+        return {"campaigns_checked": 0, "duplicates_removed": 0}
+    cursor.execute(
+        """
+        SELECT DISTINCT campaign_id
+        FROM contacts
+        WHERE campaign_id IS NOT NULL
+          AND normalized_business_name IS NOT NULL
+          AND normalized_business_name <> ''
+        """
+    )
+    campaign_ids = [row["campaign_id"] for row in cursor.fetchall()]
+    removed = 0
+    for campaign_id in campaign_ids:
+        removed += dedupe_campaign_contacts_by_normalized_business_name(cursor, campaign_id)["duplicates_removed"]
+    return {"campaigns_checked": len(campaign_ids), "duplicates_removed": removed}
+
+
+def dedupe_campaign_contacts_by_normalized_business_name(cursor, campaign_id):
+    columns = _has_contact_columns(cursor, {"campaign_id", "business_name", "normalized_business_name"})
+    if not {"campaign_id", "business_name", "normalized_business_name"}.issubset(columns):
+        return {"campaign_id": campaign_id, "duplicates_removed": 0, "canonical_contacts": 0}
+    cursor.execute(
+        """
+        UPDATE contacts
+        SET normalized_business_name = normalize_business_name_value(business_name)
+        WHERE campaign_id = %s
+          AND normalized_business_name IS DISTINCT FROM normalize_business_name_value(business_name)
+        """,
+        (campaign_id,),
+    )
+    cursor.execute(
+        """
+        SELECT *
+        FROM contacts
+        WHERE campaign_id = %s
+          AND normalized_business_name IS NOT NULL
+          AND normalized_business_name <> ''
+        ORDER BY normalized_business_name ASC, id ASC
+        """,
+        (campaign_id,),
+    )
+    groups = {}
+    for row in cursor.fetchall():
+        contact = dict(row)
+        groups.setdefault(contact["normalized_business_name"], []).append(contact)
+
+    removed = 0
+    canonical_count = 0
+    for normalized_name, contacts in groups.items():
+        if not contacts:
+            continue
+        canonical_count += 1
+        canonical = sorted(contacts, key=lambda item: (int(item["id"]), -_contact_completeness(item)))[0]
+        duplicates = [item for item in contacts if item["id"] != canonical["id"]]
+        if not duplicates:
+            continue
+
+        updates = {}
+        for duplicate in sorted(duplicates, key=lambda item: int(item["id"])):
+            for field in CONTACT_FIELDS:
+                if field in {"normalized_business_name"}:
+                    continue
+                if field not in canonical or field not in duplicate:
+                    continue
+                if _missing(canonical.get(field)) and not _missing(duplicate.get(field)):
+                    canonical[field] = duplicate[field]
+                    updates[field] = duplicate[field]
+
+        if updates:
+            query = sql.SQL("UPDATE contacts SET {} WHERE id = %s").format(
+                sql.SQL(", ").join(
+                    sql.SQL("{} = %s").format(sql.Identifier(key)) for key in updates
+                )
+            )
+            cursor.execute(query, (*updates.values(), canonical["id"]))
+
+        duplicate_ids = [item["id"] for item in duplicates]
+        for duplicate in duplicates:
+            cursor.execute(
+                """
+                INSERT INTO contact_duplicate_archive(
+                    campaign_id, canonical_contact_id, duplicate_contact_id,
+                    normalized_business_name, reason, contact_snapshot
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    campaign_id,
+                    canonical["id"],
+                    duplicate["id"],
+                    normalized_name,
+                    "normalized_business_name_duplicate",
+                    Json(clean_json(duplicate)),
+                ),
+            )
+        cursor.execute(
+            "DELETE FROM contacts WHERE campaign_id = %s AND id = ANY(%s)",
+            (campaign_id, duplicate_ids),
+        )
+        removed += len(duplicate_ids)
+    return {
+        "campaign_id": campaign_id,
+        "duplicates_removed": removed,
+        "canonical_contacts": canonical_count,
+    }
 
 
 def clean_json(value):
@@ -158,6 +388,7 @@ def progress(cursor, run_id):
 
 def enroll(cursor, run, steps, needs_source_email=False):
     """ON CONFLICT permits continuous intake, including after an empty queue."""
+    dedupe_campaign_contacts_by_normalized_business_name(cursor, run["campaign_id"])
     for step in steps:
         pipeline = step["step_type"] == "pipeline"
         cursor.execute(
@@ -231,6 +462,14 @@ def recover(cursor, run_id):
     cursor.execute(
         """
         UPDATE automation_export_deliveries d SET status = 'uncertain', updated_at = CURRENT_TIMESTAMP
+        FROM automation_stream_tasks t WHERE d.task_id = t.id AND t.run_id = %s
+          AND t.status = 'uncertain' AND d.status = 'sending'
+    """,
+        (run_id,),
+    )
+    cursor.execute(
+        """
+        UPDATE automation_export_email_deliveries d SET status = 'uncertain', updated_at = CURRENT_TIMESTAMP
         FROM automation_stream_tasks t WHERE d.task_id = t.id AND t.run_id = %s
           AND t.status = 'uncertain' AND d.status = 'sending'
     """,
@@ -604,6 +843,20 @@ def _release_reserved(cursor, run_id, stopping=False):
             receipt = jsonb_build_object('status', 'failed', 'attempted', FALSE, 'retryable', TRUE,
                 'delivery_id', d.id, 'error', jsonb_build_object('code', 'reservation_released',
                 'message', 'Export reservation ended before dispatch'))
+        FROM automation_stream_tasks t
+        WHERE d.task_id = t.id AND t.run_id = %s AND d.status = 'reserved' AND NOT t.dispatched
+          AND (%s OR t.status <> 'running' OR t.lease_token IS DISTINCT FROM d.attempt_token
+               OR t.lease_until IS NULL OR t.lease_until <= clock_timestamp())
+    """,
+        (run_id, stopping),
+    )
+    cursor.execute(
+        """
+        UPDATE automation_export_email_deliveries d
+        SET status = 'failed', attempt_token = NULL, updated_at = CURRENT_TIMESTAMP,
+            receipt = jsonb_build_object('status', 'failed', 'attempted', FALSE, 'retryable', TRUE,
+                'email_delivery_id', d.id, 'error', jsonb_build_object('code', 'reservation_released',
+                'message', 'Email export reservation ended before dispatch'))
         FROM automation_stream_tasks t
         WHERE d.task_id = t.id AND t.run_id = %s AND d.status = 'reserved' AND NOT t.dispatched
           AND (%s OR t.status <> 'running' OR t.lease_token IS DISTINCT FROM d.attempt_token

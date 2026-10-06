@@ -264,6 +264,7 @@ def load_main_module():
         "templates",
         "email_verification",
         "mcp_integration",
+        "streaming",
     ]:
         sys.modules.pop(module_name, None)
     _install_stub_modules()
@@ -1203,6 +1204,19 @@ class PipelineEndpointTests(unittest.TestCase):
         self._patch_db([
             {"match": "select id from search_campaigns", "fetchone": {"id": 3}},
             {
+                "match": "from information_schema.columns",
+                "fetchall": [
+                    {"column_name": "campaign_id"},
+                    {"column_name": "business_name"},
+                    {"column_name": "normalized_business_name"},
+                ],
+            },
+            {"match": "update contacts set normalized_business_name"},
+            {
+                "match": "select * from contacts",
+                "fetchall": [],
+            },
+            {
                 "match": "select id, domain, email, phone, place_id, business_name, status from contacts",
                 "fetchall": [
                     {"id": 1, "domain": "example.com", "email": "a@example.com", "phone": "", "place_id": "", "business_name": "A", "status": "pending"},
@@ -1213,7 +1227,6 @@ class PipelineEndpointTests(unittest.TestCase):
             },
             {"match": "update contacts", "rowcount": 2},
             {"match": "delete from contacts", "rowcount": 1},
-            {"match": "select count(*) as count from contacts", "fetchone": {"count": 3}},
         ])
 
         response = asyncio.run(self.main.cleanup_campaign_contacts(3))
@@ -1227,7 +1240,27 @@ class PipelineEndpointTests(unittest.TestCase):
             {"match": "select status from search_campaigns", "fetchone": {"status": "completed"}},
             {"match": "select id, status from requests", "fetchone": {"id": 777, "status": "inuse"}},
             {"match": "from pipeline_runs", "fetchone": None},
+            {"match": "select id from contacts", "fetchone": None},
             {"match": "insert into contacts", "fetchone": {"id": 501}},
+            {
+                "match": "from information_schema.columns",
+                "fetchall": [
+                    {"column_name": "campaign_id"},
+                    {"column_name": "business_name"},
+                    {"column_name": "normalized_business_name"},
+                ],
+            },
+            {"match": "update contacts set normalized_business_name"},
+            {
+                "match": "select * from contacts",
+                "fetchall": [],
+            },
+            {
+                "match": "select id, domain, email, phone, place_id, business_name, status from contacts",
+                "fetchall": [
+                    {"id": 501, "domain": "", "email": "", "phone": "", "place_id": "", "business_name": "Demo Biz", "status": "pending"},
+                ],
+            },
         ])
 
         payload = [{
@@ -1261,6 +1294,12 @@ class PipelineEndpointTests(unittest.TestCase):
 class PipelineUnitLogicTests(unittest.TestCase):
     def setUp(self):
         self.main = load_main_module()
+
+    def test_normalized_company_name_ignores_case_punctuation_and_legal_suffixes(self):
+        normalize = self.main.streaming.normalize_business_name
+        self.assertEqual(normalize("  Acme, Inc.  "), "acme")
+        self.assertEqual(normalize("ACME L.L.C."), "acme")
+        self.assertEqual(normalize("Acme---Dental   Company"), "acme dental")
 
     def test_next_stage_mapping(self):
         self.assertEqual(self.main._next_pipeline_stage("maps_scrape"), "cleanup_contacts")
