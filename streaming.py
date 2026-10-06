@@ -220,8 +220,9 @@ def init_schema(cursor):
         """)
         dedupe_all_normalized_business_names(cursor)
         cursor.execute("""
+            DROP INDEX IF EXISTS idx_contacts_campaign_normalized_business_name_unique;
             CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_campaign_normalized_business_name_unique
-            ON contacts(campaign_id, normalized_business_name)
+            ON contacts(campaign_id, md5(normalized_business_name))
             WHERE normalized_business_name IS NOT NULL AND normalized_business_name <> '';
         """)
 
