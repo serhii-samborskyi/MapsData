@@ -5403,7 +5403,8 @@ async def get_campaigns(
                 SELECT
                     campaign_id,
                     COUNT(*) AS total_requests,
-                    COUNT(*) FILTER (WHERE status = 'completed') AS completed_requests
+                    COUNT(*) FILTER (WHERE status = 'completed') AS completed_requests,
+                    COUNT(*) FILTER (WHERE status = 'failed') AS failed_requests
                 FROM requests
                 WHERE campaign_id IN ({placeholders})
                 GROUP BY campaign_id
@@ -5412,6 +5413,7 @@ async def get_campaigns(
                 int(row["campaign_id"]): {
                     "total_requests": int(row.get("total_requests") or 0),
                     "completed_requests": int(row.get("completed_requests") or 0),
+                    "failed_requests": int(row.get("failed_requests") or 0),
                 }
                 for row in cursor.fetchall()
             }
@@ -5440,6 +5442,7 @@ async def get_campaigns(
         email_metrics = _compute_campaign_email_metrics(cursor, campaign_ids)
         latest_enrichment_runs = {}
         active_enrichment_runs = {}
+        latest_automation_runs = {}
 
         if campaign_ids:
             placeholders = ",".join(["%s"] * len(campaign_ids))
@@ -5466,6 +5469,25 @@ async def get_campaigns(
                 for row in cursor.fetchall()
             }
 
+            cursor.execute(f"""
+                SELECT DISTINCT ON (campaign_id) *
+                FROM automation_runs
+                WHERE campaign_id IN ({placeholders})
+                ORDER BY
+                    campaign_id,
+                    CASE
+                        WHEN status IN ('queued', 'running', 'waiting_confirmation') THEN 0
+                        WHEN status = 'completed' THEN 1
+                        ELSE 2
+                    END,
+                    created_at DESC,
+                    id DESC
+            """, tuple(campaign_ids))
+            latest_automation_runs = {
+                int(row["campaign_id"]): dict(row)
+                for row in cursor.fetchall()
+            }
+
         with verification_jobs_lock:
             active_verification_jobs = {}
             latest_verification_jobs = {}
@@ -5487,10 +5509,25 @@ async def get_campaigns(
 
         for row in campaign_rows:
             campaign = dict(row)
-            req_summary = request_summary_by_campaign.get(campaign["id"], {"total_requests": 0, "completed_requests": 0})
+            req_summary = request_summary_by_campaign.get(campaign["id"], {"total_requests": 0, "completed_requests": 0, "failed_requests": 0})
             contact_summary = contacts_summary_by_campaign.get(campaign["id"], {"total_contacts": 0, "verification_processed_count": 0})
             campaign["total_requests"] = req_summary["total_requests"]
             campaign["completed_requests"] = req_summary["completed_requests"]
+            request_progress = dict(req_summary)
+            request_progress["terminal_requests"] = req_summary["completed_requests"] + req_summary.get("failed_requests", 0)
+            request_progress["progress_percent"] = round(
+                min(100, (request_progress["terminal_requests"] / req_summary["total_requests"]) * 100),
+                2,
+            ) if req_summary["total_requests"] > 0 else 0
+            overall_progress = _campaign_overall_progress_payload(
+                cursor,
+                campaign["id"],
+                request_progress,
+                latest_automation_runs.get(campaign["id"]),
+            )
+            campaign["overall_progress_percent"] = overall_progress["progress_percent"]
+            campaign["overall_progress_label"] = overall_progress["label"]
+            campaign["overall_progress_stages"] = overall_progress["stages"]
             campaign["total_contacts"] = contact_summary["total_contacts"]
             campaign["verification_processed_count"] = contact_summary["verification_processed_count"]
             metrics = email_metrics.get(campaign["id"], {"email_count": 0, "valid_email_count": 0})
@@ -5869,6 +5906,43 @@ async def get_dashboard_runtime_status(campaign_ids: str = ""):
             for campaign_id in campaign_id_list
         }
 
+        cursor.execute(f"""
+            SELECT DISTINCT ON (campaign_id) *
+            FROM automation_runs
+            WHERE campaign_id IN ({placeholders})
+            ORDER BY
+                campaign_id,
+                CASE
+                    WHEN status IN ('queued', 'running', 'waiting_confirmation') THEN 0
+                    WHEN status = 'completed' THEN 1
+                    ELSE 2
+                END,
+                created_at DESC,
+                id DESC
+        """, tuple(campaign_id_list))
+        latest_automation_runs = {
+            int(row["campaign_id"]): dict(row)
+            for row in cursor.fetchall()
+        }
+        overall_progress_by_campaign = {
+            campaign_id: _campaign_overall_progress_payload(
+                cursor,
+                campaign_id,
+                request_progress_by_campaign.get(campaign_id, {
+                    "total_requests": 0,
+                    "completed_requests": 0,
+                    "failed_requests": 0,
+                    "pending_requests": 0,
+                    "inuse_requests": 0,
+                    "reserved_requests": 0,
+                    "terminal_requests": 0,
+                    "progress_percent": 0,
+                }),
+                latest_automation_runs.get(campaign_id),
+            )
+            for campaign_id in campaign_id_list
+        }
+
     with verification_jobs_lock:
         active_jobs = {}
         latest_jobs = {}
@@ -5943,6 +6017,13 @@ async def get_dashboard_runtime_status(campaign_ids: str = ""):
         request_progress["terminal_requests"] = terminal_requests
         request_progress["unfinished_requests"] = max(0, total_requests - terminal_requests)
         request_progress["progress_percent"] = round(min(100, (terminal_requests / total_requests) * 100), 2) if total_requests > 0 else 0
+        overall_progress = overall_progress_by_campaign.get(campaign_id, {
+            "label": "Requests",
+            "progress_percent": request_progress.get("progress_percent", 0),
+            "processed_units": request_progress.get("terminal_requests", 0),
+            "total_units": request_progress.get("total_requests", 0),
+            "stages": [],
+        })
 
         result[str(campaign_id)] = {
             "pipeline": pipeline,
@@ -5950,6 +6031,7 @@ async def get_dashboard_runtime_status(campaign_ids: str = ""):
             "requests": request_progress,
             "verification": verification,
             "enrichment": enrichment_progress_by_campaign.get(campaign_id, {}),
+            "overall_progress": overall_progress,
         }
 
     return {"campaigns": result}
@@ -6876,6 +6958,129 @@ def _get_campaign_request_progress(cursor, campaign_id: int) -> dict:
     progress["unfinished_requests"] = max(0, total_requests - terminal_requests)
     progress["progress_percent"] = round(min(100, (terminal_requests / total_requests) * 100), 2) if total_requests > 0 else 0
     return progress
+
+
+STREAM_PROGRESS_TERMINAL_STATUSES = {
+    "completed",
+    "skipped",
+    "failed",
+    "blocked",
+    "uncertain",
+    "cancelled",
+}
+STREAM_PROGRESS_STEP_LABELS = {
+    "source_email": "source",
+    "enrichment": "enrichment",
+    "dns_check": "DNS",
+    "email_verification": "verification",
+    "export": "export",
+}
+STREAM_PROGRESS_CONTACT_STEPS = tuple(STREAM_PROGRESS_STEP_LABELS.keys())
+
+
+def _campaign_overall_progress_payload(
+    cursor,
+    campaign_id: int,
+    request_progress: Optional[dict] = None,
+    automation_run: Optional[dict] = None,
+) -> dict:
+    request_progress = request_progress or _get_campaign_request_progress(cursor, campaign_id)
+    total_requests = int(request_progress.get("total_requests") or 0)
+    terminal_requests = int(
+        request_progress.get("terminal_requests")
+        if request_progress.get("terminal_requests") is not None
+        else (int(request_progress.get("completed_requests") or 0) + int(request_progress.get("failed_requests") or 0))
+    )
+    if automation_run is None:
+        cursor.execute(
+            """
+            SELECT *
+            FROM automation_runs
+            WHERE campaign_id = %s
+            ORDER BY
+                CASE
+                    WHEN status IN ('queued', 'running', 'waiting_confirmation') THEN 0
+                    WHEN status = 'completed' THEN 1
+                    ELSE 2
+                END,
+                created_at DESC,
+                id DESC
+            LIMIT 1
+            """,
+            (campaign_id,),
+        )
+        automation_run = cursor.fetchone()
+
+    stages = []
+    if total_requests > 0:
+        stages.append({
+            "key": "scrape",
+            "label": "scrape",
+            "processed": min(terminal_requests, total_requests),
+            "total": total_requests,
+        })
+
+    run_id = int(automation_run["id"]) if automation_run else None
+    if run_id:
+        cursor.execute(
+            """
+            SELECT step_type, MIN(step_order) AS step_order
+            FROM automation_run_steps
+            WHERE run_id = %s
+              AND step_type = ANY(%s)
+            GROUP BY step_type
+            ORDER BY MIN(step_order)
+            """,
+            (run_id, list(STREAM_PROGRESS_CONTACT_STEPS)),
+        )
+        step_rows = cursor.fetchall()
+        if step_rows:
+            cursor.execute(
+                """
+                SELECT
+                    step_type,
+                    COUNT(*) AS total,
+                    COUNT(*) FILTER (WHERE status = ANY(%s)) AS processed
+                FROM automation_stream_tasks
+                WHERE run_id = %s
+                  AND step_type = ANY(%s)
+                GROUP BY step_type
+                """,
+                (list(STREAM_PROGRESS_TERMINAL_STATUSES), run_id, list(STREAM_PROGRESS_CONTACT_STEPS)),
+            )
+            task_counts = {
+                row["step_type"]: {
+                    "total": int(row.get("total") or 0),
+                    "processed": int(row.get("processed") or 0),
+                }
+                for row in cursor.fetchall()
+            }
+            for step in step_rows:
+                step_type = step["step_type"]
+                counts = task_counts.get(step_type, {"total": 0, "processed": 0})
+                total = int(counts.get("total") or 0)
+                if total <= 0:
+                    continue
+                stages.append({
+                    "key": step_type,
+                    "label": STREAM_PROGRESS_STEP_LABELS.get(step_type, step_type.replace("_", " ")),
+                    "processed": min(int(counts.get("processed") or 0), total),
+                    "total": total,
+                })
+
+    total_units = sum(int(stage["total"]) for stage in stages)
+    processed_units = sum(int(stage["processed"]) for stage in stages)
+    percent = round(min(100, (processed_units / total_units) * 100), 2) if total_units > 0 else 0
+    has_contact_stages = any(stage["key"] != "scrape" for stage in stages)
+    return {
+        "run_id": run_id,
+        "status": str(automation_run.get("status") or "") if automation_run else "",
+        "progress_percent": percent,
+        "processed_units": processed_units,
+        "total_units": total_units,
+        "stages": stages,
+        "label": "Overall" if has_contact_stages else "Requests",
+    }
 
 
 def _load_latest_pipeline_run(cursor, campaign_id: int) -> Optional[dict]:

@@ -200,6 +200,14 @@
                                 {% set completion = 100 %}
                             {% endif %}
                         {% endif %}
+                        {% set overall_completion = campaign.overall_progress_percent if campaign.overall_progress_percent is defined else completion %}
+                        {% set overall_label = campaign.overall_progress_label if campaign.overall_progress_label is defined else 'Requests' %}
+                        {% set overall_stage_text = [] %}
+                        {% if campaign.overall_progress_stages is defined and campaign.overall_progress_stages %}
+                            {% for progress_stage in campaign.overall_progress_stages %}
+                                {% set _ = overall_stage_text.append(progress_stage.label ~ ' ' ~ progress_stage.processed ~ '/' ~ progress_stage.total) %}
+                            {% endfor %}
+                        {% endif %}
                         {% set verification_total = campaign.verification_total_emails or 0 %}
                         {% set verification_processed = campaign.verification_processed_emails or 0 %}
                         {% set verification_percent = campaign.verification_progress_percent or 0 %}
@@ -232,11 +240,11 @@
                                 </div>
                                 <div class="mt-3 md:hidden">
                                     <div class="flex items-center justify-between text-[11px] text-slate-500 mb-1">
-                                        <span>Request Progress</span>
-                                        <span id="request-progress-mobile-label-{{ campaign.id }}">{{ completion }}%</span>
+                                        <span id="request-progress-mobile-title-{{ campaign.id }}">{{ overall_label }} Progress</span>
+                                        <span id="request-progress-mobile-label-{{ campaign.id }}">{{ overall_completion }}%</span>
                                     </div>
                                     <div class="w-full bg-slate-200 rounded-full h-2">
-                                        <div id="request-progress-mobile-bar-{{ campaign.id }}" class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-sky-500 to-blue-600" style="width: {{ completion }}%"></div>
+                                        <div id="request-progress-mobile-bar-{{ campaign.id }}" class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-sky-500 to-blue-600" style="width: {{ overall_completion }}%"></div>
                                     </div>
                                 </div>
                                 <div class="mt-3">
@@ -342,9 +350,9 @@
                             <td colspan="7" class="no-label px-4 py-2">
                                 <div class="relative w-full">
                                     <div class="w-full bg-slate-200 rounded-full h-2">
-                                        <div id="request-progress-bar-{{ campaign.id }}" class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-sky-500 to-blue-600" style="width: {{ completion }}%"></div>
+                                        <div id="request-progress-bar-{{ campaign.id }}" class="h-2 rounded-full transition-all duration-500 bg-gradient-to-r from-sky-500 to-blue-600" style="width: {{ overall_completion }}%"></div>
                                     </div>
-                                    <div id="request-progress-label-{{ campaign.id }}" class="absolute w-full text-center text-xs text-slate-500 mt-1">{{ completion }}% complete</div>
+                                    <div id="request-progress-label-{{ campaign.id }}" class="absolute w-full text-center text-xs text-slate-500 mt-1" title="{{ overall_stage_text|join(', ') }}">{{ overall_label }}: {{ overall_completion }}% complete{% if overall_stage_text %} ({{ overall_stage_text|join(', ') }}){% endif %}</div>
                                 </div>
                             </td>
                         </tr>
@@ -1514,7 +1522,27 @@
             }
         }
 
-        function renderRequestProgress(campaignId, progress) {
+        function formatOverallProgressLabel(overall, fallbackPercent, fallbackText) {
+            if (!overall || !Array.isArray(overall.stages) || overall.stages.length === 0) {
+                return {
+                    title: fallbackText,
+                    desktop: fallbackText,
+                    mobile: `${fallbackPercent}%`
+                };
+            }
+            const percent = Math.max(0, Math.min(100, Number(overall.progress_percent || 0)));
+            const parts = overall.stages
+                .map((stage) => `${stage.label || stage.key || 'stage'} ${Number(stage.processed || 0)}/${Number(stage.total || 0)}`)
+                .join(', ');
+            const label = overall.label || 'Overall';
+            return {
+                title: parts,
+                desktop: `${label}: ${percent}% complete (${parts})`,
+                mobile: `${percent}%`
+            };
+        }
+
+        function renderRequestProgress(campaignId, progress, overallProgress) {
             if (!progress) return;
             const total = Number(progress.total_requests || 0);
             const completed = Number(progress.completed_requests || 0);
@@ -1529,21 +1557,32 @@
             const desktopLabel = document.getElementById(`request-progress-label-${campaignId}`);
             const mobileBar = document.getElementById(`request-progress-mobile-bar-${campaignId}`);
             const mobileLabel = document.getElementById(`request-progress-mobile-label-${campaignId}`);
+            const mobileTitle = document.getElementById(`request-progress-mobile-title-${campaignId}`);
+            const overallPercent = overallProgress && overallProgress.total_units
+                ? Math.max(0, Math.min(100, Number(overallProgress.progress_percent || 0)))
+                : percent;
+            const fallbackText = failed > 0
+                ? `${percent}% done (${completed} ok, ${failed} failed / ${total})`
+                : `${percent}% complete (${completed}/${total})`;
+            const overallLabel = formatOverallProgressLabel(overallProgress, overallPercent, fallbackText);
 
             if (requestCount) {
                 requestCount.textContent = failed > 0 ? `${completed}/${total} (${failed} failed)` : `${completed}/${total}`;
                 requestCount.title = `Done: ${terminal}, completed: ${completed}, failed: ${failed}, pending: ${pending}, in use: ${inuse}`;
             }
             [desktopBar, mobileBar].filter(Boolean).forEach((bar) => {
-                bar.style.width = `${percent}%`;
+                bar.style.width = `${overallPercent}%`;
             });
             if (desktopLabel) {
-                desktopLabel.textContent = failed > 0 ? `${percent}% done (${completed} ok, ${failed} failed / ${total})` : `${percent}% complete (${completed}/${total})`;
-                desktopLabel.title = `Done: ${terminal}, completed: ${completed}, failed: ${failed}, pending: ${pending}, in use: ${inuse}`;
+                desktopLabel.textContent = overallLabel.desktop;
+                desktopLabel.title = overallLabel.title || `Done: ${terminal}, completed: ${completed}, failed: ${failed}, pending: ${pending}, in use: ${inuse}`;
             }
             if (mobileLabel) {
-                mobileLabel.textContent = failed > 0 ? `${percent}% (${failed} failed)` : `${percent}% (${completed}/${total})`;
-                mobileLabel.title = `Done: ${terminal}, completed: ${completed}, failed: ${failed}, pending: ${pending}, in use: ${inuse}`;
+                mobileLabel.textContent = overallLabel.mobile;
+                mobileLabel.title = overallLabel.title || `Done: ${terminal}, completed: ${completed}, failed: ${failed}, pending: ${pending}, in use: ${inuse}`;
+            }
+            if (mobileTitle) {
+                mobileTitle.textContent = `${overallProgress && overallProgress.label ? overallProgress.label : 'Requests'} Progress`;
             }
         }
 
@@ -1566,7 +1605,7 @@
                     const item = statusMap[campaignId] || statusMap[String(campaignId)];
                     if (!item) return;
                     renderPipelineState(campaignId, item.pipeline || {}, item.stats || {});
-                    renderRequestProgress(campaignId, item.requests || {});
+                    renderRequestProgress(campaignId, item.requests || {}, item.overall_progress || null);
                     renderVerificationProgress(campaignId, item.verification || {});
                     renderEnrichmentProgress(campaignId, item.enrichment || {});
                 });

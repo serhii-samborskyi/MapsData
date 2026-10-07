@@ -1301,6 +1301,56 @@ class PipelineUnitLogicTests(unittest.TestCase):
         self.assertEqual(normalize("ACME L.L.C."), "acme")
         self.assertEqual(normalize("Acme---Dental   Company"), "acme dental")
 
+    def test_overall_progress_combines_scrape_and_streaming_contact_steps(self):
+        class Cursor:
+            def __init__(self):
+                self.rows = []
+
+            def execute(self, query, params=()):
+                lowered = " ".join(str(query).lower().split())
+                if "from automation_run_steps" in lowered:
+                    self.rows = [
+                        {"step_type": "enrichment", "step_order": 2},
+                        {"step_type": "email_verification", "step_order": 4},
+                        {"step_type": "export", "step_order": 5},
+                    ]
+                elif "from automation_stream_tasks" in lowered:
+                    self.rows = [
+                        {"step_type": "enrichment", "total": 10, "processed": 10},
+                        {"step_type": "email_verification", "total": 8, "processed": 4},
+                        {"step_type": "export", "total": 4, "processed": 1},
+                    ]
+                else:
+                    self.rows = []
+
+            def fetchall(self):
+                return self.rows
+
+            def fetchone(self):
+                return self.rows[0] if self.rows else None
+
+        progress = self.main._campaign_overall_progress_payload(
+            Cursor(),
+            269,
+            {
+                "total_requests": 10,
+                "completed_requests": 10,
+                "failed_requests": 0,
+            },
+            {"id": 55, "status": "running"},
+        )
+
+        self.assertEqual(progress["label"], "Overall")
+        self.assertEqual(progress["processed_units"], 25)
+        self.assertEqual(progress["total_units"], 32)
+        self.assertEqual(progress["progress_percent"], 78.12)
+        self.assertEqual([stage["key"] for stage in progress["stages"]], [
+            "scrape",
+            "enrichment",
+            "email_verification",
+            "export",
+        ])
+
     def test_next_stage_mapping(self):
         self.assertEqual(self.main._next_pipeline_stage("maps_scrape"), "cleanup_contacts")
         self.assertEqual(self.main._next_pipeline_stage("cleanup_contacts"), "email_fast")
