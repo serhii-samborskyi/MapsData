@@ -249,14 +249,6 @@ def dedupe_all_normalized_business_names(cursor):
 
 
 def dedupe_campaign_contacts_by_normalized_business_name(cursor, campaign_id):
-    # Contact ingestion and streaming enrollment run in separate transactions.
-    # Keep a campaign's dedupe/delete pass from racing an INSERT ... SELECT into
-    # automation_stream_tasks, which otherwise can select a contact immediately
-    # before the other transaction deletes it and fail the task's contact FK.
-    cursor.execute(
-        "SELECT pg_advisory_xact_lock(hashtext('contacts_company_dedupe'), %s)",
-        (int(campaign_id),),
-    )
     columns = _has_contact_columns(cursor, {"campaign_id", "business_name", "normalized_business_name"})
     if not {"campaign_id", "business_name", "normalized_business_name"}.issubset(columns):
         return {"campaign_id": campaign_id, "duplicates_removed": 0, "canonical_contacts": 0}
@@ -403,12 +395,27 @@ def enroll(cursor, run, steps, needs_source_email=False):
         pipeline = step["step_type"] == "pipeline"
         cursor.execute(
             """
+            WITH locked_contacts AS MATERIALIZED (
+                SELECT c.id
+                FROM contacts c
+                WHERE c.campaign_id = %s
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM automation_stream_tasks existing
+                      WHERE existing.run_id = %s
+                        AND existing.step_id = %s
+                        AND existing.contact_id = c.id
+                  )
+                FOR KEY SHARE OF c
+            )
             INSERT INTO automation_stream_tasks (run_id, step_id, contact_id, step_type, status, max_retries)
-            SELECT %s, %s, c.id, %s, %s, %s FROM contacts c
-            WHERE c.campaign_id = %s
+            SELECT %s, %s, c.id, %s, %s, %s FROM locked_contacts c
             ON CONFLICT (run_id, step_id, contact_id) DO NOTHING
         """,
             (
+                run["campaign_id"],
+                run["id"],
+                step["id"],
                 run["id"],
                 step["id"],
                 "source_email"
@@ -416,7 +423,6 @@ def enroll(cursor, run, steps, needs_source_email=False):
                 else step["step_type"],
                 "completed" if pipeline and not needs_source_email else "pending",
                 step["max_retries"],
-                run["campaign_id"],
             ),
         )
 

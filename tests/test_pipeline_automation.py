@@ -1203,7 +1203,6 @@ class PipelineEndpointTests(unittest.TestCase):
     def test_cleanup_flags_invalid_domains_and_removes_duplicates(self):
         self._patch_db([
             {"match": "select id from search_campaigns", "fetchone": {"id": 3}},
-            {"match": "pg_advisory_xact_lock"},
             {
                 "match": "from information_schema.columns",
                 "fetchall": [
@@ -1243,7 +1242,6 @@ class PipelineEndpointTests(unittest.TestCase):
             {"match": "from pipeline_runs", "fetchone": None},
             {"match": "select id from contacts", "fetchone": None},
             {"match": "insert into contacts", "fetchone": {"id": 501}},
-            {"match": "pg_advisory_xact_lock"},
             {
                 "match": "from information_schema.columns",
                 "fetchall": [
@@ -1276,9 +1274,8 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(len(response["saved_contacts"]), 1)
         self.assertEqual(response["saved_contacts"][0]["contact_id"], 501)
 
-    def test_streaming_enrollment_locks_campaign_before_reading_contacts(self):
+    def test_streaming_enrollment_key_locks_only_new_contacts(self):
         cursor = ScriptedCursor([
-            {"match": "pg_advisory_xact_lock"},
             {
                 "match": "from information_schema.columns",
                 "fetchall": [
@@ -1299,9 +1296,11 @@ class PipelineEndpointTests(unittest.TestCase):
         )
 
         self.assertEqual(cursor.index, len(cursor.steps))
-        first_query, first_params = cursor.queries[0]
-        self.assertIn("pg_advisory_xact_lock", first_query)
-        self.assertEqual(first_params, (274,))
+        enrollment_query, enrollment_params = cursor.queries[-1]
+        normalized_query = " ".join(enrollment_query.lower().split())
+        self.assertIn("for key share of c", normalized_query)
+        self.assertIn("not exists", normalized_query)
+        self.assertEqual(enrollment_params[:3], (274, 61, 91))
 
     def test_save_contacts_rejects_inactive_campaign_without_inflight_context(self):
         self._patch_db([

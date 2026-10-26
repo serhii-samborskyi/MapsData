@@ -201,16 +201,16 @@ class StreamingIntegrationTests(unittest.TestCase):
         self.assertEqual(contacts[0]["normalized_business_name"], "acme")
         self.assertEqual([task["contact_id"] for task in tasks], [first])
 
-    def test_enroll_waits_for_campaign_dedupe_transaction(self):
+    def test_enroll_survives_contact_deleted_during_task_creation(self):
         self.setup_run(("enrichment",), contacts=0)
-        self.add_contact()
+        contact_id = self.add_contact()
         started = threading.Event()
         finished = threading.Event()
         errors = []
 
-        with self.main.get_db() as dedupe_conn:
-            self.queue.dedupe_campaign_contacts_by_normalized_business_name(
-                dedupe_conn.cursor(), self.run["campaign_id"]
+        with self.main.get_db() as delete_conn:
+            delete_conn.cursor().execute(
+                "DELETE FROM contacts WHERE id = %s", (contact_id,)
             )
 
             def enroll_in_parallel():
@@ -227,9 +227,9 @@ class StreamingIntegrationTests(unittest.TestCase):
             self.assertTrue(started.wait(1))
             self.assertFalse(
                 finished.wait(0.2),
-                "enrollment must wait for the campaign dedupe transaction",
+                "enrollment must wait while the source contact is being deleted",
             )
-            dedupe_conn.commit()
+            delete_conn.commit()
 
         worker.join(2)
         self.assertFalse(worker.is_alive())
@@ -238,7 +238,7 @@ class StreamingIntegrationTests(unittest.TestCase):
             "SELECT contact_id FROM automation_stream_tasks WHERE run_id=%s",
             (self.run["id"],),
         )
-        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks, [])
 
     def test_export_skips_email_already_recorded_for_destination_ab_list(self):
         self.setup_run(("export",))
