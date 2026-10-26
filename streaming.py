@@ -138,6 +138,7 @@ def init_schema(cursor):
         );
         ALTER TABLE automation_stream_tasks ADD COLUMN IF NOT EXISTS finished_token TEXT;
         CREATE INDEX IF NOT EXISTS idx_stream_tasks_claim ON automation_stream_tasks(run_id, status, available_at);
+        CREATE INDEX IF NOT EXISTS idx_stream_tasks_step_status ON automation_stream_tasks(step_id, status);
         CREATE INDEX IF NOT EXISTS idx_stream_tasks_bucket ON automation_stream_tasks(bucket, lease_until) WHERE status = 'running';
         CREATE TABLE IF NOT EXISTS automation_export_deliveries (
             id BIGSERIAL PRIMARY KEY,
@@ -248,6 +249,14 @@ def dedupe_all_normalized_business_names(cursor):
 
 
 def dedupe_campaign_contacts_by_normalized_business_name(cursor, campaign_id):
+    # Contact ingestion and streaming enrollment run in separate transactions.
+    # Keep a campaign's dedupe/delete pass from racing an INSERT ... SELECT into
+    # automation_stream_tasks, which otherwise can select a contact immediately
+    # before the other transaction deletes it and fail the task's contact FK.
+    cursor.execute(
+        "SELECT pg_advisory_xact_lock(hashtext('contacts_company_dedupe'), %s)",
+        (int(campaign_id),),
+    )
     columns = _has_contact_columns(cursor, {"campaign_id", "business_name", "normalized_business_name"})
     if not {"campaign_id", "business_name", "normalized_business_name"}.issubset(columns):
         return {"campaign_id": campaign_id, "duplicates_removed": 0, "canonical_contacts": 0}

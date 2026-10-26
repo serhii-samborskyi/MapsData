@@ -201,6 +201,45 @@ class StreamingIntegrationTests(unittest.TestCase):
         self.assertEqual(contacts[0]["normalized_business_name"], "acme")
         self.assertEqual([task["contact_id"] for task in tasks], [first])
 
+    def test_enroll_waits_for_campaign_dedupe_transaction(self):
+        self.setup_run(("enrichment",), contacts=0)
+        self.add_contact()
+        started = threading.Event()
+        finished = threading.Event()
+        errors = []
+
+        with self.main.get_db() as dedupe_conn:
+            self.queue.dedupe_campaign_contacts_by_normalized_business_name(
+                dedupe_conn.cursor(), self.run["campaign_id"]
+            )
+
+            def enroll_in_parallel():
+                started.set()
+                try:
+                    self.enroll()
+                except Exception as exc:  # pragma: no cover - assertion reports detail
+                    errors.append(exc)
+                finally:
+                    finished.set()
+
+            worker = threading.Thread(target=enroll_in_parallel)
+            worker.start()
+            self.assertTrue(started.wait(1))
+            self.assertFalse(
+                finished.wait(0.2),
+                "enrollment must wait for the campaign dedupe transaction",
+            )
+            dedupe_conn.commit()
+
+        worker.join(2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        tasks = self.execute(
+            "SELECT contact_id FROM automation_stream_tasks WHERE run_id=%s",
+            (self.run["id"],),
+        )
+        self.assertEqual(len(tasks), 1)
+
     def test_export_skips_email_already_recorded_for_destination_ab_list(self):
         self.setup_run(("export",))
         step = self.export_step()
