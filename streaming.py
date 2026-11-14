@@ -138,6 +138,7 @@ def init_schema(cursor):
         );
         ALTER TABLE automation_stream_tasks ADD COLUMN IF NOT EXISTS finished_token TEXT;
         CREATE INDEX IF NOT EXISTS idx_stream_tasks_claim ON automation_stream_tasks(run_id, status, available_at);
+        CREATE INDEX IF NOT EXISTS idx_stream_tasks_step_claim ON automation_stream_tasks(run_id, step_id, status, available_at, id);
         CREATE INDEX IF NOT EXISTS idx_stream_tasks_step_status ON automation_stream_tasks(step_id, status);
         CREATE INDEX IF NOT EXISTS idx_stream_tasks_bucket ON automation_stream_tasks(bucket, lease_until) WHERE status = 'running';
         CREATE TABLE IF NOT EXISTS automation_export_deliveries (
@@ -604,20 +605,33 @@ def claim(
         count = min(count, 1)
     if count <= 0:
         return []
-    cursor.execute(
-        """
-        SELECT t.* FROM automation_stream_tasks t
-        WHERE t.run_id = %s AND t.step_id = %s AND t.status IN ('pending', 'retry')
-          AND t.available_at <= CURRENT_TIMESTAMP
-          AND NOT EXISTS (
-            SELECT 1 FROM automation_stream_tasks p JOIN automation_run_steps s ON s.id = p.step_id
-            WHERE p.run_id = t.run_id AND p.contact_id = t.contact_id AND s.step_order < %s
-              AND p.status NOT IN ('completed', 'skipped')
-          )
-        ORDER BY t.id LIMIT %s FOR UPDATE OF t SKIP LOCKED
-    """,
-        (run_id, step["id"], step["step_order"], count),
-    )
+    if int(step["step_order"]) <= 1:
+        # The first step has no predecessor. Avoid a correlated anti-join over
+        # the full task table for every candidate source-email contact.
+        cursor.execute(
+            """
+            SELECT t.* FROM automation_stream_tasks t
+            WHERE t.run_id = %s AND t.step_id = %s AND t.status IN ('pending', 'retry')
+              AND t.available_at <= CURRENT_TIMESTAMP
+            ORDER BY t.id LIMIT %s FOR UPDATE OF t SKIP LOCKED
+        """,
+            (run_id, step["id"], count),
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT t.* FROM automation_stream_tasks t
+            WHERE t.run_id = %s AND t.step_id = %s AND t.status IN ('pending', 'retry')
+              AND t.available_at <= CURRENT_TIMESTAMP
+              AND NOT EXISTS (
+                SELECT 1 FROM automation_stream_tasks p JOIN automation_run_steps s ON s.id = p.step_id
+                WHERE p.run_id = t.run_id AND p.contact_id = t.contact_id AND s.step_order < %s
+                  AND p.status NOT IN ('completed', 'skipped')
+              )
+            ORDER BY t.id LIMIT %s FOR UPDATE OF t SKIP LOCKED
+        """,
+            (run_id, step["id"], step["step_order"], count),
+        )
     tasks = [dict(row) for row in cursor.fetchall()]
     if not tasks:
         return []
