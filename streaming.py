@@ -545,8 +545,13 @@ def claim(
     cursor, run_id, step, limit, bucket, concurrency, interval=0, lease_seconds=180
 ):
     """Reserve provider capacity and durable work in the same short transaction."""
+    # Task rows and the shared rate-limit row are the actual claim locks. Taking
+    # an exclusive lock on the run row here makes daemon claims wait behind the
+    # coordinator's enrollment/recovery transaction even though the two paths
+    # do not contend for the same task. A current status read is sufficient;
+    # stop/recovery still owns the task rows and finish rechecks the run state.
     cursor.execute(
-        "SELECT status FROM automation_runs WHERE id = %s FOR UPDATE", (run_id,)
+        "SELECT status FROM automation_runs WHERE id = %s", (run_id,)
     )
     run = cursor.fetchone()
     if not run or run["status"] not in ("queued", "running"):
