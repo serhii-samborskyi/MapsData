@@ -577,15 +577,17 @@ def claim(
     shared = cursor.fetchone()
     interval = max(interval, float(shared["delay"] or 0))
     concurrency = min(concurrency, int(shared["concurrency"] or concurrency))
-    cursor.execute(
-        """
-        SELECT MIN((prompt_config::jsonb->>'requests_per_minute')::integer) AS rate
-        FROM enrichment_runs WHERE service = 'prompt_http' AND status IN ('queued', 'running')
-          AND NOT cancel_requested AND NOT pause_requested AND prompt_config::jsonb->>'endpoint_key' = %s
-    """,
-        (bucket,),
-    )
-    legacy = cursor.fetchone()["rate"]
+    legacy = None
+    if step["step_type"] != "pipeline":
+        cursor.execute(
+            """
+            SELECT MIN((prompt_config::jsonb->>'requests_per_minute')::integer) AS rate
+            FROM enrichment_runs WHERE service = 'prompt_http' AND status IN ('queued', 'running')
+              AND NOT cancel_requested AND NOT pause_requested AND prompt_config::jsonb->>'endpoint_key' = %s
+        """,
+            (bucket,),
+        )
+        legacy = cursor.fetchone()["rate"]
     if legacy:
         interval = max(interval, 60 / legacy)
     cursor.execute(
