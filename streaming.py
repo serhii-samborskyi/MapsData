@@ -390,7 +390,13 @@ def progress(cursor, run_id):
 
 def enroll(cursor, run, steps, needs_source_email=False):
     """ON CONFLICT permits continuous intake, including after an empty queue."""
-    dedupe_campaign_contacts_by_normalized_business_name(cursor, run["campaign_id"])
+    # Do not run the campaign-wide dedupe pass here. The coordinator calls
+    # ``enroll`` every 500 ms while a streaming run is active and holds the run
+    # row lock for the duration of this transaction. Re-scanning and rewriting
+    # every contact on each pass starves the daemon's source-task claim request,
+    # causing it to time out and leaving the funnel apparently stuck. Contact
+    # ingestion is protected by the campaign/name uniqueness index, and the
+    # source-close path performs the one required cleanup pass.
     for step in steps:
         pipeline = step["step_type"] == "pipeline"
         cursor.execute(

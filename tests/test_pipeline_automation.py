@@ -1274,18 +1274,8 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertEqual(len(response["saved_contacts"]), 1)
         self.assertEqual(response["saved_contacts"][0]["contact_id"], 501)
 
-    def test_streaming_enrollment_key_locks_only_new_contacts(self):
+    def test_streaming_enrollment_skips_dedupe_and_key_locks_only_new_contacts(self):
         cursor = ScriptedCursor([
-            {
-                "match": "from information_schema.columns",
-                "fetchall": [
-                    {"column_name": "campaign_id"},
-                    {"column_name": "business_name"},
-                    {"column_name": "normalized_business_name"},
-                ],
-            },
-            {"match": "update contacts set normalized_business_name"},
-            {"match": "select * from contacts", "fetchall": []},
             {"match": "insert into automation_stream_tasks"},
         ])
 
@@ -1300,6 +1290,7 @@ class PipelineEndpointTests(unittest.TestCase):
         normalized_query = " ".join(enrollment_query.lower().split())
         self.assertIn("for key share of c", normalized_query)
         self.assertIn("not exists", normalized_query)
+        self.assertNotIn("normalize_business_name", normalized_query)
         self.assertEqual(enrollment_params[:3], (274, 61, 91))
 
     def test_save_contacts_rejects_inactive_campaign_without_inflight_context(self):
