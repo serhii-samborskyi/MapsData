@@ -401,6 +401,25 @@ def enroll(cursor, run, steps, needs_source_email=False):
         pipeline = step["step_type"] == "pipeline"
         cursor.execute(
             """
+            SELECT EXISTS (
+                SELECT 1
+                FROM contacts c
+                WHERE c.campaign_id = %s
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM automation_stream_tasks existing
+                      WHERE existing.run_id = %s
+                        AND existing.step_id = %s
+                        AND existing.contact_id = c.id
+                  )
+            ) AS needs_enrollment
+            """,
+            (run["campaign_id"], run["id"], step["id"]),
+        )
+        if not cursor.fetchone()["needs_enrollment"]:
+            continue
+        cursor.execute(
+            """
             WITH locked_contacts AS MATERIALIZED (
                 SELECT c.id
                 FROM contacts c

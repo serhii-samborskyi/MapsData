@@ -1276,6 +1276,7 @@ class PipelineEndpointTests(unittest.TestCase):
 
     def test_streaming_enrollment_skips_dedupe_and_key_locks_only_new_contacts(self):
         cursor = ScriptedCursor([
+            {"match": "as needs_enrollment", "fetchone": {"needs_enrollment": True}},
             {"match": "insert into automation_stream_tasks"},
         ])
 
@@ -1292,6 +1293,20 @@ class PipelineEndpointTests(unittest.TestCase):
         self.assertIn("not exists", normalized_query)
         self.assertNotIn("normalize_business_name", normalized_query)
         self.assertEqual(enrollment_params[:3], (274, 61, 91))
+
+    def test_streaming_enrollment_skips_locking_insert_when_no_contacts_are_new(self):
+        cursor = ScriptedCursor([
+            {"match": "as needs_enrollment", "fetchone": {"needs_enrollment": False}},
+        ])
+
+        self.main.streaming.enroll(
+            cursor,
+            {"id": 61, "campaign_id": 274},
+            [{"id": 91, "step_type": "enrichment", "max_retries": 1}],
+        )
+
+        self.assertEqual(cursor.index, len(cursor.steps))
+        self.assertEqual(len(cursor.queries), 1)
 
     def test_save_contacts_rejects_inactive_campaign_without_inflight_context(self):
         self._patch_db([
