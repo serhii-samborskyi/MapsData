@@ -815,7 +815,13 @@ def run(app, run_id):
                         )
                     steps = app._load_automation_steps(cursor, run_id)
                     closed, needs_email = source_state(cursor, app, current, steps)
-                    streaming.enroll(cursor, current, steps, needs_email)
+                    # Once the source is durably closed, every contact has
+                    # already been enrolled and no later source write is
+                    # expected. Rechecking enrollment on every coordinator
+                    # pass needlessly scans the full contact/task set and can
+                    # starve daemon claim requests on large campaigns.
+                    if not current.get("stream_source_closed"):
+                        streaming.enroll(cursor, current, steps, needs_email)
                     streaming.recover(cursor, run_id)
                     done = streaming.finalize(cursor, run_id, closed)
                     conn.commit()
